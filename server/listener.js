@@ -8962,13 +8962,6 @@ function buildJoinLobbyAckPayload(user) {
         merged.error
       )}`
     );
-    if (isManagedHostUnavailableError(merged.error)) {
-      console.log(
-        `[JOIN_LOBBY_ACK merge] managed host unavailable; using captured official template fallback official=${officialPayload.length} local=${localPayload.length}`
-      );
-      rememberJoinLobbyAckPayload(cacheKey, officialPayload);
-      return officialPayload;
-    }
     const normalized = combatHandler.normalizeJoinLobbyAck
       ? combatHandler.normalizeJoinLobbyAck(localPayload)
       : { ok: false, error: "combat handler normalize unavailable" };
@@ -9045,18 +9038,6 @@ function summarizeErrorLine(error) {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)[0] || "unknown error";
-}
-
-function isManagedHostUnavailableError(error) {
-  const text = String(error || "").toLowerCase();
-  return (
-    text.includes("c# combat host disabled") ||
-    text.includes("missing combat host dll") ||
-    text.includes("dotnet build exited") ||
-    text.includes("the command could not be loaded") ||
-    text.includes("no .net sdks were found") ||
-    text.includes("could not be loaded for source https://api.nuget.org")
-  );
 }
 
 function hasTutorialProgress(user) {

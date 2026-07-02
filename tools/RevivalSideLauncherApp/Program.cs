@@ -18,7 +18,6 @@ using Avalonia.Styling;
 using Avalonia.Themes.Fluent;
 using Avalonia.Threading;
 using Microsoft.Win32;
-using System.Windows.Input;
 
 namespace RevivalSideLauncher;
 
@@ -107,12 +106,6 @@ internal sealed class LauncherWindow : Window
     private readonly List<CrossSaveCaptureProcess> crossSaveCaptureProcesses = new();
     private string? crossSaveCaptureStamp;
     private List<CrossSaveSource> crossSaveSources = new();
-    private TrayIcon? trayIcon;
-    private System.Windows.Forms.NotifyIcon? windowsTrayIcon;
-    private bool isShuttingDown;
-    private bool isHiddenInTray;
-    private bool startFlowBusy;
-    private const string StartButtonDefaultText = "START";
 
     private readonly Button dashboardNavButton = new() { Content = "Home", MinWidth = 92, Height = 38 };
     private readonly Button crossSaveNavButton = new() { Content = "Cross Save", MinWidth = 128, Height = 38 };
@@ -161,8 +154,6 @@ internal sealed class LauncherWindow : Window
     private readonly CheckBox replayGameFlowInput = new() { Content = "Replay captured game flow" };
     private readonly CheckBox skipTutorialInput = new() { Content = "Skip tutorial to win" };
     private readonly CheckBox resetTutorialInput = new() { Content = "Reset tutorial on login" };
-    private readonly CheckBox minimizeToTrayInput = new() { Content = "Minimize to tray on close while server is running" };
-    private readonly CheckBox notifyTrayStopInput = new() { Content = "Notify in tray when a service stops unexpectedly" };
     private readonly TextBox serverTimeInput = new() { Width = 210 };
     private readonly TextBox logBox = new()
     {
@@ -463,7 +454,7 @@ internal sealed class LauncherWindow : Window
         var toggles = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("*,*"),
-            RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto"),
+            RowDefinitions = new RowDefinitions("Auto,Auto,Auto"),
             ColumnSpacing = 18,
             RowSpacing = 8,
             Margin = new Thickness(0, 4, 0, 0),
@@ -473,8 +464,6 @@ internal sealed class LauncherWindow : Window
         AddCell(toggles, replayGameFlowInput, 0, 1);
         AddCell(toggles, skipTutorialInput, 1, 1);
         AddCell(toggles, resetTutorialInput, 0, 2);
-        AddCell(toggles, minimizeToTrayInput, 0, 3);
-        AddCell(toggles, notifyTrayStopInput, 1, 3);
         layout.Children.Add(toggles);
         return layout;
     }
@@ -788,11 +777,7 @@ internal sealed class LauncherWindow : Window
         crossSaveNavButton.Click += (_, _) => ShowView("cross-save");
         settingsNavButton.Click += (_, _) => ShowView("settings");
         openLogsButton.Click += (_, _) => OpenLogsDirectory();
-        startListenerButton.Click += async (_, _) =>
-        {
-            if (startFlowBusy) return;
-            await RunUiAction(StartListenerAsync);
-        };
+        startListenerButton.Click += async (_, _) => await RunUiAction(StartListenerAsync);
         stopListenerButton.Click += (_, _) => StopListener();
         openUserManagerButton.Click += (_, _) =>
         {
@@ -812,248 +797,13 @@ internal sealed class LauncherWindow : Window
         buildGameplayAssetsButton.Click += async (_, _) => await RunUiAction(BuildGameplayAssetsAsync);
         setTimeButton.Click += async (_, _) => await RunUiAction(SetServerTimeAsync);
         clearTimeButton.Click += async (_, _) => await RunUiAction(ClearServerTimeAsync);
-        Closing += OnWindowClosing;
-    }
-
-    private void OnWindowClosing(object? sender, WindowClosingEventArgs e)
-    {
-        if (isShuttingDown) return;
-        if (HasRunningBackgroundServices() && minimizeToTrayInput.IsChecked == true)
+        Closing += (_, _) =>
         {
-            e.Cancel = true;
-            MinimizeToTray();
-            return;
-        }
-
-        isShuttingDown = true;
-        StopCrossSaveCapture();
-        StopListener();
-        StopWiki();
-        HideTrayIcon();
-    }
-
-    private bool HasRunningBackgroundServices()
-    {
-        return listenerProcess is { HasExited: false } || wikiProcess is { HasExited: false };
-    }
-
-    private void EnsureTrayIcon()
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            EnsureWindowsTrayIcon();
-            return;
-        }
-
-        if (trayIcon != null) return;
-
-        var showItem = new NativeMenuItem("Show RevivalSide");
-        showItem.Click += (_, _) => Dispatcher.UIThread.Post(ShowFromTray);
-
-        var stopItem = new NativeMenuItem("Stop Server");
-        stopItem.Click += (_, _) => Dispatcher.UIThread.Post(StopBackgroundServicesFromTray);
-
-        var exitItem = new NativeMenuItem("Exit");
-        exitItem.Click += (_, _) => Dispatcher.UIThread.Post(ExitApplication);
-
-        trayIcon = new TrayIcon
-        {
-            Icon = CreateTrayIconImage(),
-            ToolTipText = BuildTrayTooltipText(),
-            Command = new RelayCommand(ShowFromTray),
-            Menu = new NativeMenu
-            {
-                showItem,
-                new NativeMenuItemSeparator(),
-                stopItem,
-                exitItem,
-            },
+            StopCrossSaveCapture();
+            StopListener();
+            StopWiki();
         };
-
-        TrayIcon.SetIcons(Application.Current, new TrayIcons { trayIcon });
     }
-
-    private void EnsureWindowsTrayIcon()
-    {
-        if (windowsTrayIcon != null) return;
-
-        windowsTrayIcon = new System.Windows.Forms.NotifyIcon
-        {
-            Icon = CreateWindowsDrawingIcon(),
-            Text = TruncateNotifyIconText(BuildTrayTooltipText()),
-            Visible = true,
-        };
-        windowsTrayIcon.DoubleClick += (_, _) => Dispatcher.UIThread.Post(ShowFromTray);
-
-        var menu = new System.Windows.Forms.ContextMenuStrip();
-        menu.Items.Add("Show RevivalSide", null, (_, _) => Dispatcher.UIThread.Post(ShowFromTray));
-        menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
-        menu.Items.Add("Stop Server", null, (_, _) => Dispatcher.UIThread.Post(StopBackgroundServicesFromTray));
-        menu.Items.Add("Exit", null, (_, _) => Dispatcher.UIThread.Post(ExitApplication));
-        windowsTrayIcon.ContextMenuStrip = menu;
-    }
-
-    private void MinimizeToTray()
-    {
-        if (isHiddenInTray) return;
-        EnsureTrayIcon();
-        isHiddenInTray = true;
-        ShowInTaskbar = false;
-        Hide();
-        UpdateTrayTooltip();
-        AppendLog("Launcher hidden to tray. Server keeps running.");
-    }
-
-    private void ShowFromTray()
-    {
-        isHiddenInTray = false;
-        ShowInTaskbar = true;
-        Show();
-        WindowState = WindowState.Normal;
-        Activate();
-        Focus();
-        UpdateTrayTooltip();
-    }
-
-    private void StopBackgroundServicesFromTray()
-    {
-        StopListener();
-        StopWiki();
-        UpdateTrayTooltip();
-        AppendLog("Background services stopped from tray.");
-        if (isHiddenInTray) ShowFromTray();
-    }
-
-    private void ExitApplication()
-    {
-        if (isShuttingDown) return;
-        isShuttingDown = true;
-        StopCrossSaveCapture();
-        StopListener();
-        StopWiki();
-        HideTrayIcon();
-        if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
-        {
-            desktop.Shutdown();
-        }
-    }
-
-    private void HideTrayIcon()
-    {
-        if (windowsTrayIcon != null)
-        {
-            windowsTrayIcon.Visible = false;
-            windowsTrayIcon.Dispose();
-            windowsTrayIcon = null;
-        }
-
-        if (trayIcon == null) return;
-        TrayIcon.SetIcons(Application.Current, null);
-        trayIcon = null;
-    }
-
-    private string BuildTrayTooltipText()
-    {
-        var listenerRunning = listenerProcess is { HasExited: false };
-        var wikiRunning = wikiProcess is { HasExited: false };
-        return listenerRunning
-            ? wikiRunning
-                ? "RevivalSide — listener and wiki running"
-                : "RevivalSide — listener running"
-            : wikiRunning
-                ? "RevivalSide — wiki running"
-                : "RevivalSide Launcher";
-    }
-
-    private void UpdateTrayTooltip()
-    {
-        var text = BuildTrayTooltipText();
-        if (windowsTrayIcon != null)
-        {
-            windowsTrayIcon.Text = TruncateNotifyIconText(text);
-            return;
-        }
-
-        if (trayIcon != null) trayIcon.ToolTipText = text;
-    }
-
-    private void HandleBackgroundServiceStopped(string serviceName)
-    {
-        if (isShuttingDown || !isHiddenInTray) return;
-        ShowTrayNotification(
-            $"{serviceName} stopped",
-            "The background service exited while RevivalSide was hidden in the tray.");
-    }
-
-    private void ShowTrayNotification(string title, string message)
-    {
-        if (notifyTrayStopInput.IsChecked != true || !isHiddenInTray) return;
-
-        if (windowsTrayIcon != null)
-        {
-            try
-            {
-                windowsTrayIcon.ShowBalloonTip(5000, title, message, System.Windows.Forms.ToolTipIcon.Warning);
-                return;
-            }
-            catch (Exception ex)
-            {
-                AppendLog($"Tray notification failed: {ex.Message}");
-            }
-        }
-
-        Dispatcher.UIThread.Post(async () =>
-        {
-            ShowFromTray();
-            await ShowMessageAsync("RevivalSide", $"{title}\n\n{message}");
-        });
-    }
-
-    private static string TruncateNotifyIconText(string text) => text.Length <= 63 ? text : text[..60] + "...";
-
-    private static WindowIcon CreateTrayIconImage()
-    {
-        const int size = 32;
-        var bitmap = new RenderTargetBitmap(new PixelSize(size, size), new Vector(96, 96));
-        using (var context = bitmap.CreateDrawingContext())
-        {
-            context.FillRectangle(Brush(18, 44, 78), new Rect(0, 0, size, size));
-            context.FillRectangle(Brush(96, 168, 255), new Rect(5, 5, size - 10, size - 10));
-            context.FillRectangle(Brush(255, 255, 255), new Rect(10, 9, 4, 14));
-            context.FillRectangle(Brush(255, 255, 255), new Rect(10, 9, 12, 4));
-            context.FillRectangle(Brush(255, 255, 255), new Rect(18, 9, 4, 14));
-        }
-        return new WindowIcon(bitmap);
-    }
-
-    private static System.Drawing.Icon CreateWindowsDrawingIcon()
-    {
-        const int size = 32;
-        using var bitmap = new System.Drawing.Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-        using (var graphics = System.Drawing.Graphics.FromImage(bitmap))
-        {
-            graphics.Clear(System.Drawing.Color.FromArgb(18, 44, 78));
-            graphics.FillRectangle(new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(96, 168, 255)), 5, 5, size - 10, size - 10);
-            using var white = new System.Drawing.SolidBrush(System.Drawing.Color.White);
-            graphics.FillRectangle(white, 10, 9, 4, 14);
-            graphics.FillRectangle(white, 10, 9, 12, 4);
-            graphics.FillRectangle(white, 18, 9, 4, 14);
-        }
-
-        var handle = bitmap.GetHicon();
-        try
-        {
-            using var temp = System.Drawing.Icon.FromHandle(handle);
-            return (System.Drawing.Icon)temp.Clone();
-        }
-        finally
-        {
-            DestroyIcon(handle);
-        }
-    }
-
-    [DllImport("user32.dll", CharSet = CharSet.Auto)]
-    private static extern bool DestroyIcon(IntPtr handle);
 
     private async Task RunUiAction(Func<Task> action)
     {
@@ -1485,8 +1235,6 @@ internal sealed class LauncherWindow : Window
         replayGameFlowInput.IsChecked = settings.ReplayCapturedGameFlow;
         skipTutorialInput.IsChecked = settings.SkipTutorialToWin;
         resetTutorialInput.IsChecked = settings.ResetTutorialOnLogin;
-        minimizeToTrayInput.IsChecked = settings.MinimizeToTrayOnClose;
-        notifyTrayStopInput.IsChecked = settings.NotifyTrayWhenServiceStops;
         advancedEnvInput.Text = settings.AdvancedEnvText;
         serverTimeInput.Text = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         UpdateButtons();
@@ -1505,8 +1253,6 @@ internal sealed class LauncherWindow : Window
         settings.ReplayCapturedGameFlow = replayGameFlowInput.IsChecked == true;
         settings.SkipTutorialToWin = skipTutorialInput.IsChecked == true;
         settings.ResetTutorialOnLogin = resetTutorialInput.IsChecked == true;
-        settings.MinimizeToTrayOnClose = minimizeToTrayInput.IsChecked == true;
-        settings.NotifyTrayWhenServiceStops = notifyTrayStopInput.IsChecked == true;
         settings.AdvancedEnvText = advancedEnvInput.Text ?? "";
         settings.CounterSideManagedDir = GetConfiguredManagedDir();
         settings.CrossSaveCaptureDir = (crossSaveCaptureDirBox.Text ?? "").Trim();
@@ -1520,147 +1266,65 @@ internal sealed class LauncherWindow : Window
     {
         if (listenerProcess is { HasExited: false }) return;
         SaveSettingsFromUi();
-        SetStartButtonPhase("PATCHING");
-        try
+        await EnsureListenerDependenciesAsync();
+        EnsureRuntimeLayout();
+        ValidateListenerRuntimeLayout();
+        var gameplayAssets = VerifyGameplayAssetsReady();
+        AppendLog($"Gameplay assets ready: {gameplayAssets.Description}");
+        gameplayAssets = await EnsureGameplayAssetCacheAsync(force: false);
+        AppendLog($"Gameplay asset cache ready: {gameplayAssets.CachedLuaCount:N0} luac files at {gameplayAssets.CacheRoot}");
+        await EnsureClientPatchAsync();
+        var env = BuildListenerEnvironment();
+        var logWriter = OpenProcessLog("listener", out var logPath);
+        var listenCommand = CreateListenCommand();
+        var job = ProcessJob.TryCreateKillOnClose();
+        var process = new Process
         {
-            await EnsureHostsPatchedAsync();
-            SetStartButtonPhase("STARTING");
-            await EnsureListenerDependenciesAsync();
-            EnsureRuntimeLayout();
-            ValidateListenerRuntimeLayout();
-            var gameplayAssets = VerifyGameplayAssetsReady();
-            AppendLog($"Gameplay assets ready: {gameplayAssets.Description}");
-            gameplayAssets = await EnsureGameplayAssetCacheAsync(force: false);
-            AppendLog($"Gameplay asset cache ready: {gameplayAssets.CachedLuaCount:N0} luac files at {gameplayAssets.CacheRoot}");
-            await EnsureClientPatchAsync();
-            var env = BuildListenerEnvironment();
-            var logWriter = OpenProcessLog("listener", out var logPath);
-            var listenCommand = CreateListenCommand();
-            var job = ProcessJob.TryCreateKillOnClose();
-            var process = new Process
-            {
-                StartInfo = listenCommand.StartInfo,
-                EnableRaisingEvents = true,
-            };
-            foreach (var item in env) process.StartInfo.Environment[item.Key] = item.Value;
-            process.OutputDataReceived += (_, e) => { if (e.Data != null) AppendProcessLog(logWriter, e.Data); };
-            process.ErrorDataReceived += (_, e) => { if (e.Data != null) AppendProcessLog(logWriter, e.Data); };
-            process.Exited += (_, _) => Dispatcher.UIThread.Post(() =>
-            {
-                if (ReferenceEquals(listenerProcess, process))
-                {
-                    listenerProcess = null;
-                    listenerJob?.Dispose();
-                    listenerJob = null;
-                    process.Dispose();
-                }
-                listenerStatusText.Text = "Stopped";
-                UpdateButtons();
-                HandleBackgroundServiceStopped("Listener");
-                AppendProcessLog(logWriter, "Listener stopped.");
-                CloseProcessLog(logWriter);
-            });
-            if (!process.Start())
-            {
-                job?.Dispose();
-                CloseProcessLog(logWriter);
-                throw new InvalidOperationException("Could not start listener.");
-            }
-            try
-            {
-                job?.Assign(process);
-            }
-            catch (Exception ex)
-            {
-                job?.Dispose();
-                job = null;
-                AppendLog($"Listener process job unavailable; Stop will use process-tree fallback: {ex.Message}");
-            }
-            listenerProcess = process;
-            listenerJob = job;
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-            listenerStatusText.Text = "Running";
-            AppendLog($"Listener started: {listenCommand.Display}");
-            AppendLog($"Listener log: {logPath}");
-            UpdateButtons();
-        }
-        finally
-        {
-            ClearStartButtonPhase();
-        }
-    }
-
-    private void SetStartButtonPhase(string label)
-    {
-        startFlowBusy = true;
-        startListenerButton.Content = label;
-        startListenerButton.IsEnabled = true;
-        startListenerButton.IsHitTestVisible = false;
-    }
-
-    private void ClearStartButtonPhase()
-    {
-        startFlowBusy = false;
-        startListenerButton.IsHitTestVisible = true;
-        startListenerButton.Content = StartButtonDefaultText;
-        UpdateButtons();
-    }
-
-    private static bool IsHostsPatched()
-    {
-        try
-        {
-            var hostsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "drivers", "etc", "hosts");
-            if (!File.Exists(hostsPath)) return false;
-            var text = File.ReadAllText(hostsPath);
-            return text.Contains("# BEGIN RevivalSide", StringComparison.Ordinal)
-                && text.Contains("ctsglobal-login.sbside.com", StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private async Task EnsureHostsPatchedAsync()
-    {
-        if (IsHostsPatched())
-        {
-            AppendLog("Hosts already patched.");
-            return;
-        }
-
-        var script = Path.Combine(appRoot, "tools", "patch-hosts.ps1");
-        if (!File.Exists(script)) throw new FileNotFoundException("hosts patch script was not found.", script);
-
-        AppendLog("Patching hosts (approve the UAC prompt)...");
-        using var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\"",
-                UseShellExecute = true,
-                Verb = "runas",
-                WorkingDirectory = appRoot,
-            },
+            StartInfo = listenCommand.StartInfo,
+            EnableRaisingEvents = true,
         };
-        if (!process.Start()) throw new InvalidOperationException("Could not launch elevated hosts patch.");
-        await process.WaitForExitAsync();
-        if (process.ExitCode != 0) throw new InvalidOperationException($"Hosts patch exited with code {process.ExitCode}.");
-
-        for (var attempt = 0; attempt < 30; attempt++)
+        foreach (var item in env) process.StartInfo.Environment[item.Key] = item.Value;
+        process.OutputDataReceived += (_, e) => { if (e.Data != null) AppendProcessLog(logWriter, e.Data); };
+        process.ErrorDataReceived += (_, e) => { if (e.Data != null) AppendProcessLog(logWriter, e.Data); };
+        process.Exited += (_, _) => Dispatcher.UIThread.Post(() =>
         {
-            if (IsHostsPatched())
+            if (ReferenceEquals(listenerProcess, process))
             {
-                AppendLog("Hosts patched successfully.");
-                return;
+                listenerProcess = null;
+                listenerJob?.Dispose();
+                listenerJob = null;
+                process.Dispose();
             }
-            await Task.Delay(500);
+            listenerStatusText.Text = "Stopped";
+            UpdateButtons();
+            AppendProcessLog(logWriter, "Listener stopped.");
+            CloseProcessLog(logWriter);
+        });
+        if (!process.Start())
+        {
+            job?.Dispose();
+            CloseProcessLog(logWriter);
+            throw new InvalidOperationException("Could not start listener.");
         }
-
-        throw new InvalidOperationException("Hosts patch finished but RevivalSide entries were not detected in hosts.");
+        try
+        {
+            job?.Assign(process);
+        }
+        catch (Exception ex)
+        {
+            job?.Dispose();
+            job = null;
+            AppendLog($"Listener process job unavailable; Stop will use process-tree fallback: {ex.Message}");
+        }
+        listenerProcess = process;
+        listenerJob = job;
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        listenerStatusText.Text = "Running";
+        AppendLog($"Listener started: {listenCommand.Display}");
+        AppendLog($"Listener log: {logPath}");
+        UpdateButtons();
+        await Task.CompletedTask;
     }
 
     private void StopListener()
@@ -1819,13 +1483,6 @@ internal sealed class LauncherWindow : Window
             process.ErrorDataReceived += (_, e) => { if (e.Data != null) AppendProcessLog(logWriter, e.Data); };
             process.Exited += (_, _) => Dispatcher.UIThread.Post(() =>
             {
-                if (ReferenceEquals(wikiProcess, process))
-                {
-                    wikiProcess = null;
-                    process.Dispose();
-                }
-                UpdateButtons();
-                HandleBackgroundServiceStopped("Wiki");
                 AppendProcessLog(logWriter, "Wiki server stopped.");
                 CloseProcessLog(logWriter);
             });
@@ -3533,16 +3190,11 @@ internal sealed class LauncherWindow : Window
     {
         var listenerRunning = listenerProcess is { HasExited: false };
         var crossSaveCaptureRunning = crossSaveCaptureProcesses.Count > 0;
-        if (!startFlowBusy)
-        {
-            startListenerButton.Content = StartButtonDefaultText;
-            startListenerButton.IsEnabled = !listenerRunning;
-        }
+        startListenerButton.IsEnabled = !listenerRunning;
+        stopListenerButton.IsEnabled = listenerRunning;
         browseCrossSaveCaptureButton.IsEnabled = !crossSaveCaptureRunning;
         refreshCrossSaveButton.IsEnabled = crossSaveCaptureRunning;
         importCrossSaveButton.IsEnabled = !crossSaveCaptureRunning;
-        stopListenerButton.IsEnabled = listenerRunning;
-        UpdateTrayTooltip();
     }
 
     private string ServerTimeStatePath() => Path.Combine(appRoot, "server-data", "server-time.json");
@@ -4148,22 +3800,9 @@ internal sealed class LauncherWindow : Window
         (value ?? "").SplitLines().FirstOrDefault(line => !string.IsNullOrWhiteSpace(line)) ?? fallback;
 }
 
-internal sealed class RelayCommand : ICommand
-{
-    private readonly Action execute;
-
-    public RelayCommand(Action execute) => this.execute = execute;
-
-    public event EventHandler? CanExecuteChanged;
-
-    public bool CanExecute(object? parameter) => true;
-
-    public void Execute(object? parameter) => execute();
-}
-
 internal sealed class LauncherSettings
 {
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 2;
     public int SettingsVersion { get; set; } = CurrentVersion;
     public int GamePort { get; set; } = 22000;
     public int HttpPort { get; set; } = 8088;
@@ -4177,8 +3816,6 @@ internal sealed class LauncherSettings
     public bool ReplayCapturedGameFlow { get; set; } = true;
     public bool SkipTutorialToWin { get; set; }
     public bool ResetTutorialOnLogin { get; set; }
-    public bool MinimizeToTrayOnClose { get; set; } = true;
-    public bool NotifyTrayWhenServiceStops { get; set; } = true;
     public string AdvancedEnvText { get; set; } = "";
 }
 
