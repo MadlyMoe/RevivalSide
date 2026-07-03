@@ -668,7 +668,7 @@ function addUnitExp(user, unitUid, amount, options = {}) {
   const next = splitUnitTotalExp(currentTotalExp + Math.max(0, Number(amount || 0)), maxLevel);
   unit.level = next.level;
   unit.exp = next.exp;
-  if (options.loyalty != null) unit.loyalty = clampInt(options.loyalty, 0, 10000);
+  if (options.loyalty != null) unit.loyalty = clampInt(options.loyalty, 0, MAX_UNIT_LOYALTY);
   unit.lastGrowthAt = new Date().toISOString();
   persistNormalizedUnit(user, unit);
   return unit;
@@ -937,8 +937,8 @@ function isStaleAwakenedMaxLevelOverride(unit, override, resolvedMaxLevel) {
 }
 
 function resolveInitialUnitLoyalty(options = {}) {
-  if (options.loyalty != null) return clampInt(options.loyalty, 0, );
-  return isEnvEnabled("CS_NEW_UNIT_MAX_LOYALTY") ?  : DEFAULT_NEW_UNIT_LOYALTY;
+  if (options.loyalty != null) return clampInt(options.loyalty, 0, MAX_UNIT_LOYALTY);
+  return isEnvEnabled("CS_NEW_UNIT_MAX_LOYALTY") ? MAX_UNIT_LOYALTY : DEFAULT_NEW_UNIT_LOYALTY;
 }
 
 function isEnvEnabled(name) {
