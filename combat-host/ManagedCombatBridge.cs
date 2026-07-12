@@ -1052,6 +1052,14 @@ internal static class ManagedCombatBridge
             var session = new ManagedCombatSession(sessionId, runtime, server, setupPackets, dynamicGame);
             session.RememberBattleState(battleState);
             session.CaptureRaidBossState(dynamicGame, battleState);
+            
+            // Set initial raid boss HP if this is a raid with saved progress
+            var req = data.Req;
+            if (req != null && req.RaidUID > 0 && req.RaidMaxHP > 0 && req.RaidCurHP < req.RaidMaxHP)
+            {
+                session.SetInitialRaidBossHP(req.RaidCurHP, req.RaidMaxHP);
+            }
+            
             Sessions[sessionId] = session;
             dynamicGame.ManagedSessionId = sessionId;
             dynamicGame.ManagedCombat = true;
@@ -1112,6 +1120,12 @@ internal static class ManagedCombatBridge
                 session.Start();
                 packets.AddRange(session.DrainQueuedPackets("managed-game-start"));
                 packets.AddRange(session.DrainSetupPackets());
+                
+                // Patch raid boss HP after units have spawned
+                if (dynamicGame != null && dynamicGame.RaidUID > 0)
+                {
+                    session.PatchRaidBossUnitHP();
+                }
             }
 
             // Tutorial phases carry dungeon events and UI triggers in the sync
@@ -2005,6 +2019,7 @@ internal static class ManagedCombatBridge
 
             var initHp = Math.Max(1, battleState.RaidBossInitHp);
             var currentHp = Math.Clamp(snapshot.CurHp, 0, initHp);
+            
             var damage = Math.Clamp(initHp - currentHp, 0, initHp);
             battleState.RaidBossCurHp = currentHp;
             battleState.RaidBossMaxHp = snapshot.MaxHp;
@@ -2014,6 +2029,58 @@ internal static class ManagedCombatBridge
             battleState.BossHpPercent = Math.Clamp(currentHp / initHp * 100.0, 0.0, 100.0);
             battleState.BossDamageRatio = Math.Clamp(damage / initHp, 0.0, 1.0);
             battleState.BossKilled = currentHp <= 0;
+        }
+
+        public void SetInitialRaidBossHP(double curHp, double maxHp)
+        {
+            if (maxHp <= 0)
+            {
+                return;
+            }
+            
+            // Clamp curHp
+            var clampedCurHp = Math.Max(0, Math.Min(curHp, maxHp));
+            
+            // Set in latest battle state so combat engine can use it
+            if (latestBattleState == null)
+            {
+                latestBattleState = new BattleState();
+            }
+            
+            latestBattleState.RaidBossInitHp = maxHp;
+            latestBattleState.RaidBossMaxHp = maxHp;
+            latestBattleState.RaidBossCurHp = clampedCurHp;
+        }
+
+        public void PatchRaidBossUnitHP()
+        {
+            if (latestBattleState == null)
+            {
+                return;
+            }
+            
+            if (latestBattleState.RaidBossCurHp <= 0 || latestBattleState.RaidBossCurHp >= latestBattleState.RaidBossMaxHp)
+            {
+                return; // No patching needed for full HP or invalid state
+            }
+            
+            try
+            {
+                // Use existing method to find the boss unit
+                var bossUnit = FindTeamBossUnit(teamA: false, includePool: true);
+                if (bossUnit == null)
+                {
+                    return;
+                }
+                
+                // Patch the HP!
+                var targetHp = (float)latestBattleState.RaidBossCurHp;
+                runtime.Invoke(bossUnit, "SetHP", targetHp);
+            }
+            catch
+            {
+                // Silently fail - consistent with other methods in this class
+            }
         }
 
         private (float CurHp, float MaxHp) ReadTeamBossSnapshot(bool teamA, BattleState battleState)

@@ -419,6 +419,8 @@ function handleRaidGameLoad(ctx, socket, packet, user, req, options = {}) {
     buffList: Array.isArray(req.buffList) ? req.buffList : [],
     isTryAssist: Boolean(req.isTryAssist),
     supportingUserUid: toBigInt(req.supportingUserUid || 0),
+    raidCurHP: Number(raid.curHP),
+    raidMaxHP: Number(raid.maxHP),
   };
   const playerDeck = buildPlayerDeckForGameLoad(user, gameReq);
   const stage = {
@@ -995,6 +997,17 @@ function grantMissionReward(user, mission, options = {}) {
 }
 
 function maybeSpawnRaidEvent(user, city, mission, options = {}) {
+  // Check if city already has an active raid event
+  const existingEventUid = toBigInt(city.eventGroup && city.eventGroup.eventUid);
+  if (existingEventUid > 0n) {
+    const state = ensureBareWorldMapState(user, options);
+    const existingRaid = state.raids[String(existingEventUid)];
+    if (existingRaid && Number(existingRaid.curHP || 0) > 0) {
+      // City already has an active raid, don't spawn a new one
+      return city.eventGroup;
+    }
+  }
+
   const chanceFromEnv = process.env.CS_WORLDMAP_RAID_CHANCE;
   const tableChance = Number(mission && mission.m_WorldmapEventRatio) || 0;
   const searchBonus = getCityBuildingStatValue(city, "CBS_RAID_SEARCH_RATE");
@@ -3172,6 +3185,8 @@ function repairMissingRaidEventGroups(state, options = {}) {
   let repaired = 0;
   const raids = state.raids && typeof state.raids === "object" ? state.raids : {};
   const cities = state.cities && typeof state.cities === "object" ? state.cities : {};
+  const now = ticksNow(options);
+
   for (const [raidUid, raidState] of Object.entries(raids)) {
     if (isRaidDismissed(state, raidUid)) {
       delete raids[raidUid];
@@ -3181,6 +3196,13 @@ function repairMissingRaidEventGroups(state, options = {}) {
     if (Number(raid.curHP || 0) <= 0) continue;
     if (state.raidResults && state.raidResults[String(toBigInt(raidUid))]) continue;
     if (isRaidReferencedByCity(state, raidUid)) continue;
+
+    // Skip expired raids - they should not be resurrected
+    if (toBigInt(raid.expireDate) <= now) {
+      delete raids[raidUid];
+      continue;
+    }
+
     const city = cities[String(positiveInt(raid.cityID))];
     if (!city) continue;
     const currentEventGroup = city.eventGroup || {};
