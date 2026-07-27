@@ -187,9 +187,18 @@ $manifestPath = Join-Path $outputPath $manifestName
 [System.IO.File]::WriteAllText($manifestPath, (($releaseManifest | ConvertTo-Json -Depth 6) + [Environment]::NewLine), $utf8)
 Remove-Item -LiteralPath $archivePath -Force
 
+$uploaderSource = Join-Path $rootPath "tools\upload-revivalside-client-release.ps1"
+if (-not (Test-Path -LiteralPath $uploaderSource -PathType Leaf)) { throw "Upload helper was not found: $uploaderSource" }
+Copy-Item -LiteralPath $uploaderSource -Destination (Join-Path $outputPath "UPLOAD-RELEASE.ps1") -Force
+
 $commands = @"
 # Run these commands in PowerShell from:
 Set-Location '$outputPath'
+
+# Recommended: verified upload with an overall progress bar. GitHub CLI also displays the current file transfer.
+.\UPLOAD-RELEASE.ps1
+
+# Manual fallback:
 
 # Create an unpublished release first so the launcher cannot see incomplete assets.
 gh release create '$releaseTag' --repo '$Repository' --draft --title 'RevivalSide Client $clientVersion' --notes 'Studio Bside-authorized non-commercial RevivalSide client build $clientVersion.'
