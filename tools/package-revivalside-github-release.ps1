@@ -2,6 +2,7 @@ param(
   [string]$OutputDir = "",
   [string]$UniversalInstallerDir = "",
   [string]$ReleaseTag = "",
+  [string]$ReleaseTarget = "",
   [string]$ReleaseBaseUrl = "",
   [string]$PythonPath = "",
   [int]$ChunkSizeMB = 1900,
@@ -32,6 +33,10 @@ if (-not $UniversalInstallerDir) {
 if (-not $ReleaseTag) {
   $packageJson = Get-Content -Raw -LiteralPath (Join-Path $rootPath "package.json") | ConvertFrom-Json
   $ReleaseTag = "v$($packageJson.version)"
+}
+if (-not $ReleaseTarget) {
+  $ReleaseTarget = (& git -C $rootPath rev-parse HEAD).Trim()
+  if (-not $ReleaseTarget) { throw "Could not resolve the current commit for the GitHub release target." }
 }
 
 $outputPath = [System.IO.Path]::GetFullPath($OutputDir)
@@ -252,9 +257,17 @@ Discord OAuth or device-code authorization flow.
 
 if ($Upload) {
   $assets = Get-ChildItem -LiteralPath $outputPath -File | ForEach-Object { $_.FullName }
-  & gh release view $ReleaseTag *> $null
-  if ($LASTEXITCODE -ne 0) {
-    & gh release create $ReleaseTag $assets --title "RevivalSide $ReleaseTag"
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    & gh release view $ReleaseTag *> $null
+    $releaseExists = $LASTEXITCODE -eq 0
+  }
+  finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+  if (-not $releaseExists) {
+    & gh release create $ReleaseTag $assets --title "RevivalSide $ReleaseTag" --target $ReleaseTarget
   }
   else {
     & gh release upload $ReleaseTag $assets --clobber
