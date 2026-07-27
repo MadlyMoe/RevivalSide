@@ -1,10 +1,11 @@
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 
-if (args.Length == 0 || args.Any(arg => arg.Equals("--repair-frozen-content-version", StringComparison.OrdinalIgnoreCase)))
+var directRepair = IsDirectRepairInvocation(args);
+if (args.Length == 0 || directRepair || args.Any(arg => arg.Equals("--repair-frozen-content-version", StringComparison.OrdinalIgnoreCase)))
 {
     var result = RepairFrozenClientContentVersions(args);
-    if (args.Length == 0 && !Console.IsInputRedirected)
+    if ((args.Length == 0 || directRepair) && !Console.IsInputRedirected)
     {
         Console.WriteLine();
         Console.Write("Press Enter to close...");
@@ -143,36 +144,45 @@ static int RestoreBackup(string assemblyPath, string backupPath, bool requireBac
 
 static int RepairFrozenClientContentVersions(string[] args)
 {
+    var directTarget = IsDirectRepairInvocation(args) ? Path.GetFullPath(args[0]) : "";
     var configuredRoot = ReadRepairArgValue(args, "--frozen-client-root");
     var frozenRoot = string.IsNullOrWhiteSpace(configuredRoot)
         ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RevivalSide", "frozen-client")
         : Path.GetFullPath(configuredRoot);
     Console.WriteLine("RevivalSide frozen-client content-version repair");
-    Console.WriteLine($"Scanning: {frozenRoot}");
-    if (!Directory.Exists(frozenRoot))
-    {
-        Console.Error.WriteLine("No RevivalSide frozen-client folder was found.");
-        return 2;
-    }
+    Console.WriteLine(directTarget.Length > 0 ? $"Selected: {directTarget}" : $"Scanning: {frozenRoot}");
 
-    var clientRoots = new List<string>();
-    if (IsMarkedFrozenClientRoot(frozenRoot)) clientRoots.Add(frozenRoot);
-    clientRoots.AddRange(Directory.GetDirectories(frozenRoot)
-        .Where(IsMarkedFrozenClientRoot)
-        .OrderBy(path => path, StringComparer.OrdinalIgnoreCase));
-    if (clientRoots.Count == 0)
+    var assemblyPaths = new List<string>();
+    if (directTarget.Length > 0)
     {
-        Console.Error.WriteLine("No marked RevivalSide frozen clients were found. The Steam installation was not touched.");
+        try
+        {
+            assemblyPaths.AddRange(ResolveRepairAssemblyPaths(directTarget));
+        }
+        catch (Exception error)
+        {
+            Console.Error.WriteLine(error.Message);
+            return 2;
+        }
+    }
+    else if (Directory.Exists(frozenRoot))
+    {
+        assemblyPaths.AddRange(ResolveRepairAssemblyPaths(frozenRoot));
+    }
+    if (assemblyPaths.Count == 0)
+    {
+        Console.Error.WriteLine("No controlled frozen clients were found. The Steam installation was not touched.");
+        Console.Error.WriteLine("Drag the affected client's Data\\Managed\\Assembly-CSharp.dll onto this tool and try again.");
         return 2;
     }
 
     var repaired = 0;
     var current = 0;
     var failed = 0;
-    foreach (var clientRoot in clientRoots.Distinct(StringComparer.OrdinalIgnoreCase))
+    foreach (var assemblyPath in assemblyPaths.Distinct(StringComparer.OrdinalIgnoreCase))
     {
-        var managedDir = Path.Combine(clientRoot, "Data", "Managed");
-        var assemblyPath = Path.Combine(managedDir, "Assembly-CSharp.dll");
+        var managedDir = Path.GetDirectoryName(assemblyPath)!;
+        var clientRoot = Directory.GetParent(managedDir)?.Parent?.FullName ?? managedDir;
         try
         {
             var resolver = new DefaultAssemblyResolver();
@@ -184,6 +194,12 @@ static int RepairFrozenClientContentVersions(string[] args)
                 ReadWrite = true,
                 InMemory = true,
             });
+            var markedClient = File.Exists(Path.Combine(clientRoot, "revivalside-frozen-client.json"));
+            var previouslyControlled = HasFrozenPatchDownloadBypass(module) && FindExternalEndpointStrings(module).Count == 0;
+            if (!markedClient && !previouslyControlled)
+            {
+                throw new InvalidOperationException("This DLL is not recognized as a controlled RevivalSide frozen client. The file was not changed.");
+            }
             if (HasFrozenContentsVersionIsolation(module))
             {
                 Console.WriteLine($"Already fixed: {clientRoot}");
@@ -205,6 +221,10 @@ static int RepairFrozenClientContentVersions(string[] args)
         {
             Console.Error.WriteLine($"Failed: {clientRoot}");
             Console.Error.WriteLine($"  {error.Message}");
+            if (error is AssemblyResolutionException)
+            {
+                Console.Error.WriteLine("  Drag the DLL from inside the actual Data\\Managed folder so its neighboring Unity DLLs are available.");
+            }
             failed += 1;
         }
     }
@@ -214,10 +234,41 @@ static int RepairFrozenClientContentVersions(string[] args)
     return failed == 0 ? 0 : 1;
 }
 
-static bool IsMarkedFrozenClientRoot(string root)
+static bool IsDirectRepairInvocation(string[] args)
 {
-    return File.Exists(Path.Combine(root, "revivalside-frozen-client.json"))
-        && File.Exists(Path.Combine(root, "Data", "Managed", "Assembly-CSharp.dll"));
+    return args.Length == 1
+        && !args[0].StartsWith("-", StringComparison.Ordinal)
+        && (File.Exists(args[0]) || Directory.Exists(args[0]));
+}
+
+static IEnumerable<string> ResolveRepairAssemblyPaths(string target)
+{
+    var fullPath = Path.GetFullPath(target);
+    if (File.Exists(fullPath))
+    {
+        if (!Path.GetFileName(fullPath).Equals("Assembly-CSharp.dll", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("Select the original file named Assembly-CSharp.dll inside the affected client's Data\\Managed folder.");
+        }
+        return new[] { fullPath };
+    }
+    if (!Directory.Exists(fullPath)) return Array.Empty<string>();
+
+    var candidates = new List<string>();
+    foreach (var candidate in new[]
+    {
+        Path.Combine(fullPath, "Assembly-CSharp.dll"),
+        Path.Combine(fullPath, "Data", "Managed", "Assembly-CSharp.dll"),
+    })
+    {
+        if (File.Exists(candidate)) candidates.Add(candidate);
+    }
+    foreach (var child in Directory.GetDirectories(fullPath).OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+    {
+        var candidate = Path.Combine(child, "Data", "Managed", "Assembly-CSharp.dll");
+        if (File.Exists(candidate)) candidates.Add(candidate);
+    }
+    return candidates;
 }
 
 static string? ReadRepairArgValue(string[] args, string name)
