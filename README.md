@@ -12,7 +12,7 @@ This repository intentionally does not track client assets, raw packet captures,
 - `combat-host/`: C# local combat host and managed assembly patcher.
 - `prebuilt/combat-host/`: published RevivalSide combat host binaries.
 - `tools/`: capture, table extraction, packet schema, and setup helper scripts.
-- `launcher/`: the React/Tauri RevivalSide launcher UI, adapted from [timeworn/revivalside-launcher](https://github.com/timeworn/revivalside-launcher) and wired to the full local runtime.
+- `launcher/`: a pinned Git submodule of the shared [timeworn/revivalside-launcher](https://github.com/timeworn/revivalside-launcher) React/Tauri UI, wired to the full local runtime.
 - `gameplay-jsons/`: optional legacy parsed gameplay table fixtures. Normal listener runtime can use installed `.luac` assets instead.
 - `stages/`: hand-authored stage definitions used by current tutorial work.
 - `server-data/captured-*`: sanitized HTTP, login/content, and tutorial game-stream fixtures.
@@ -25,7 +25,7 @@ Start with [docs/setup.md](docs/setup.md). It is written for first-time users an
 The very short setup is:
 
 ```powershell
-git clone https://github.com/MadlyMoe/RevivalSide.git RevivalSide
+git clone --recurse-submodules https://github.com/MadlyMoe/RevivalSide.git RevivalSide
 cd RevivalSide
 if (!(Test-Path .env)) { Copy-Item .env.example .env }
 npm install
@@ -54,11 +54,14 @@ The local user profile manager is served from the same process at `http://127.0.
 
 ### Launcher development
 
-The production launcher is now the Tauri app in `launcher/`. It keeps the existing `launcher-settings.json` format and delegates RevivalSide-specific operations to `tools/revivalside-launcher-backend.js`, so packaged and source checkouts use the same listener, client patcher, cache, wiki, and Cross Save tooling.
+The production launcher is the Tauri app pinned in the `launcher/` submodule. It keeps the existing `launcher-settings.json` format and delegates RevivalSide-specific operations to `tools/revivalside-launcher-backend.js`, so packaged and source checkouts use the same listener, client patcher, cache, wiki, and Cross Save tooling. Launcher changes are proposed to the shared launcher repository; this repository advances its submodule commit after those changes are accepted.
 
-Install Node.js plus the Rust MSVC toolchain, then run:
+For an existing clone, initialize or refresh the submodule, then install Node.js plus the Rust MSVC toolchain and run:
 
 ```powershell
+git submodule update --init --recursive
 npm run check:launcher
 npm run build:launcher
 ```
+
+People using the packaged v0.3.5 installer do not need Node.js, pnpm, or Rust. Those tools are only required to build the launcher from source.

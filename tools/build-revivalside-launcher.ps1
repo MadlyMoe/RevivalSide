@@ -8,6 +8,10 @@ $ErrorActionPreference = "Stop"
 $rootPath = Split-Path -Parent $PSScriptRoot
 $launcherPath = Join-Path $rootPath "launcher"
 
+if (-not (Test-Path -LiteralPath (Join-Path $launcherPath "pnpm-lock.yaml") -PathType Leaf)) {
+  throw "The launcher submodule is not initialized. Run 'git submodule update --init --recursive' from $rootPath, then retry."
+}
+
 $rustTarget = switch ($RuntimeIdentifier) {
   "win-x64" { "x86_64-pc-windows-msvc" }
   "win-x86" { "i686-pc-windows-msvc" }
@@ -64,8 +68,9 @@ if (-not (Get-Command cargo.exe -ErrorAction SilentlyContinue) -and (Test-Path -
   $env:Path = "$cargoBin;$env:Path"
 }
 
-if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
-  throw "npm.cmd was not found. Install Node.js before building the launcher."
+$corepackCommand = Get-Command corepack.cmd -ErrorAction SilentlyContinue
+if (-not $corepackCommand) {
+  throw "corepack.cmd was not found. Install a current Node.js release before building the launcher."
 }
 if (-not (Get-Command cargo.exe -ErrorAction SilentlyContinue)) {
   throw "cargo.exe was not found. Install the Rust MSVC toolchain before building the Tauri launcher."
@@ -75,16 +80,14 @@ Initialize-MsvcEnvironment $targetArchitecture
 
 Push-Location $launcherPath
 try {
-  if (-not (Test-Path -LiteralPath (Join-Path $launcherPath "node_modules") -PathType Container)) {
-    npm.cmd ci
-    if ($LASTEXITCODE -ne 0) { throw "Launcher npm install failed" }
-  }
+  & $corepackCommand.Source pnpm install --frozen-lockfile
+  if ($LASTEXITCODE -ne 0) { throw "Launcher pnpm install failed" }
 
   $rustHostLine = (& rustc.exe -vV | Where-Object { $_ -like "host:*" } | Select-Object -First 1)
   $rustHost = if ($rustHostLine) { $rustHostLine.Substring(5).Trim() } else { "" }
   $tauriArgs = @("tauri", "build", "--no-bundle")
   if ($rustHost -ne $rustTarget) { $tauriArgs += @("--target", $rustTarget) }
-  npx.cmd @tauriArgs
+  & $corepackCommand.Source pnpm @tauriArgs
   if ($LASTEXITCODE -ne 0) { throw "Launcher Tauri build failed for $RuntimeIdentifier" }
 }
 finally {

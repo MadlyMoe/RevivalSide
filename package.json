@@ -9,7 +9,7 @@
     "check:handlers": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Get-ChildItem packet-handlers,modules -Recurse -Filter *.js | Where-Object { $_.DirectoryName -match '[\\\\/]handlers$' } | ForEach-Object { node --check $_.FullName }\"",
     "build:combat-host": "dotnet build combat-host/CombatHost.csproj --nologo",
     "build:launcher": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-revivalside-launcher.ps1",
-    "check:launcher": "node --check tools/revivalside-launcher-backend.js && node tools/check-revivalside-launcher-backend.js && npm --prefix launcher run build",
+    "check:launcher": "node --check tools/revivalside-launcher-backend.js && node tools/check-revivalside-launcher-backend.js && corepack pnpm --dir launcher build",
     "publish:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-revivalside-universal-installer.ps1",
     "publish:github-release": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-revivalside-github-release.ps1",
     "download-service:dev": "npm --prefix download-service run dev",

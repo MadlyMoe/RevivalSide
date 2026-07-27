@@ -1,0 +1,4 @@
+[submodule "launcher"]
+	path = launcher
+	url = https://github.com/MadlyMoe/revivalside-launcher.git
+	branch = codex/revivalside-v0.3.5-integration

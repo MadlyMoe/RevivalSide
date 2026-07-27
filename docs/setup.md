@@ -135,9 +135,17 @@ If you need to clone the repo with Git:
 
 ```powershell
 cd "$env:USERPROFILE\Desktop"
-git clone https://github.com/MadlyMoe/RevivalSide.git RevivalSide
+git clone --recurse-submodules https://github.com/MadlyMoe/RevivalSide.git RevivalSide
 cd RevivalSide
 ```
+
+If you already cloned the repository and intend to build the desktop launcher, initialize its shared source repository once:
+
+```powershell
+git submodule update --init --recursive
+```
+
+GitHub's automatically generated source ZIP does not include the contents of Git submodules. Use Git for launcher development, or use the packaged RevivalSide release if you only want to run the launcher.
 
 If you downloaded a ZIP instead, extract it, open the extracted `RevivalSide` folder, click the address bar, type `powershell`, and press Enter.
 
