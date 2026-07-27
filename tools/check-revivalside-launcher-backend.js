@@ -4,7 +4,11 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createListenerReadinessGate, validateClientManifest } = require('./revivalside-launcher-backend');
+const {
+  FROZEN_CLIENT_PATCH_REQUIREMENTS,
+  createListenerReadinessGate,
+  validateClientManifest,
+} = require('./revivalside-launcher-backend');
 const { findCounterSideScriptBundleRoots } = require('../modules/counterside-install');
 
 function checkGameRootAssetbundlesDiscovery() {
@@ -51,6 +55,7 @@ function checkClientManifestValidation() {
 async function main() {
   checkGameRootAssetbundlesDiscovery();
   checkClientManifestValidation();
+  assert(FROZEN_CLIENT_PATCH_REQUIREMENTS.includes('frozen-login-contents-reconciliation=True'));
   const settings = { GamePort: 22000, HttpPort: 8088 };
   const gate = createListenerReadinessGate(settings, 1000);
   let resolved = false;
@@ -70,7 +75,7 @@ async function main() {
   timeoutGate.observe('[+] Listening on port 22000');
   await assert.rejects(timeoutGate.ready, /Missing: captured HTTP mirror, captured fixture directory, User Manager/);
 
-  console.log('[launcher-backend] PASS client manifest, game-root bundles, and four-service readiness');
+  console.log('[launcher-backend] PASS client manifest, content-version audit, game-root bundles, and four-service readiness');
 }
 
 main().catch((error) => {

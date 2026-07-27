@@ -305,9 +305,11 @@ The listener is what the game connects to. It uses:
 
 Press **START** in the desktop launcher. If the isolated client is missing, the launcher automatically downloads its nine release chunks from the public [RevivalSide-Client repository](https://github.com/MadlyMoe/RevivalSide-Client/releases), verifies each chunk and the reconstructed archive, and installs it under `%LOCALAPPDATA%\RevivalSide\frozen-client`. You can also use **Download RevivalSide Client** in Game Settings to download or verify it before starting.
 
+To create the isolated copy from your own official install instead, open **Game Settings**, use **Detect CounterSide** or **Browse DLL** to select its `Data\Managed\Assembly-CSharp.dll`, then choose **Freeze Selected Client**. The source installation is left untouched. If an older frozen copy shows **A newer content version is available**, choose **Repair Content Version** in the same section.
+
 When the listener starts, the launcher patches every external HTTP endpoint in that isolated client to the launcher's local ServerInfo URL. It also removes `steam_appid.txt`, quarantines native `steam_api` DLLs, disables the managed Steam runtime, and refuses to continue unless the audit reports zero Steamworks callsites and zero remaining external endpoints. The client then launches directly without starting or requiring Steam.
 
-RevivalSide also derives the patch version from the frozen copy's own `Version.json` and serves that copy's installed `Data\StreamingAssets\PatchInfo.json`. A newer captured `liveVersion.json` therefore cannot cause the frozen client to request a large update. These changes replace the old Windows hosts-file patch and do not require an administrator prompt.
+RevivalSide also derives the patch version from the frozen copy's own `Version.json`, serves that copy's installed `Data\StreamingAssets\PatchInfo.json`, and reconciles the login response's content version and tags before the client performs its mismatch check. Newer captured metadata therefore cannot cause either a large update request or the restart-required content-version popup. These changes replace the old Windows hosts-file patch and do not require an administrator prompt.
 
 Use **START** for the RevivalSide copy. Keep any Steam-managed installation separate if you still need the normal official client.
 

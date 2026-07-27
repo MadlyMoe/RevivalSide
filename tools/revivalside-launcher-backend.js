@@ -15,13 +15,20 @@ const EVENT_PREFIX = '@@REVIVALSIDE_EVENT@@';
 const GAME_PORTS = new Set(['20001', '20002', '20003', '20004', '22000']);
 const LISTENER_READINESS_TIMEOUT_MS = 120_000;
 const CLIENT_MANIFEST_SCHEMA_VERSION = 1;
+const FROZEN_CLIENT_PATCH_REQUIREMENTS = Object.freeze([
+  'steam-local-login=True', 'steam-standalone=True', 'steam-runtime-isolated=True',
+  'steam-interop-callsites=0', 'frozen-official-update-bypass=True',
+  'frozen-patch-download-bypass=True', 'frozen-contents-version-isolation=True',
+  'frozen-login-contents-reconciliation=True', 'external-endpoint-references=0',
+]);
 const DEFAULT_CLIENT_MANIFEST_URL = 'https://github.com/MadlyMoe/RevivalSide-Client/releases/latest/download/RevivalSideClientManifest.json';
 const DEFAULT_SETTINGS = Object.freeze({
-  SettingsVersion: 4,
+  SettingsVersion: 5,
   GamePort: 22000,
   HttpPort: 8088,
   WikiPort: 5174,
   CounterSideManagedDir: '',
+  CounterSideSourceManagedDir: '',
   CrossSaveCaptureDir: '',
   EventDate: '2025-04-10',
   JoinLobbyAckMode: 'auto',
@@ -104,6 +111,10 @@ function loadSettings() {
   settings.WikiPort = clampPort(settings.WikiPort, DEFAULT_SETTINGS.WikiPort);
   settings.JoinLobbyAckMode = normalizeLobbyMode(settings.JoinLobbyAckMode);
   settings.CounterSideManagedDir = normalizeManagedDir(settings.CounterSideManagedDir);
+  settings.CounterSideSourceManagedDir = normalizeManagedDir(settings.CounterSideSourceManagedDir);
+  if (!settings.CounterSideSourceManagedDir && settings.CounterSideManagedDir && !isFrozenManagedDir(settings.CounterSideManagedDir)) {
+    settings.CounterSideSourceManagedDir = settings.CounterSideManagedDir;
+  }
   settings.CrossSaveCaptureDir = String(settings.CrossSaveCaptureDir || '');
   settings.EventDate = String(settings.EventDate || '');
   settings.AdvancedEnvText = String(settings.AdvancedEnvText || '');
@@ -137,6 +148,7 @@ function applyDotEnvDefaults(settings, saved) {
 function settingsToClient(settings) {
   return {
     clientPath: settings.CounterSideManagedDir,
+    sourceClientPath: settings.CounterSideSourceManagedDir,
     capturePath: crossSaveCaptureDir(settings),
     tcpPort: settings.GamePort,
     httpPort: settings.HttpPort,
@@ -181,6 +193,11 @@ function applyClientSettings(settings, client) {
     const managed = normalizeManagedDir(client.clientPath);
     if (!isManagedDir(managed)) throw new Error('Select CounterSide Data\\Managed\\Assembly-CSharp.dll.');
     settings.CounterSideManagedDir = managed;
+  }
+  if (client.sourceClientPath != null) {
+    const source = String(client.sourceClientPath).trim();
+    if (!source) settings.CounterSideSourceManagedDir = '';
+    else settings.CounterSideSourceManagedDir = normalizeManagedDir(source);
   }
   saveSettings(settings);
   return settings;
@@ -577,13 +594,7 @@ async function ensureClientPatch(settings, requireFrozen = true) {
   if (isFrozenManagedDir(settings.CounterSideManagedDir)) {
     const status = createClientPatcher(settings, true);
     const result = await runChecked(status.file, status.args, { env: buildListenerEnvironment(settings), description: 'Client routing audit' });
-    const required = [
-      'steam-local-login=True', 'steam-standalone=True', 'steam-runtime-isolated=True',
-      'steam-interop-callsites=0', 'frozen-official-update-bypass=True',
-      'frozen-patch-download-bypass=True', 'frozen-contents-version-isolation=True',
-      'external-endpoint-references=0',
-    ];
-    const missing = required.filter((value) => !result.stdout.includes(value));
+    const missing = FROZEN_CLIENT_PATCH_REQUIREMENTS.filter((value) => !result.stdout.includes(value));
     if (missing.length) throw new Error(`Frozen client routing verification failed. Missing status: ${missing.join(', ')}`);
     log('Controlled frozen-client routing verified.');
   }
@@ -649,7 +660,8 @@ function findSteamRoots() {
 function detectManagedDir() {
   const settings = loadSettings();
   const candidates = [
-    settings.CounterSideManagedDir,
+    settings.CounterSideSourceManagedDir,
+    isFrozenManagedDir(settings.CounterSideManagedDir) ? '' : settings.CounterSideManagedDir,
     process.env.CS_COUNTERSIDE_MANAGED_DIR,
     process.env.COUNTERSIDE_MANAGED_DIR,
     process.env.CS_COUNTERSIDE_DIR,
@@ -667,7 +679,8 @@ function detectManagedDir() {
   for (const candidate of candidates) {
     const managed = normalizeManagedDir(candidate);
     if (!isManagedDir(managed)) continue;
-    settings.CounterSideManagedDir = managed;
+    if (isFrozenManagedDir(managed)) continue;
+    settings.CounterSideSourceManagedDir = managed;
     saveSettings(settings);
     return managed;
   }
@@ -994,11 +1007,12 @@ async function updateFrozenClientManifest(frozenRoot, managed) {
 
 async function freezeClient() {
   const settings = loadSettings();
-  const sourceManaged = normalizeManagedDir(settings.CounterSideManagedDir);
+  const sourceManaged = normalizeManagedDir(settings.CounterSideSourceManagedDir || settings.CounterSideManagedDir);
   const sourceRoot = gameRootFromManaged(sourceManaged);
   if (!isManagedDir(sourceManaged) || !fs.existsSync(path.join(sourceRoot, 'CounterSide.exe'))) {
     throw new Error('Select or detect CounterSide Data\\Managed\\Assembly-CSharp.dll before freezing the client.');
   }
+  if (isFrozenManagedDir(sourceManaged)) throw new Error('That client is already frozen. Select an official CounterSide install as the source.');
   if (isPathInside(sourceRoot, frozenArchiveRoot())) throw new Error('Refusing to archive into a folder below the source game root.');
   await fsp.mkdir(frozenArchiveRoot(), { recursive: true });
   const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
@@ -1034,12 +1048,26 @@ async function freezeClient() {
   };
   fs.writeFileSync(path.join(targetRoot, 'revivalside-frozen-client.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   settings.CounterSideManagedDir = managed;
+  settings.CounterSideSourceManagedDir = sourceManaged;
   saveSettings(settings);
   await ensureClientPatch(settings, true);
   const quarantined = await isolateSteamRuntime(targetRoot);
   await updateFrozenClientManifest(targetRoot, managed);
   log(`Frozen client ready: ${targetRoot}`);
   return { frozenRoot: targetRoot, managedDir: managed, fileCount: copied, byteCount: bytes, quarantined };
+}
+
+async function repairContentVersion() {
+  const settings = loadSettings();
+  const managed = selectInstalledClient(settings, true);
+  if (!managed) throw new Error('No RevivalSide client is installed. Download or freeze a client first.');
+  await ensureClientPatch(settings, true);
+  const frozenRoot = gameRootFromManaged(managed);
+  const quarantined = await isolateSteamRuntime(frozenRoot);
+  writeLaunchFiles(frozenRoot);
+  await updateFrozenClientManifest(frozenRoot, managed);
+  log('Content-version reconciliation verified for the frozen client.');
+  return { frozenRoot, managedDir: managed, quarantined, repaired: true };
 }
 
 async function launchClient({ clientPatchVerified = false } = {}) {
@@ -1409,8 +1437,19 @@ async function runAction(command, payload) {
       saveSettings(settings);
       return { managedDir: managed };
     }
+    case 'set-source-client': {
+      const managed = normalizeManagedDir(payload.path);
+      if (!isManagedDir(managed)) throw new Error('That file is not CounterSide Data\\Managed\\Assembly-CSharp.dll.');
+      if (isFrozenManagedDir(managed)) throw new Error('Select an official CounterSide install as the freeze source, not an existing frozen client.');
+      const settings = loadSettings();
+      settings.CounterSideSourceManagedDir = managed;
+      saveSettings(settings);
+      return { managedDir: managed };
+    }
     case 'detect-client': return { managedDir: detectManagedDir() };
     case 'download-client': return downloadClient();
+    case 'freeze-client': return freezeClient();
+    case 'repair-content-version': return repairContentVersion();
     case 'launch-client': return launchClient();
     case 'verify-assets': return { gameplay: gameplayStatus(loadSettings()) };
     case 'build-cache': return { gameplay: await ensureGameplayCache(loadSettings(), true) };
@@ -1462,6 +1501,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  FROZEN_CLIENT_PATCH_REQUIREMENTS,
   createListenerReadinessGate,
   validateClientManifest,
 };
