@@ -4,7 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createListenerReadinessGate } = require('./revivalside-launcher-backend');
+const { createListenerReadinessGate, validateClientManifest } = require('./revivalside-launcher-backend');
 const { findCounterSideScriptBundleRoots } = require('../modules/counterside-install');
 
 function checkGameRootAssetbundlesDiscovery() {
@@ -25,8 +25,32 @@ function checkGameRootAssetbundlesDiscovery() {
   }
 }
 
+function checkClientManifestValidation() {
+  const hash = 'a'.repeat(64);
+  const manifest = validateClientManifest({
+    schemaVersion: 1,
+    clientVersion: 'LIVE_335238',
+    rootDirName: 'CounterSide-LIVE_335238',
+    archiveName: 'RevivalSideClient-LIVE_335238.zip',
+    archiveSize: 18,
+    archiveSha256: hash,
+    installedSize: 32,
+    fileCount: 3,
+    chunks: Array.from({ length: 9 }, (_, index) => ({
+      name: `RevivalSideClient-LIVE_335238.zip.${String(index + 1).padStart(3, '0')}`,
+      size: 2,
+      sha256: hash,
+    })),
+  });
+  assert.strictEqual(manifest.chunks.length, 9);
+  assert.strictEqual(manifest.archiveSize, 18);
+  assert.throws(() => validateClientManifest({ ...manifest, rootDirName: '..' }), /rootDirName/);
+  assert.throws(() => validateClientManifest({ ...manifest, archiveSize: 19 }), /chunk total/);
+}
+
 async function main() {
   checkGameRootAssetbundlesDiscovery();
+  checkClientManifestValidation();
   const settings = { GamePort: 22000, HttpPort: 8088 };
   const gate = createListenerReadinessGate(settings, 1000);
   let resolved = false;
@@ -46,7 +70,7 @@ async function main() {
   timeoutGate.observe('[+] Listening on port 22000');
   await assert.rejects(timeoutGate.ready, /Missing: captured HTTP mirror, captured fixture directory, User Manager/);
 
-  console.log('[launcher-backend] PASS game-root bundles and four-service readiness');
+  console.log('[launcher-backend] PASS client manifest, game-root bundles, and four-service readiness');
 }
 
 main().catch((error) => {
