@@ -590,11 +590,11 @@ foreach ($rid in $RuntimeIdentifiers) {
   New-Item -ItemType Directory -Force -Path $runtimeOut | Out-Null
 
   Write-Host "Publishing launcher/combat host for $rid"
-  dotnet publish (Join-Path $rootPath "tools\RevivalSideLauncherApp\RevivalSideLauncherApp.csproj") `
-    -c Release -r $rid --self-contained false `
-    -p:DebugType=None -p:DebugSymbols=false --nologo `
-    -o $runtimeOut
-  if ($LASTEXITCODE -ne 0) { throw "Launcher publish failed for $rid" }
+  & powershell -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $rootPath "tools\build-revivalside-launcher.ps1") `
+    -RuntimeIdentifier $rid `
+    -OutputDir $runtimeOut
+  if ($LASTEXITCODE -ne 0) { throw "Launcher build failed for $rid" }
   Remove-PdbFiles $runtimeOut
   Assert-ExecutableArchitecture (Join-Path $runtimeOut "RevivalSideLauncher.exe") $arch "RevivalSideLauncher.exe"
 

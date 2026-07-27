@@ -2,7 +2,7 @@
 
 DownloadSide is the legacy Discord front door for RevivalSide release downloads. It keeps Discord and GitHub secrets on the server, verifies a user's Discord guild role, and proxies private GitHub release assets.
 
-RevivalSide v0.3.1 Setup and Launcher do not use DownloadSide. Setup downloads GitHub release assets directly from the manifest URL baked into the setup executable, and Launcher starts the local listener without Discord entitlement checks.
+RevivalSide v0.3.5 Setup and Launcher do not use DownloadSide. Setup downloads GitHub release assets directly from the manifest URL baked into the setup executable, and Launcher starts the local listener without Discord entitlement checks.
 
 ## Local Setup
 
@@ -50,7 +50,7 @@ Authorization: Bearer <installToken>
 8. Setup downloads release assets through this service with `Authorization: Bearer <token>`.
 9. Launcher starts the installed local listener directly after Setup completes.
 
-This device flow is not used by RevivalSide v0.3.1 release builds.
+This device flow is not used by RevivalSide v0.3.5 release builds.
 
 ## GitHub Assets
 
@@ -111,16 +111,16 @@ Invoke-RestMethod https://downloadside.fly.dev/health
 
 ## Packaging
 
-Build the v0.3.1 installer with the direct GitHub release URL:
+Build the v0.3.5 installer with the direct GitHub release URL:
 
 ```powershell
-npm run publish:github-release -- -ReleaseTag v0.3.1
+npm run publish:github-release -- -ReleaseTag v0.3.5
 ```
 
 The package script bakes the installer manifest URL as:
 
 ```text
-https://github.com/MadlyMoe/RevivalSide/releases/download/v0.3.1/RevivalSidePayloadManifest.json
+https://github.com/MadlyMoe/RevivalSide/releases/download/v0.3.5/RevivalSidePayloadManifest.json
 ```
 
 When Setup runs, it downloads the manifest and payload assets directly from the GitHub release and validates SHA-256 hashes from `RevivalSidePayloadManifest.json`.

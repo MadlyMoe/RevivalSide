@@ -1,8 +1,8 @@
 # DownloadSide
 
-RevivalSide v0.3.1 release payloads live in GitHub releases on `MadlyMoe/RevivalSide`. Setup downloads the manifest and payload assets directly from the release URL baked into the setup executable.
+RevivalSide v0.3.5 release payloads live in GitHub releases on `MadlyMoe/RevivalSide`. Setup downloads the manifest and payload assets directly from the release URL baked into the setup executable.
 
-DownloadSide remains in `download-service` as a legacy Discord-gated proxy service, but v0.3.1 Setup and Launcher do not use Discord OAuth, device codes, install tokens, or bearer-token release downloads. Redistributable apps must never contain a GitHub token, Discord client secret, or GitHub App private key.
+DownloadSide remains in `download-service` as a legacy Discord-gated proxy service, but v0.3.5 Setup and Launcher do not use Discord OAuth, device codes, install tokens, or bearer-token release downloads. Redistributable apps must never contain a GitHub token, Discord client secret, or GitHub App private key.
 
 ## Required Environment
 
@@ -24,16 +24,16 @@ DOWNLOAD_PUBLIC_BASE_URL=https://downloadside.fly.dev
 
 ## Packaging Command
 
-For the direct GitHub `v0.3.1` release:
+For the direct GitHub `v0.3.5` release:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\package-revivalside-github-release.ps1 -ReleaseTag v0.3.1 -Upload
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\package-revivalside-github-release.ps1 -ReleaseTag v0.3.5 -Upload
 ```
 
 The package script derives the base URL from the `RevivalSide` or `origin` GitHub remote:
 
 ```text
-https://github.com/MadlyMoe/RevivalSide/releases/download/v0.3.1
+https://github.com/MadlyMoe/RevivalSide/releases/download/v0.3.5
 ```
 
 Upload the generated setup executable, `RevivalSidePayloadManifest.json`, and payload archive or parts to the `MadlyMoe/RevivalSide` release. Do not upload the payload to Discord.

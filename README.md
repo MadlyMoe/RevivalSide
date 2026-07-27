@@ -12,6 +12,7 @@ This repository intentionally does not track client assets, raw packet captures,
 - `combat-host/`: C# local combat host and managed assembly patcher.
 - `prebuilt/combat-host/`: published RevivalSide combat host binaries.
 - `tools/`: capture, table extraction, packet schema, and setup helper scripts.
+- `launcher/`: the React/Tauri RevivalSide launcher UI, adapted from [timeworn/revivalside-launcher](https://github.com/timeworn/revivalside-launcher) and wired to the full local runtime.
 - `gameplay-jsons/`: optional legacy parsed gameplay table fixtures. Normal listener runtime can use installed `.luac` assets instead.
 - `stages/`: hand-authored stage definitions used by current tutorial work.
 - `server-data/captured-*`: sanitized HTTP, login/content, and tutorial game-stream fixtures.
@@ -19,7 +20,7 @@ This repository intentionally does not track client assets, raw packet captures,
 
 ## Quick Start
 
-Start with [docs/setup.md](docs/setup.md). It is written for first-time users and walks through the wiki, local game data, hosts patching, and the listener without assuming software development experience.
+Start with [docs/setup.md](docs/setup.md). It is written for first-time users and walks through the wiki, local game data, frozen-client routing, and the listener without assuming software development experience.
 
 The very short setup is:
 
@@ -40,11 +41,24 @@ npm run wiki:build
 npm run wiki:serve
 ```
 
-To run the server listener, patch hosts from an elevated PowerShell prompt, then run:
+To run the server listener directly:
 
 ```powershell
 npm run listen
 ```
 
+The desktop launcher freezes, patches, and audits the selected client so its official HTTP endpoints route directly to the local listener. It removes the frozen copy's Steam app-ID trigger, quarantines its native Steam API DLLs, strips Steam launch variables, and refuses to launch until the managed client has zero remaining Steamworks callsites. The local mirror advertises the frozen copy's own installed build and serves its own `PatchInfo.json`, preventing captured newer metadata from triggering an update. RevivalSide does not modify the Windows hosts file. Running `npm run listen` by itself starts only the server; use the launcher to prepare and launch the frozen client.
+
 The default listener uses TCP `127.0.0.1:22000` and HTTP mirror `http://127.0.0.1:8088`.
-The local user profile manager is served from the same process at `http://127.0.0.1:8088/user-manager`.
+The local user profile manager is served from the same process at `http://127.0.0.1:8088/user-manager`. Profile selection and switching use lightweight summaries plus `server-data/active-user.json`; full profile or database JSON is loaded only when you click the corresponding **Load JSON** button.
+
+### Launcher development
+
+The production launcher is now the Tauri app in `launcher/`. It keeps the existing `launcher-settings.json` format and delegates RevivalSide-specific operations to `tools/revivalside-launcher-backend.js`, so packaged and source checkouts use the same listener, client patcher, cache, wiki, and Cross Save tooling.
+
+Install Node.js plus the Rust MSVC toolchain, then run:
+
+```powershell
+npm run check:launcher
+npm run build:launcher
+```

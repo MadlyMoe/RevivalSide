@@ -9,6 +9,15 @@ const { createUserManager } = require("./userManager");
 const ROOT_DIR = path.resolve(__dirname, "..");
 const { findCounterSideManagedDir } = require("../modules/counterside-install");
 const {
+  applyActiveUserSelection,
+  resolveActiveUserPath,
+  writeActiveUserSelection,
+} = require("../modules/user-db-selection");
+const {
+  loadFrozenClientPatchState,
+  resolveFrozenClientPatchResponse,
+} = require("../modules/frozen-client-update");
+const {
   getDefaultGameplayTablesDir,
   readGameplayTableRecords,
 } = require("../modules/gameplay-jsons");
@@ -353,7 +362,17 @@ const CSHARP_COMBAT_HOST_DLL =
 const CSHARP_COMBAT_HOST_TIMEOUT_MS = Number(process.env.CS_CSHARP_COMBAT_HOST_TIMEOUT_MS || 20000);
 const CSHARP_COMBAT_HOST_DOTNET = process.env.CS_CSHARP_COMBAT_HOST_DOTNET || process.env.CS_DOTNET_PATH || findDefaultDotnetRuntime();
 const COUNTERSIDE_MANAGED_DIR = process.env.CS_COUNTERSIDE_MANAGED_DIR || findCounterSideManagedDir({ env: process.env });
+const REQUIRE_FROZEN_CLIENT_PATCH = process.env.CS_REQUIRE_FROZEN_CLIENT_PATCH === "1";
 const GAMEPLAY_TABLES_DIR = getDefaultGameplayTablesDir({ rootDir: ROOT_DIR, env: process.env, managedDir: COUNTERSIDE_MANAGED_DIR });
+const FROZEN_CLIENT_PATCH_STATE = loadFrozenClientPatchState(COUNTERSIDE_MANAGED_DIR, {
+  gameplayTablesDir: GAMEPLAY_TABLES_DIR,
+});
+if (REQUIRE_FROZEN_CLIENT_PATCH && (!FROZEN_CLIENT_PATCH_STATE || !FROZEN_CLIENT_PATCH_STATE.isFrozenClient)) {
+  throw new Error("The controlled frozen client marker and version metadata could not be loaded.");
+}
+if (REQUIRE_FROZEN_CLIENT_PATCH && !FROZEN_CLIENT_PATCH_STATE.contentsVersion) {
+  throw new Error("The frozen client content version could not be read from the extracted gameplay cache.");
+}
 const OFFICIAL_COMBAT_REPLAY = process.env.CS_OFFICIAL_COMBAT_REPLAY === "1";
 const OFFICIAL_COMBAT_REPLAY_START_INDEX = Number(process.env.CS_OFFICIAL_COMBAT_REPLAY_START_INDEX || 64);
 const OFFICIAL_COMBAT_REPLAY_INTERVAL_MS = Number(process.env.CS_OFFICIAL_COMBAT_REPLAY_INTERVAL_MS || 33);
@@ -398,6 +417,7 @@ const MIRROR_PUBLIC_HOST = process.env.CS_HTTP_MIRROR_HOST || "127.0.0.1";
 const MIRROR_PUBLIC_BASE_URL =
   process.env.CS_HTTP_MIRROR_BASE_URL || `http://${MIRROR_PUBLIC_HOST}:${HTTP_MIRROR_PORT}`;
 const USER_DB_PATH = process.env.CS_USER_DB_PATH || path.join(ROOT_DIR, "server-data", "users.json");
+const ACTIVE_USER_PATH = resolveActiveUserPath(USER_DB_PATH, process.env.CS_ACTIVE_USER_PATH || "");
 const SERVER_TIME_STATE_PATH = process.env.CS_SERVER_TIME_STATE_PATH || path.join(ROOT_DIR, "server-data", "server-time.json");
 const USER_MANAGER_ENABLED = process.env.CS_USER_MANAGER !== "0";
 const USER_MANAGER_BASE_PATH = process.env.CS_USER_MANAGER_BASE_PATH || "/user-manager";
@@ -433,7 +453,12 @@ const POST_TUTORIAL_GUIDE_REQUIREMENT_STAGE_IDS = Object.freeze({
 
 const GAME_SERVER_IP = process.env.CS_GAME_SERVER_IP || "127.0.0.1";
 const GAME_SERVER_PORT = Number(process.env.CS_GAME_SERVER_PORT || PORT);
-const CONTENTS_VERSION = process.env.CS_CONTENTS_VERSION || "9.2.c";
+const FROZEN_CONTENTS_VERSION =
+  FROZEN_CLIENT_PATCH_STATE && FROZEN_CLIENT_PATCH_STATE.isFrozenClient
+    ? FROZEN_CLIENT_PATCH_STATE.contentsVersion
+    : "";
+const LOCK_CONTENTS_VERSION = Boolean(FROZEN_CONTENTS_VERSION) || process.env.CS_LOCK_CONTENTS_VERSION === "1";
+const CONTENTS_VERSION = FROZEN_CONTENTS_VERSION || process.env.CS_CONTENTS_VERSION || "9.2.c";
 const REQUIRED_CONTENTS_TAGS = Object.freeze([
   "TAG_COMMON_SHOP_TAB_SUPPLY",
   "TAG_COMMON_SHOP_TAB_PACKAGE_SUPER_PACK",
@@ -507,6 +532,7 @@ const capturedCombatReplayEntries = buildCapturedCombatReplayEntries(capturedGam
 const capturedFlowMirror = loadCapturedFlowMirror(CAPTURED_FLOW_DIR);
 const gameplayUnitStats = loadGameplayUnitStats(UNIT_TABLE_PATH);
 const userDb = loadUserDb(USER_DB_PATH);
+applyActiveUserSelection(userDb, ACTIVE_USER_PATH);
 const repairedDeckReferenceProfiles = repairUserDbDeckReferences(userDb);
 if (repairedDeckReferenceProfiles > 0 && USE_LOCAL_USER_DB) {
   console.log(`[user-db] repaired stale deck references profiles=${repairedDeckReferenceProfiles}`);
@@ -583,6 +609,7 @@ const userManager = USER_MANAGER_ENABLED
       allowRemote: USER_MANAGER_ALLOW_REMOTE,
       userDb,
       userDbPath: USER_DB_PATH,
+      activeUserPath: ACTIVE_USER_PATH,
       saveUserDb,
       ensureUserDefaults,
       makeAccessToken,
@@ -678,7 +705,7 @@ function logRuntimeConfig() {
       REFRAME_CAPTURED_GAME_FLOW ? "on" : "off"
     }`
   );
-  console.log(`[cfg] contentsVersion=${CONTENTS_VERSION}`);
+  console.log(`[cfg] contentsVersion=${CONTENTS_VERSION} locked=${LOCK_CONTENTS_VERSION ? "yes" : "no"}`);
   console.log(`[cfg] contentsTags=${CONTENTS_TAGS.length}`);
   const eventSummary = runtimeEventManager.getSummary();
   const serverTimeSummary = serverTime.getSummary();
@@ -761,6 +788,15 @@ function logRuntimeConfig() {
     } tables=${GAMEPLAY_TABLES_DIR || "(none)"}`
   );
   console.log(`[cfg] verboseCaptureLogs=${VERBOSE_CAPTURE_LOGS ? "on" : "off"}`);
+  console.log(
+    `[cfg] frozenClientUpdate=${FROZEN_CLIENT_PATCH_STATE ? FROZEN_CLIENT_PATCH_STATE.standaloneVersion : "unavailable"} source=${
+      FROZEN_CLIENT_PATCH_STATE ? FROZEN_CLIENT_PATCH_STATE.patchInfoPath : "(none)"
+    } contents=${FROZEN_CLIENT_PATCH_STATE ? FROZEN_CLIENT_PATCH_STATE.contentsVersion || "unavailable" : "unavailable"} frozen=${
+      FROZEN_CLIENT_PATCH_STATE && FROZEN_CLIENT_PATCH_STATE.isFrozenClient ? "yes" : "no"
+    } required=${
+      REQUIRE_FROZEN_CLIENT_PATCH ? "on" : "off"
+    }`
+  );
 }
 
 function startHttpMirror() {
@@ -775,6 +811,7 @@ function startHttpMirror() {
         if (await serveLauncherApi(req, res)) return;
         if (userManager && (await userManager.handle(req, res))) return;
         if (serveEventManagerDiagnostics(req, res)) return;
+        if (serveFrozenClientPatchMetadata(req, res)) return;
         if (capturedFlowMirror) {
           serveCapturedFlow(req, res, capturedFlowMirror);
           return;
@@ -797,6 +834,24 @@ function startHttpMirror() {
         console.log(`[+] User manager listening on ${MIRROR_PUBLIC_BASE_URL}${userManager.basePath}`);
       }
     });
+}
+
+function serveFrozenClientPatchMetadata(req, res) {
+  if (req.method !== "GET" && req.method !== "HEAD") return false;
+  const requestUrl = new URL(req.url || "/", MIRROR_PUBLIC_BASE_URL);
+  const response = resolveFrozenClientPatchResponse(requestUrl.pathname, FROZEN_CLIENT_PATCH_STATE);
+  if (!response) return false;
+
+  res.writeHead(200, {
+    "Content-Type": response.contentType,
+    "Content-Length": response.body.length,
+    "Cache-Control": "no-store",
+    "X-RevivalSide-Frozen-Version": FROZEN_CLIENT_PATCH_STATE.standaloneVersion,
+  });
+  if (req.method === "HEAD") res.end();
+  else res.end(response.body);
+  console.log(`[mirror] FROZEN ${requestUrl.pathname} ${response.body.length}b ${response.label}`);
+  return true;
 }
 
 async function serveLauncherApi(req, res) {
@@ -1355,6 +1410,7 @@ function createPacketContext() {
       USE_LOCAL_USER_DB,
       REPLAY_CAPTURED_CONTENTS_VERSION,
       REPLAY_CAPTURED_LOGIN_ACK,
+      LOCK_CONTENTS_VERSION,
       REPLAY_CAPTURED_GAME_FLOW,
       DYNAMIC_BATTLE_MANAGER,
       DYNAMIC_BATTLE_SYNC_INTERVAL_MS,
@@ -8460,13 +8516,14 @@ function buildCapturedLoginLikeAck(sequence, packetId, user, label, fallbackBuil
   if (user && token) user.accessToken = token;
   const contentsTag = getEffectiveContentsTags(lastAckContentsTags.length ? lastAckContentsTags : template.contentsTag);
   const openTag = getEffectiveOpenTags(template.openTag);
+  const contentsVersion = LOCK_CONTENTS_VERSION ? CONTENTS_VERSION : template.contentsVersion;
 
   const rawPayload = buildLoginAckRaw({
     errorCode: template.errorCode,
     accessToken: token,
     gameServerIP: GAME_SERVER_IP,
     gameServerPort: GAME_SERVER_PORT,
-    contentsVersion: template.contentsVersion,
+    contentsVersion,
     contentsTag,
     openTag,
     resultCode: packetId === GAMEBASE_LOGIN_ACK ? template.resultCode || 0 : template.resultCode,
@@ -8474,7 +8531,7 @@ function buildCapturedLoginLikeAck(sequence, packetId, user, label, fallbackBuil
 
   const compressedPayload = lz4StreamWrapUncompressed(rawPayload);
   console.log(
-    `[${label} official-template] version=${template.contentsVersion} tags=${contentsTag.length} openTags=${openTag.length} tokenLen=${token.length} gameServer=${GAME_SERVER_IP}:${GAME_SERVER_PORT} payloadSize=${compressedPayload.length}`
+    `[${label} official-template] version=${contentsVersion} tags=${contentsTag.length} openTags=${openTag.length} tokenLen=${token.length} gameServer=${GAME_SERVER_IP}:${GAME_SERVER_PORT} payloadSize=${compressedPayload.length}`
   );
   return buildFramedPacket(sequence, packetId, compressedPayload, true);
 }
@@ -8503,7 +8560,9 @@ function buildLoginLikePayload(user) {
   lastEffectiveAccessToken = token;
   if (user && token) user.accessToken = token;
 
-  const version = (user && user.contentsVersion) || lastAckContentsVersion || CONTENTS_VERSION;
+  const version = LOCK_CONTENTS_VERSION
+    ? CONTENTS_VERSION
+    : (user && user.contentsVersion) || lastAckContentsVersion || CONTENTS_VERSION;
   const baseTags = lastAckContentsTags.length
     ? lastAckContentsTags
     : user && user.contentsTags && user.contentsTags.length
@@ -10087,6 +10146,7 @@ function saveUserDb() {
   const tmpPath = `${USER_DB_PATH}.tmp`;
   fs.writeFileSync(tmpPath, `${JSON.stringify(userDb, jsonUserDbReplacer, 2)}\n`, "utf8");
   fs.renameSync(tmpPath, USER_DB_PATH);
+  writeActiveUserSelection(ACTIVE_USER_PATH, userDb.activeUserUid);
 }
 
 function jsonUserDbReplacer(_key, value) {
@@ -10346,7 +10406,7 @@ function ensureUserDefaults(user) {
   user.exp = String(user.exp || "0");
   ensureAccountProgress(user);
   user.authLevel = Number(user.authLevel || 1);
-  user.contentsVersion = user.contentsVersion || CONTENTS_VERSION;
+  user.contentsVersion = LOCK_CONTENTS_VERSION ? CONTENTS_VERSION : user.contentsVersion || CONTENTS_VERSION;
   user.contentsTags = mergeTags(
     Array.isArray(user.contentsTags) && user.contentsTags.length ? user.contentsTags : CONTENTS_TAGS,
     REQUIRED_CONTENTS_TAGS
@@ -10928,9 +10988,12 @@ function responseHeaders(entry, bodyLength) {
 
 function rewriteServerInfo(body) {
   const config = JSON.parse(body.toString("utf8"));
-  if (config.server && config.server.Global) {
-    config.server.Global.ip = GAME_SERVER_IP;
-    config.server.Global.port = GAME_SERVER_PORT;
+  if (config.server && typeof config.server === "object") {
+    for (const server of Object.values(config.server)) {
+      if (!server || typeof server !== "object") continue;
+      server.ip = GAME_SERVER_IP;
+      server.port = GAME_SERVER_PORT;
+    }
   }
   config.cdn = `${MIRROR_PUBLIC_BASE_URL}/patchfiles/`;
   return Buffer.from(JSON.stringify(config, null, 2), "utf8");

@@ -102,7 +102,9 @@ function findCounterSideStreamingAssetsDir(options = {}) {
 function findCounterSideScriptBundleRoots(options = {}) {
   const dataDir = findCounterSideDataDir(options);
   const streamingAssets = dataDir ? path.join(dataDir, "StreamingAssets") : "";
+  const gameRoot = dataDir && path.basename(dataDir).toLowerCase() === "data" ? path.dirname(dataDir) : "";
   const candidates = [
+    { label: "Assetbundles", root: gameRoot ? path.join(gameRoot, "Assetbundles") : "" },
     { label: "StreamingAssets", root: streamingAssets },
     { label: "Assetbundles", root: streamingAssets ? path.join(streamingAssets, "Assetbundles") : "" },
     { label: "Assetbundles", root: dataDir ? path.join(dataDir, "Assetbundles") : "" },

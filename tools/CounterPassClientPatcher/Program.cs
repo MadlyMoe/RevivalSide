@@ -14,6 +14,21 @@ if (!File.Exists(assemblyPath))
 var backupPath = assemblyPath + ".revivalside-counterpass.bak";
 var options = PatchOptions.Parse(args);
 
+if (args.Any(arg => arg.Equals("--inspect-updater", StringComparison.OrdinalIgnoreCase)))
+{
+    return PrintUpdaterInspection(assemblyPath);
+}
+
+if (args.Any(arg => arg.Equals("--inspect-updater-il", StringComparison.OrdinalIgnoreCase)))
+{
+    return PrintUpdaterIl(assemblyPath);
+}
+
+if (args.Any(arg => arg.Equals("--inspect-contents-version-il", StringComparison.OrdinalIgnoreCase)))
+{
+    return PrintContentsVersionIl(assemblyPath);
+}
+
 if (options.Status)
 {
     return PrintStatus(assemblyPath, backupPath);
@@ -68,6 +83,7 @@ if (options.ApplyGearInventoryStateRepair && PatchGearInventoryStateRepair(modul
 if (options.ApplyEpisodeProgressDifficultyFix && PatchEpisodeProgressDifficultyFix(module)) patches.Add("episode-progress-difficulty-fix");
 if (options.ApplyOperatorContractCategoryFix && PatchOperatorContractCategoryFix(module)) patches.Add("operator-contract-category-fix");
 if (options.ApplySteamLocalLogin && PatchSteamLocalLogin(module)) patches.Add("steam-local-login");
+if (options.ApplyFrozenOfficialUpdateBypass && PatchFrozenOfficialUpdateBypass(module, options.FrozenServerInfoUrl)) patches.Add("frozen-official-update-bypass");
 var changed = patches.Count > 0;
 if (!changed)
 {
@@ -142,7 +158,207 @@ static int PrintStatus(string assemblyPath, string backupPath)
     Console.WriteLine($"[counter-pass-patch] episode-progress-difficulty-fix={HasEpisodeProgressDifficultyFix(module)}");
     Console.WriteLine($"[counter-pass-patch] operator-contract-category-fix={HasOperatorContractCategoryFix(module)}");
     Console.WriteLine($"[counter-pass-patch] steam-local-login={HasSteamLocalLoginPatch(module)}");
+    Console.WriteLine($"[counter-pass-patch] steam-standalone={HasSteamStandalonePatch(module)}");
+    Console.WriteLine($"[counter-pass-patch] steam-runtime-isolated={HasSteamRuntimeIsolationPatch(module)}");
+    var steamInteropCallsites = FindSteamInteropCallsites(module);
+    Console.WriteLine($"[counter-pass-patch] steam-interop-callsites={steamInteropCallsites.Count}");
+    foreach (var callsite in steamInteropCallsites.Take(100))
+    {
+        Console.WriteLine($"[counter-pass-patch] steam-interop-callsite={callsite}");
+    }
+    Console.WriteLine($"[counter-pass-patch] frozen-official-update-bypass={HasFrozenOfficialUpdateBypassPatch(module)}");
+    Console.WriteLine($"[counter-pass-patch] frozen-patch-download-bypass={HasFrozenPatchDownloadBypass(module)}");
+    Console.WriteLine($"[counter-pass-patch] frozen-contents-version-isolation={HasFrozenContentsVersionIsolation(module)}");
+    var externalEndpoints = FindExternalEndpointStrings(module);
+    Console.WriteLine($"[counter-pass-patch] external-endpoint-references={externalEndpoints.Count}");
+    foreach (var endpoint in externalEndpoints.Take(20))
+    {
+        Console.WriteLine($"[counter-pass-patch] external-endpoint={endpoint}");
+    }
     return 0;
+}
+
+static int PrintUpdaterInspection(string assemblyPath)
+{
+    using var module = ModuleDefinition.ReadModule(assemblyPath, new ReaderParameters { InMemory = true });
+    var terms = new[] { "patch", "download", "version", "integrity", "assetbundle", "asset_bundle" };
+    var matchingTypes = AllTypes(module)
+        .Where(type => terms.Any(term => type.FullName.Contains(term, StringComparison.OrdinalIgnoreCase)))
+        .OrderBy(type => type.FullName)
+        .ToArray();
+
+    foreach (var type in matchingTypes)
+    {
+        Console.WriteLine($"[updater-inspect] type={type.FullName}");
+        foreach (var field in type.Fields)
+        {
+            var constant = field.HasConstant ? $" value={field.Constant}" : string.Empty;
+            Console.WriteLine($"[updater-inspect] field={field.FieldType.FullName} {field.Name}{constant}");
+        }
+        foreach (var method in type.Methods)
+        {
+            var parameters = string.Join(",", method.Parameters.Select(parameter => parameter.ParameterType.FullName));
+            Console.WriteLine($"[updater-inspect] method={method.ReturnType.FullName} {method.Name}({parameters})");
+        }
+    }
+
+    foreach (var type in AllTypes(module))
+    {
+        foreach (var method in type.Methods.Where(method => method.HasBody))
+        {
+            var literals = method.Body.Instructions
+                .Where(instruction => instruction.OpCode == OpCodes.Ldstr && instruction.Operand is string)
+                .Select(instruction => (string)instruction.Operand)
+                .Where(value => terms.Any(term => value.Contains(term, StringComparison.OrdinalIgnoreCase)))
+                .Distinct()
+                .Take(12)
+                .ToArray();
+            if (literals.Length == 0) continue;
+            Console.WriteLine($"[updater-inspect] strings={type.FullName}::{method.Name} => {string.Join(" | ", literals)}");
+        }
+    }
+    return 0;
+}
+
+static int PrintUpdaterIl(string assemblyPath)
+{
+    using var module = ModuleDefinition.ReadModule(assemblyPath, new ReaderParameters { InMemory = true });
+    var targets = new[]
+    {
+        "NKC.Patcher.NKCPatchUtility::IsPatchSkip",
+        "NKC.NKCDefineManager::DEFINE_PATCH_SKIP",
+        "NKC.Patcher.NKCPatchDownloader::SetUpdatedForSkipPatch",
+        "NKC.Patcher.NKCPatchDownloader::HasNoDownloadedFiles",
+        "NKC.Patcher.NKCPatchDownloader::ClearFileDownloadContainer",
+        "NKC.Patcher.NKCPatchUtility::SaveDownloadType",
+        "NKC.Patcher.NKCPatchUtility::BackgroundPatchEnabled",
+        "NKC.NKCPatcherManager::CheckCanStartPatch",
+        "NKC.NKCPatcherManager::SetState",
+        "NKC.NKCPatcherManager::OnEnter",
+        "NKC.NKCPatcherManager::OnExit",
+        "NKC.NKCPatcherManager/<WaitForDownloadTypeSelect>d__57::MoveNext",
+        "NKC.UI.NKCPopupDownloadTypeSelection::",
+        "NKC.Patcher.NKCPatchChecker::RegisterPatchProcess",
+        "NKC.Patcher.NKCPatchChecker/<ProcessPatch>d__18::MoveNext",
+        "NKC.Patcher.WaitForUnityEditorPatchSkip/<GetEnumerator>d__8::MoveNext",
+        "NKC.Patcher.WaitForDownLoaderInitialization/<GetEnumerator>d__8::MoveNext",
+        "NKC.Patcher.WaitForInternetConnection/<GetEnumerator>d__8::MoveNext",
+        "NKC.Patcher.WaitForCheckVersion/<GetEnumerator>d__9::MoveNext",
+        "NKC.Patcher.WaitForAppVersionCheckStatus/<GetEnumerator>d__8::MoveNext",
+        "NKC.Patcher.WaitForTouch/<GetEnumerator>d__9::MoveNext",
+        "NKC.Patcher.WaitForDownloadStatus/<GetEnumerator>d__8::MoveNext",
+        "NKC.Patcher.WaitForAssetBundleInitialize/<GetEnumerator>d__4::MoveNext",
+        "NKC.Patcher.NKCPatchManifestManager/<MakeDownloadList>d__28::MoveNext",
+        "NKC.Patcher.PatchManifestManager/<GetDownloadList>",
+        "NKC.NKCPatcherManager/<PatcherProcess>d__28::MoveNext",
+        "NKC.Patcher.WaitForAssetBundleVersionCheckStatus/<GetEnumerator>d__8::MoveNext",
+        "NKC.Patcher.NKCPatchDownloader/<GetDownloadFiles>d__107::MoveNext",
+    };
+
+    var methods = AllTypes(module)
+        .SelectMany(type => type.Methods)
+        .Where(method => targets.Any(target => method.FullName.Contains(target, StringComparison.Ordinal)))
+        .OrderBy(method => method.FullName)
+        .ToArray();
+
+    foreach (var method in methods)
+    {
+        PrintMethodIl(method);
+    }
+
+    var calledTargets = new[]
+    {
+        "NKC.Patcher.NKCPatchUtility::IsPatchSkip",
+        "NKC.NKCDefineManager::DEFINE_PATCH_SKIP",
+        "NKC.Patcher.NKCPatchDownloader::SetUpdatedForSkipPatch",
+        "NKC.Patcher.NKCPatchDownloader::HasNoDownloadedFiles",
+        "NKC.Patcher.NKCPatchDownloader::ClearFileDownloadContainer",
+    };
+    foreach (var method in AllTypes(module).SelectMany(type => type.Methods).Where(method => method.HasBody))
+    {
+        foreach (var instruction in method.Body.Instructions)
+        {
+            if (instruction.Operand is not MethodReference calledMethod
+                || !calledTargets.Any(target => calledMethod.FullName.Contains(target, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+            Console.WriteLine($"[updater-il] caller={method.FullName} offset=IL_{instruction.Offset:x4} target={calledMethod.FullName}");
+        }
+    }
+    return 0;
+}
+
+static int PrintContentsVersionIl(string assemblyPath)
+{
+    using var module = ModuleDefinition.ReadModule(assemblyPath, new ReaderParameters { InMemory = true });
+    var targets = new[]
+    {
+        "NKM.NKMContentsVersionManager",
+        "NKC.NKCContentsVersionManager",
+        "NKC.NKCMain::NKCInitLocalContentsVersion",
+        "NKC.NKCScenManager/<_VersionCheckAndReconnect>",
+        "NKC.NKCScenManager::ShowNeedUpdateAfterTutorial",
+        "NKC.PacketHandler.NKCPacketHandlersLogin::OnLoginSuccess",
+        "Cs.Engine.Util.ContentsVersionChecker",
+    };
+
+    var methods = AllTypes(module)
+        .SelectMany(type => type.Methods)
+        .Where(method => targets.Any(target => method.FullName.Contains(target, StringComparison.Ordinal)))
+        .OrderBy(method => method.FullName)
+        .ToArray();
+
+    foreach (var method in methods)
+    {
+        PrintMethodIl(method);
+    }
+    foreach (var method in AllTypes(module).SelectMany(type => type.Methods).Where(method => method.HasBody))
+    {
+        foreach (var instruction in method.Body.Instructions)
+        {
+            if (instruction.Operand is MethodReference calledMethod
+                && calledMethod.FullName.Contains("get_GET_STRING_CONTENTS_VERSION_CHANGE", StringComparison.Ordinal))
+            {
+                Console.WriteLine($"[contents-version-il] popup-caller={method.FullName} offset=IL_{instruction.Offset:x4}");
+            }
+        }
+    }
+    return 0;
+}
+
+static void PrintMethodIl(MethodDefinition method)
+{
+    Console.WriteLine($"[updater-il] method={method.FullName}");
+    if (!method.HasBody)
+    {
+        Console.WriteLine("[updater-il] no-body");
+        return;
+    }
+    foreach (var instruction in method.Body.Instructions)
+    {
+        var operand = instruction.Operand switch
+        {
+            Instruction target => $"IL_{target.Offset:x4}",
+            Instruction[] targets => string.Join(",", targets.Select(target => $"IL_{target.Offset:x4}")),
+            _ => instruction.Operand?.ToString() ?? string.Empty,
+        };
+        Console.WriteLine($"[updater-il] IL_{instruction.Offset:x4}: {instruction.OpCode} {operand}");
+    }
+}
+
+static IEnumerable<TypeDefinition> AllTypes(ModuleDefinition module)
+{
+    var stack = new Stack<TypeDefinition>(module.Types.Reverse());
+    while (stack.Count > 0)
+    {
+        var type = stack.Pop();
+        yield return type;
+        for (var index = type.NestedTypes.Count - 1; index >= 0; index -= 1)
+        {
+            stack.Push(type.NestedTypes[index]);
+        }
+    }
 }
 
 static string? ResolveEnvFile(string[] args)
@@ -1810,11 +2026,374 @@ static MethodDefinition EnsureWorldMapInfoAckHandler(ModuleDefinition module, Me
 static bool PatchSteamLocalLogin(ModuleDefinition module)
 {
     var changed = false;
+    changed |= PatchSteamManagerStandalone(module);
     changed |= PatchSteamPublisherInit(module);
     changed |= PatchSteamAuthInit(module);
     changed |= PatchSteamAuthLoginToPublisher(module);
     changed |= PatchSteamAuthPrepareCSLogin(module);
+    changed |= PatchSteamRuntimeIsolation(module);
     return changed;
+}
+
+static bool PatchFrozenOfficialUpdateBypass(ModuleDefinition module, string serverInfoUrl)
+{
+    var changed = false;
+    changed |= PatchFrozenServerInfo(module, "NKC.Publisher.NKCPMSteamPC/ServerInfoSteam", serverInfoUrl);
+    changed |= PatchFrozenServerInfo(module, "NKC.Publisher.NKCPMNone/ServerInfoDefault", serverInfoUrl);
+    changed |= PatchFrozenNoticeIsolation(module, serverInfoUrl);
+    changed |= PatchExternalUrlOperands(module, serverInfoUrl);
+    changed |= PatchFrozenPatchDownloadBypass(module);
+    changed |= PatchFrozenContentsVersionIsolation(module);
+
+    var mismatchedHttpEndpoints = FindMismatchedHttpEndpointStrings(module, serverInfoUrl);
+    if (mismatchedHttpEndpoints.Count > 0)
+    {
+        throw new InvalidOperationException(
+            "Frozen client still contains HTTP URL references that do not match the launcher URL: "
+            + string.Join(", ", mismatchedHttpEndpoints.Take(8).Select(value => $"'{value}'")));
+    }
+
+    var remainingExternalEndpoints = FindExternalEndpointStrings(module);
+    if (remainingExternalEndpoints.Count > 0)
+    {
+        throw new InvalidOperationException(
+            "Frozen client still contains external URL references after patching: "
+            + string.Join(", ", remainingExternalEndpoints.Take(8).Select(value => $"'{value}'")));
+    }
+    return changed;
+}
+
+static bool PatchFrozenContentsVersionIsolation(ModuleDefinition module)
+{
+    var mainType = FindTypeDefinition(module, "NKC.NKCMain")
+        ?? throw new InvalidOperationException("NKCMain was not found.");
+    return PatchVoidMethodsNoOp(
+        mainType,
+        "NKCInitLocalContentsVersion",
+        "revivalside-frozen-contents-version-isolation");
+}
+
+static bool PatchFrozenPatchDownloadBypass(ModuleDefinition module)
+{
+    const string marker = "revivalside-frozen-patch-download-bypass";
+    var stateType = FindTypeDefinition(module, "NKC.Patcher.WaitForAssetBundleVersionCheckStatus/<GetEnumerator>d__8")
+        ?? throw new InvalidOperationException("Frozen patch version-check state machine was not found.");
+    var moveNext = stateType.Methods.FirstOrDefault(method =>
+        method.Name == "MoveNext"
+        && method.HasBody
+        && method.ReturnType.MetadataType == MetadataType.Boolean)
+        ?? throw new InvalidOperationException("Frozen patch version-check MoveNext method was not found.");
+    if (HasMarker(moveNext, marker)) return false;
+
+    var downloaderType = FindTypeDefinition(module, "NKC.Patcher.NKCPatchDownloader")
+        ?? throw new InvalidOperationException("NKCPatchDownloader was not found.");
+    var instanceField = downloaderType.Fields.FirstOrDefault(field =>
+        field.Name == "Instance"
+        && field.IsStatic
+        && field.FieldType.FullName == downloaderType.FullName)
+        ?? throw new InvalidOperationException("NKCPatchDownloader.Instance was not found.");
+    var setUpdated = downloaderType.Methods.FirstOrDefault(method =>
+        method.Name == "SetUpdatedForSkipPatch"
+        && !method.IsStatic
+        && method.Parameters.Count == 0
+        && method.ReturnType.MetadataType == MetadataType.Void)
+        ?? throw new InvalidOperationException("NKCPatchDownloader.SetUpdatedForSkipPatch was not found.");
+    var prologuePlayField = downloaderType.Fields.FirstOrDefault(field =>
+        field.Name == "ProloguePlay"
+        && field.FieldType.MetadataType == MetadataType.Boolean)
+        ?? throw new InvalidOperationException("NKCPatchDownloader.ProloguePlay was not found.");
+    var insertionPoint = moveNext.Body.Instructions.FirstOrDefault(instruction =>
+        instruction.OpCode == OpCodes.Stfld
+        && instruction.Operand is FieldReference field
+        && field.FullName == prologuePlayField.FullName)
+        ?? throw new InvalidOperationException("Frozen patch version-check status transition was not found.");
+
+    var il = moveNext.Body.GetILProcessor();
+    var current = insertionPoint;
+    foreach (var instruction in new[]
+    {
+        il.Create(OpCodes.Ldstr, marker),
+        il.Create(OpCodes.Pop),
+        il.Create(OpCodes.Ldsfld, module.ImportReference(instanceField)),
+        il.Create(OpCodes.Callvirt, module.ImportReference(setUpdated)),
+    })
+    {
+        il.InsertAfter(current, instruction);
+        current = instruction;
+    }
+    return true;
+}
+
+static bool PatchFrozenServerInfo(ModuleDefinition module, string typeFullName, string serverInfoUrl)
+{
+    var serverInfoType = FindTypeDefinition(module, typeFullName)
+        ?? throw new InvalidOperationException($"{typeFullName} was not found.");
+    var changed = false;
+    changed |= PatchStringReturnMethod(serverInfoType, "GetServerConfigPath", serverInfoUrl, "revivalside-frozen-official-update-bypass");
+    changed |= PatchBoolReturnMethod(serverInfoType, "GetUseLocalSaveLastServerInfoToGetTags", false, "revivalside-frozen-official-update-bypass");
+    return changed;
+}
+
+static bool PatchFrozenNoticeIsolation(ModuleDefinition module, string localUrl)
+{
+    var changed = false;
+    var noticeType = FindTypeDefinition(module, "NKC.Publisher.NKCPMSteamPC/NoticeSteam")
+        ?? throw new InvalidOperationException("NKC.Publisher.NKCPMSteamPC/NoticeSteam was not found.");
+    changed |= PatchStringReturnMethod(noticeType, "NoticeUrl", localUrl, "revivalside-frozen-notice-isolation");
+    changed |= PatchBoolReturnMethod(noticeType, "CheckOpenNoticeWhenFirstLoginSuccess", false, "revivalside-frozen-notice-isolation");
+    changed |= PatchBoolReturnMethod(noticeType, "CheckOpenNoticeWhenFirstLobbyVisit", false, "revivalside-frozen-notice-isolation");
+    changed |= PatchBoolReturnMethod(noticeType, "IsActiveCustomerCenter", false, "revivalside-frozen-notice-isolation");
+    changed |= PatchNoticeCallbackNoOp(module, noticeType, "OpenNotice", callbackParameterIndex: 0, "revivalside-frozen-notice-isolation");
+    changed |= PatchNoticeCallbackNoOp(module, noticeType, "OpenCommunity", callbackParameterIndex: 0, "revivalside-frozen-notice-isolation");
+    changed |= PatchNoticeCallbackNoOp(module, noticeType, "OpenCustomerCenter", callbackParameterIndex: 0, "revivalside-frozen-notice-isolation");
+    changed |= PatchNoticeCallbackNoOp(module, noticeType, "OpenURL", callbackParameterIndex: 1, "revivalside-frozen-notice-isolation");
+
+    var baseNoticeType = FindTypeDefinition(module, "NKC.Publisher.NKCPublisherModule/NKCPMNotice");
+    if (baseNoticeType != null)
+    {
+        changed |= PatchNoticeCallbackNoOp(module, baseNoticeType, "OpenCommunity", callbackParameterIndex: 0, "revivalside-frozen-notice-isolation");
+        changed |= PatchNoticeCallbackNoOp(module, baseNoticeType, "OpenURL", callbackParameterIndex: 1, "revivalside-frozen-notice-isolation");
+    }
+    return changed;
+}
+
+static bool PatchStringReturnMethod(TypeDefinition type, string methodName, string value, string marker)
+{
+    var method = type.Methods.FirstOrDefault(item =>
+        item.Name == methodName
+        && item.HasBody
+        && item.ReturnType.FullName == "System.String")
+        ?? throw new InvalidOperationException($"{type.FullName}.{methodName} was not found.");
+    if (HasStringReturnPatchForValue(method, marker, value)) return false;
+
+    ClearMethodBody(method, initLocals: false);
+    var il = method.Body.GetILProcessor();
+    il.Append(il.Create(OpCodes.Ldstr, marker));
+    il.Append(il.Create(OpCodes.Pop));
+    il.Append(il.Create(OpCodes.Ldstr, value));
+    il.Append(il.Create(OpCodes.Ret));
+    return true;
+}
+
+static bool PatchBoolReturnMethod(TypeDefinition type, string methodName, bool value, string marker)
+{
+    var method = type.Methods.FirstOrDefault(item =>
+        item.Name == methodName
+        && item.HasBody
+        && item.ReturnType.MetadataType == MetadataType.Boolean)
+        ?? throw new InvalidOperationException($"{type.FullName}.{methodName} was not found.");
+    if (HasMarker(method, marker)) return false;
+
+    ClearMethodBody(method, initLocals: false);
+    var il = method.Body.GetILProcessor();
+    il.Append(il.Create(OpCodes.Ldstr, marker));
+    il.Append(il.Create(OpCodes.Pop));
+    il.Append(il.Create(value ? OpCodes.Ldc_I4_1 : OpCodes.Ldc_I4_0));
+    il.Append(il.Create(OpCodes.Ret));
+    return true;
+}
+
+static bool PatchNoticeCallbackNoOp(ModuleDefinition module, TypeDefinition type, string methodName, int callbackParameterIndex, string marker)
+{
+    var method = type.Methods.FirstOrDefault(item =>
+        item.Name == methodName
+        && item.HasBody
+        && item.Parameters.Count > callbackParameterIndex
+        && item.ReturnType.MetadataType == MetadataType.Void)
+        ?? throw new InvalidOperationException($"{type.FullName}.{methodName} was not found.");
+    if (HasMarker(method, marker)) return false;
+
+    var invoke = FindOnCompleteInvoke(module);
+    ClearMethodBody(method, initLocals: false);
+    var il = method.Body.GetILProcessor();
+    var ret = il.Create(OpCodes.Ret);
+    il.Append(il.Create(OpCodes.Ldstr, marker));
+    il.Append(il.Create(OpCodes.Pop));
+    il.Append(il.Create(OpCodes.Ldarg, callbackParameterIndex + 1));
+    il.Append(il.Create(OpCodes.Brfalse_S, ret));
+    il.Append(il.Create(OpCodes.Ldarg, callbackParameterIndex + 1));
+    il.Append(il.Create(OpCodes.Ldc_I4_0));
+    il.Append(il.Create(OpCodes.Ldnull));
+    il.Append(il.Create(OpCodes.Callvirt, module.ImportReference(invoke)));
+    il.Append(ret);
+    return true;
+}
+
+static bool PatchExternalUrlOperands(ModuleDefinition module, string localUrl)
+{
+    var changed = false;
+    var localUri = new Uri(localUrl, UriKind.Absolute);
+    foreach (var type in module.GetTypes())
+    {
+        foreach (var field in type.Fields)
+        {
+            if (!field.HasConstant || field.Constant is not string value) continue;
+            var replacement = RewriteFrozenExternalString(value, localUrl, localUri.Host);
+            if (replacement == value) continue;
+            field.Constant = replacement;
+            changed = true;
+        }
+
+        foreach (var method in type.Methods)
+        {
+            foreach (var parameter in method.Parameters)
+            {
+                if (!parameter.HasConstant || parameter.Constant is not string value) continue;
+                var replacement = RewriteFrozenExternalString(value, localUrl, localUri.Host);
+                if (replacement == value) continue;
+                parameter.Constant = replacement;
+                changed = true;
+            }
+
+            if (!method.HasBody) continue;
+            foreach (var instruction in method.Body.Instructions)
+            {
+                if (instruction.Operand is not string value) continue;
+                var replacement = RewriteFrozenExternalString(value, localUrl, localUri.Host);
+                if (replacement == value) continue;
+                instruction.Operand = replacement;
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
+static string RewriteFrozenExternalString(string value, string localUrl, string localHost)
+{
+    if (string.IsNullOrWhiteSpace(value)) return value;
+    if (Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https")
+    {
+        return value.Equals(localUrl, StringComparison.Ordinal) ? value : localUrl;
+    }
+
+    return IsOfficialHostReference(value) ? localHost : value;
+}
+
+static List<string> FindExternalEndpointStrings(ModuleDefinition module)
+{
+    return FindEndpointStrings(module, IsExternalEndpointString);
+}
+
+static List<string> FindMismatchedHttpEndpointStrings(ModuleDefinition module, string localUrl)
+{
+    return FindEndpointStrings(module, value =>
+        Uri.TryCreate(value, UriKind.Absolute, out var uri)
+        && uri.Scheme is "http" or "https"
+        && !value.Equals(localUrl, StringComparison.Ordinal));
+}
+
+static List<string> FindEndpointStrings(ModuleDefinition module, Func<string, bool> predicate)
+{
+    var values = new HashSet<string>(StringComparer.Ordinal);
+    foreach (var type in module.GetTypes())
+    {
+        foreach (var field in type.Fields)
+        {
+            if (field.HasConstant && field.Constant is string value && predicate(value)) values.Add(value);
+        }
+
+        foreach (var method in type.Methods)
+        {
+            foreach (var parameter in method.Parameters)
+            {
+                if (parameter.HasConstant && parameter.Constant is string value && predicate(value)) values.Add(value);
+            }
+
+            if (!method.HasBody) continue;
+            foreach (var instruction in method.Body.Instructions)
+            {
+                if (instruction.Operand is string value && predicate(value)) values.Add(value);
+            }
+        }
+    }
+    return values.OrderBy(value => value, StringComparer.Ordinal).ToList();
+}
+
+static bool IsExternalEndpointString(string value)
+{
+    if (string.IsNullOrWhiteSpace(value)) return false;
+    if (Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https")
+    {
+        return !IsLoopbackHostName(uri.Host);
+    }
+    return IsOfficialHostReference(value);
+}
+
+static bool IsOfficialHostReference(string value)
+{
+    return value.Equals("studiobsidedev.com", StringComparison.OrdinalIgnoreCase)
+        || value.Contains("ctsglobal-", StringComparison.OrdinalIgnoreCase)
+        || value.Contains("ctskorea-", StringComparison.OrdinalIgnoreCase)
+        || value.Contains("sbside.com", StringComparison.OrdinalIgnoreCase)
+        || value.Contains("bside.com", StringComparison.OrdinalIgnoreCase)
+        || value.Contains("counterside.com", StringComparison.OrdinalIgnoreCase)
+        || value.Contains("nexon.com", StringComparison.OrdinalIgnoreCase)
+        || value.Contains("nexon.co.jp", StringComparison.OrdinalIgnoreCase)
+        || value.Contains("game-beans.com", StringComparison.OrdinalIgnoreCase);
+}
+
+static bool IsLoopbackHostName(string host)
+{
+    if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return true;
+    if (host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase)) return true;
+    if (host.Equals("::1", StringComparison.OrdinalIgnoreCase)) return true;
+    return false;
+}
+
+static bool PatchSteamManagerStandalone(ModuleDefinition module)
+{
+    var steamManagerType = FindTypeDefinition(module, "SteamManager")
+        ?? throw new InvalidOperationException("SteamManager was not found.");
+    var changed = false;
+    changed |= PatchSteamManagerAwake(module, steamManagerType);
+    changed |= PatchSteamManagerNoOp(module, steamManagerType, "OnEnable");
+    changed |= PatchSteamManagerNoOp(module, steamManagerType, "OnDestroy");
+    changed |= PatchSteamManagerNoOp(module, steamManagerType, "Update");
+    changed |= PatchSteamManagerNoOp(module, steamManagerType, "InitOnPlayMode");
+    return changed;
+}
+
+static bool PatchSteamManagerAwake(ModuleDefinition module, TypeDefinition steamManagerType)
+{
+    var method = steamManagerType.Methods.FirstOrDefault(item => item.Name == "Awake" && item.HasBody)
+        ?? throw new InvalidOperationException("SteamManager.Awake was not found.");
+    if (HasSteamStandaloneMarker(method)) return false;
+
+    var instanceField = steamManagerType.Fields.FirstOrDefault(item => item.Name == "s_instance")
+        ?? throw new InvalidOperationException("SteamManager.s_instance was not found.");
+    var everInitializedField = steamManagerType.Fields.FirstOrDefault(item => item.Name == "s_EverInitialized")
+        ?? throw new InvalidOperationException("SteamManager.s_EverInitialized was not found.");
+    var initializedField = steamManagerType.Fields.FirstOrDefault(item => item.Name == "m_bInitialized")
+        ?? throw new InvalidOperationException("SteamManager.m_bInitialized was not found.");
+
+    ClearMethodBody(method, initLocals: false);
+    var il = method.Body.GetILProcessor();
+    il.Append(il.Create(OpCodes.Ldstr, "revivalside-steam-standalone"));
+    il.Append(il.Create(OpCodes.Pop));
+    il.Append(il.Create(OpCodes.Ldarg_0));
+    il.Append(il.Create(OpCodes.Stsfld, module.ImportReference(instanceField)));
+    il.Append(il.Create(OpCodes.Ldarg_0));
+    il.Append(il.Create(OpCodes.Ldc_I4_0));
+    il.Append(il.Create(OpCodes.Stfld, module.ImportReference(initializedField)));
+    il.Append(il.Create(OpCodes.Ldc_I4_1));
+    il.Append(il.Create(OpCodes.Stsfld, module.ImportReference(everInitializedField)));
+    il.Append(il.Create(OpCodes.Ret));
+    return true;
+}
+
+static bool PatchSteamManagerNoOp(ModuleDefinition module, TypeDefinition steamManagerType, string methodName)
+{
+    var method = steamManagerType.Methods.FirstOrDefault(item => item.Name == methodName && item.HasBody)
+        ?? throw new InvalidOperationException($"SteamManager.{methodName} was not found.");
+    if (HasSteamStandaloneMarker(method)) return false;
+
+    ClearMethodBody(method, initLocals: false);
+    var il = method.Body.GetILProcessor();
+    il.Append(il.Create(OpCodes.Ldstr, "revivalside-steam-standalone"));
+    il.Append(il.Create(OpCodes.Pop));
+    il.Append(il.Create(OpCodes.Ret));
+    return true;
 }
 
 static bool PatchSteamPublisherInit(ModuleDefinition module)
@@ -1942,6 +2521,76 @@ static bool PatchSteamAuthPrepareCSLogin(ModuleDefinition module)
     return true;
 }
 
+static bool PatchSteamRuntimeIsolation(ModuleDefinition module)
+{
+    var changed = false;
+    changed |= PatchSteamLocalization(module);
+
+    var authType = FindSteamAuthType(module);
+    changed |= PatchVoidMethodsNoOp(authType, "OnAuthSessionTicketResponse", "revivalside-steam-runtime-isolated");
+
+    var inAppType = FindTypeDefinition(module, "NKC.Publisher.NKCPMSteamPC/InAppSteam")
+        ?? throw new InvalidOperationException("NKCPMSteamPC.InAppSteam was not found.");
+    changed |= PatchVoidMethodsNoOp(inAppType, "Init", "revivalside-steam-runtime-isolated");
+    changed |= PatchVoidMethodsNoOp(inAppType, "OnGameOverlayActivated", "revivalside-steam-runtime-isolated");
+    changed |= PatchVoidMethodsNoOp(inAppType, "OnMicroTxnAuthorizationResponse", "revivalside-steam-runtime-isolated");
+    return changed;
+}
+
+static bool PatchSteamLocalization(ModuleDefinition module)
+{
+    var localizationType = FindTypeDefinition(module, "NKC.Publisher.NKCPMSteamPC/LocalizationSteam")
+        ?? throw new InvalidOperationException("NKCPMSteamPC.LocalizationSteam was not found.");
+    var changed = false;
+    changed |= PatchStringReturnMethod(localizationType, "get_m_strCountry", "US", "revivalside-steam-runtime-isolated");
+    changed |= PatchStringReturnMethod(localizationType, "get_m_strGameLanguage", "english", "revivalside-steam-runtime-isolated");
+
+    var defaultLanguage = localizationType.Methods.FirstOrDefault(item =>
+        item.Name == "GetDefaultLanguage"
+        && item.HasBody
+        && item.Parameters.Count == 0)
+        ?? throw new InvalidOperationException("NKCPMSteamPC.LocalizationSteam.GetDefaultLanguage was not found.");
+    if (!HasMarker(defaultLanguage, "revivalside-steam-runtime-isolated"))
+    {
+        var nationalCodeType = FindTypeDefinition(module, "NKC.NKM_NATIONAL_CODE")
+            ?? throw new InvalidOperationException("NKC.NKM_NATIONAL_CODE was not found.");
+        var englishField = nationalCodeType.Fields.FirstOrDefault(item =>
+            item.Name == "NNC_ENG"
+            && item.HasConstant)
+            ?? throw new InvalidOperationException("NKM_NATIONAL_CODE.NNC_ENG was not found.");
+        ClearMethodBody(defaultLanguage, initLocals: false);
+        var il = defaultLanguage.Body.GetILProcessor();
+        il.Append(il.Create(OpCodes.Ldstr, "revivalside-steam-runtime-isolated"));
+        il.Append(il.Create(OpCodes.Pop));
+        il.Append(il.Create(OpCodes.Ldc_I4, Convert.ToInt32(englishField.Constant)));
+        il.Append(il.Create(OpCodes.Ret));
+        changed = true;
+    }
+    return changed;
+}
+
+static bool PatchVoidMethodsNoOp(TypeDefinition type, string methodName, string marker)
+{
+    var methods = type.Methods.Where(item =>
+        item.Name == methodName
+        && item.HasBody
+        && item.ReturnType.MetadataType == MetadataType.Void).ToArray();
+    if (methods.Length == 0) throw new InvalidOperationException($"{type.FullName}.{methodName} was not found.");
+
+    var changed = false;
+    foreach (var method in methods)
+    {
+        if (HasMarker(method, marker)) continue;
+        ClearMethodBody(method, initLocals: false);
+        var il = method.Body.GetILProcessor();
+        il.Append(il.Create(OpCodes.Ldstr, marker));
+        il.Append(il.Create(OpCodes.Pop));
+        il.Append(il.Create(OpCodes.Ret));
+        changed = true;
+    }
+    return changed;
+}
+
 static bool HasSteamLocalLoginPatch(ModuleDefinition module)
 {
     var authType = FindTypeDefinition(module, "NKC.Publisher.NKCPMSteamPC/AuthSteam");
@@ -1954,7 +2603,142 @@ static bool HasSteamLocalLoginPatch(ModuleDefinition module)
         && publisherInit != null
         && HasLocalSteamIdentityMarker(loginMethod)
         && HasLocalSteamIdentityMarker(initMethod)
-        && HasSteamPublisherInitPatch(publisherInit);
+        && HasSteamPublisherInitPatch(publisherInit)
+        && HasSteamStandalonePatch(module)
+        && HasSteamRuntimeIsolationPatch(module);
+}
+
+static bool HasFrozenOfficialUpdateBypassPatch(ModuleDefinition module)
+{
+    return HasStringReturnMarker(module, "NKC.Publisher.NKCPMSteamPC/ServerInfoSteam", "GetServerConfigPath", "revivalside-frozen-official-update-bypass")
+        && HasStringReturnMarker(module, "NKC.Publisher.NKCPMNone/ServerInfoDefault", "GetServerConfigPath", "revivalside-frozen-official-update-bypass")
+        && HasMethodMarker(module, "NKC.Publisher.NKCPMSteamPC/NoticeSteam", "OpenURL", "revivalside-frozen-notice-isolation")
+        && HasFrozenPatchDownloadBypass(module)
+        && HasFrozenContentsVersionIsolation(module)
+        && FindExternalEndpointStrings(module).Count == 0;
+}
+
+static bool HasFrozenPatchDownloadBypass(ModuleDefinition module)
+{
+    return HasMethodMarker(
+        module,
+        "NKC.Patcher.WaitForAssetBundleVersionCheckStatus/<GetEnumerator>d__8",
+        "MoveNext",
+        "revivalside-frozen-patch-download-bypass");
+}
+
+static bool HasFrozenContentsVersionIsolation(ModuleDefinition module)
+{
+    return HasMethodMarker(
+        module,
+        "NKC.NKCMain",
+        "NKCInitLocalContentsVersion",
+        "revivalside-frozen-contents-version-isolation");
+}
+
+static bool HasStringReturnMarker(ModuleDefinition module, string typeFullName, string methodName, string marker)
+{
+    return HasMethodMarker(module, typeFullName, methodName, marker);
+}
+
+static bool HasMethodMarker(ModuleDefinition module, string typeFullName, string methodName, string marker)
+{
+    var type = FindTypeDefinition(module, typeFullName);
+    var method = type?.Methods.FirstOrDefault(item => item.Name == methodName && item.HasBody);
+    return method != null && HasMarker(method, marker);
+}
+
+static bool HasStringReturnPatchForValue(MethodDefinition method, string marker, string value)
+{
+    return HasMarker(method, marker)
+        && method.Body.Instructions.Any(instruction => instruction.Operand is string current && current == value);
+}
+
+static bool HasMarker(MethodDefinition method, string marker)
+{
+    return method.Body.Instructions.Any(instruction => instruction.Operand is string value && value == marker);
+}
+
+static bool HasSteamStandalonePatch(ModuleDefinition module)
+{
+    var steamManagerType = FindTypeDefinition(module, "SteamManager");
+    var awake = steamManagerType?.Methods.FirstOrDefault(item => item.Name == "Awake" && item.HasBody);
+    var onEnable = steamManagerType?.Methods.FirstOrDefault(item => item.Name == "OnEnable" && item.HasBody);
+    var onDestroy = steamManagerType?.Methods.FirstOrDefault(item => item.Name == "OnDestroy" && item.HasBody);
+    var update = steamManagerType?.Methods.FirstOrDefault(item => item.Name == "Update" && item.HasBody);
+    var initOnPlayMode = steamManagerType?.Methods.FirstOrDefault(item => item.Name == "InitOnPlayMode" && item.HasBody);
+    return awake != null
+        && onEnable != null
+        && onDestroy != null
+        && update != null
+        && initOnPlayMode != null
+        && HasSteamStandaloneMarker(awake)
+        && HasSteamStandaloneMarker(onEnable)
+        && HasSteamStandaloneMarker(onDestroy)
+        && HasSteamStandaloneMarker(update)
+        && HasSteamStandaloneMarker(initOnPlayMode);
+}
+
+static bool HasSteamStandaloneMarker(MethodDefinition method)
+{
+    return method.Body.Instructions.Any(instruction => instruction.Operand is string value && value == "revivalside-steam-standalone");
+}
+
+static List<string> FindSteamInteropCallsites(ModuleDefinition module)
+{
+    var callsites = new SortedSet<string>(StringComparer.Ordinal);
+    foreach (var type in module.GetTypes())
+    {
+        foreach (var method in type.Methods)
+        {
+            if (!method.HasBody) continue;
+            foreach (var instruction in method.Body.Instructions)
+            {
+                if (!IsSteamInteropOperand(instruction.Operand)) continue;
+                callsites.Add($"{method.FullName} -> {instruction.Operand}");
+            }
+        }
+    }
+    return callsites.ToList();
+}
+
+static bool IsSteamInteropOperand(object? operand)
+{
+    return operand switch
+    {
+        TypeReference type => IsSteamInteropType(type),
+        MemberReference member => IsSteamInteropType(member.DeclaringType),
+        _ => false,
+    };
+}
+
+static bool IsSteamInteropType(TypeReference? type)
+{
+    if (type == null) return false;
+    var fullName = type.FullName ?? "";
+    return fullName.StartsWith("Steamworks.", StringComparison.Ordinal)
+        || string.Equals(type.Scope?.Name, "com.rlabrecque.steamworks.net", StringComparison.OrdinalIgnoreCase);
+}
+
+static bool HasSteamRuntimeIsolationPatch(ModuleDefinition module)
+{
+    var localizationType = FindTypeDefinition(module, "NKC.Publisher.NKCPMSteamPC/LocalizationSteam");
+    var authType = FindTypeDefinition(module, "NKC.Publisher.NKCPMSteamPC/AuthSteam");
+    var inAppType = FindTypeDefinition(module, "NKC.Publisher.NKCPMSteamPC/InAppSteam");
+    if (localizationType == null || authType == null || inAppType == null) return false;
+
+    var required = new[]
+    {
+        localizationType.Methods.FirstOrDefault(item => item.Name == "get_m_strCountry" && item.HasBody),
+        localizationType.Methods.FirstOrDefault(item => item.Name == "get_m_strGameLanguage" && item.HasBody),
+        localizationType.Methods.FirstOrDefault(item => item.Name == "GetDefaultLanguage" && item.HasBody),
+        authType.Methods.FirstOrDefault(item => item.Name == "OnAuthSessionTicketResponse" && item.HasBody),
+        inAppType.Methods.FirstOrDefault(item => item.Name == "Init" && item.HasBody),
+        inAppType.Methods.FirstOrDefault(item => item.Name == "OnGameOverlayActivated" && item.HasBody),
+        inAppType.Methods.FirstOrDefault(item => item.Name == "OnMicroTxnAuthorizationResponse" && item.HasBody),
+    };
+    return required.All(method => method != null && HasMarker(method, "revivalside-steam-runtime-isolated"))
+        && FindSteamInteropCallsites(module).Count == 0;
 }
 
 static bool HasSteamPublisherInitPatch(MethodDefinition method)
@@ -2267,7 +3051,9 @@ sealed record PatchOptions(
     bool ApplyGearInventoryStateRepair,
     bool ApplyEpisodeProgressDifficultyFix,
     bool ApplyOperatorContractCategoryFix,
-    bool ApplySteamLocalLogin)
+    bool ApplySteamLocalLogin,
+    bool ApplyFrozenOfficialUpdateBypass,
+    string FrozenServerInfoUrl)
 {
     public static PatchOptions Parse(string[] args)
     {
@@ -2276,9 +3062,13 @@ sealed record PatchOptions(
         var envSwitch = HasArg(args, "--env-switch") || HasArg(args, "--from-env");
         var envPatchEnabled = ReadEnvFlag("CS_PATCH_COUNTER_PASS_CLIENT", "CS_COUNTER_PASS_CLIENT_PATCH");
         var envSteamLocalLoginEnabled = ReadEnvFlag("CS_PATCH_STEAM_LOCAL_LOGIN", "CS_STEAM_LOCAL_LOGIN_PATCH");
+        var envFrozenOfficialUpdateBypassEnabled = ReadEnvFlag("CS_PATCH_FROZEN_OFFICIAL_UPDATE_BYPASS", "CS_FROZEN_OFFICIAL_UPDATE_BYPASS_PATCH");
         var legacyAll = HasArg(args, "--legacy-all") || HasArg(args, "--all");
         var disabledByEnv = !restore && !status && envSwitch && envPatchEnabled != true;
         var envDrivenCounterPassPatch = envSwitch && envPatchEnabled == true;
+        var frozenServerInfoUrl = NormalizeFrozenServerInfoUrl(
+            ReadArgValue(args, "--frozen-server-info-url")
+            ?? Environment.GetEnvironmentVariable("CS_FROZEN_SERVER_INFO_URL"));
         return new PatchOptions(
             Restore: restore,
             RestoreFirst: !disabledByEnv && !restore && !status && (envSwitch || HasArg(args, "--restore-first") || HasArg(args, "--fresh")),
@@ -2301,12 +3091,54 @@ sealed record PatchOptions(
             ApplyEpisodeProgressDifficultyFix: !HasArg(args, "--no-episode-progress-difficulty-fix"),
             ApplyOperatorContractCategoryFix: !HasArg(args, "--no-operator-contract-category-fix"),
             ApplySteamLocalLogin: (envSteamLocalLoginEnabled == true || HasArg(args, "--include-steam-local-login"))
-                && !HasArg(args, "--no-steam-local-login"));
+                && !HasArg(args, "--no-steam-local-login"),
+            ApplyFrozenOfficialUpdateBypass: (envFrozenOfficialUpdateBypassEnabled == true || HasArg(args, "--include-frozen-official-update-bypass"))
+                && !HasArg(args, "--no-frozen-official-update-bypass"),
+            FrozenServerInfoUrl: frozenServerInfoUrl);
     }
 
     private static bool HasArg(string[] args, string name)
     {
         return args.Any(arg => string.Equals(arg, name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string? ReadArgValue(string[] args, string name)
+    {
+        for (var index = 0; index < args.Length; index += 1)
+        {
+            if (!string.Equals(args[index], name, StringComparison.OrdinalIgnoreCase)) continue;
+            if (index + 1 >= args.Length) throw new ArgumentException($"{name} requires a value.");
+            return args[index + 1];
+        }
+        return null;
+    }
+
+    private static string NormalizeFrozenServerInfoUrl(string? raw)
+    {
+        var value = string.IsNullOrWhiteSpace(raw)
+            ? "http://127.0.0.1:8088/server_config/live/ServerInfo_V2.json"
+            : raw.Trim();
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri))
+        {
+            throw new ArgumentException($"Frozen server-info URL must be absolute: {value}");
+        }
+        if (uri.Scheme is not ("http" or "https"))
+        {
+            throw new ArgumentException($"Frozen server-info URL must use http or https: {value}");
+        }
+        if (!IsLoopbackHost(uri.Host))
+        {
+            throw new ArgumentException($"Frozen server-info URL must point to loopback/local host: {value}");
+        }
+        return uri.ToString();
+    }
+
+    private static bool IsLoopbackHost(string host)
+    {
+        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return true;
+        if (host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase)) return true;
+        if (host.Equals("::1", StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     private static bool? ReadEnvFlag(params string[] keys)

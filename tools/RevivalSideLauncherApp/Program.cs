@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -112,7 +113,10 @@ internal sealed class LauncherWindow : Window
     private bool isShuttingDown;
     private bool isHiddenInTray;
     private bool startFlowBusy;
+    private string verifiedControlledManagedDir = "";
+    private string verifiedControlledServerInfoUrl = "";
     private const string StartButtonDefaultText = "START";
+    private const int ListenerReadinessTimeoutSeconds = 120;
 
     private readonly Button dashboardNavButton = new() { Content = "Home", MinWidth = 92, Height = 38 };
     private readonly Button crossSaveNavButton = new() { Content = "Cross Save", MinWidth = 128, Height = 38 };
@@ -122,10 +126,10 @@ internal sealed class LauncherWindow : Window
     private readonly Button stopListenerButton = new() { Content = "Stop", MinWidth = 96, Height = 38, IsEnabled = false };
     private readonly Button openUserManagerButton = new() { Content = "User Manager", MinWidth = 158, Height = 38 };
     private readonly Button openWikiButton = new() { Content = "Wiki", MinWidth = 88, Height = 38 };
-    private readonly Button patchHostsButton = new() { Content = "Patch Hosts", MinWidth = 124, Height = 38 };
-    private readonly Button unpatchHostsButton = new() { Content = "Unpatch", MinWidth = 108, Height = 38 };
     private readonly Button browseManagedButton = new() { Content = "Browse", MinWidth = 104, Height = 38 };
     private readonly Button detectManagedButton = new() { Content = "Detect", MinWidth = 104, Height = 38 };
+    private readonly Button freezeClientButton = new() { Content = "Freeze", MinWidth = 104, Height = 38 };
+    private readonly Button launchFrozenClientButton = new() { Content = "Launch Frozen", MinWidth = 142, Height = 38 };
     private readonly Button saveSettingsButton = new() { Content = "Save Settings", MinWidth = 150, Height = 40 };
     private readonly Button verifyGameplayAssetsButton = new() { Content = "Verify Assets", MinWidth = 138, Height = 40 };
     private readonly Button buildGameplayAssetsButton = new() { Content = "Build Cache", MinWidth = 138, Height = 40 };
@@ -136,6 +140,7 @@ internal sealed class LauncherWindow : Window
     private readonly Button importCrossSaveButton = new() { Content = "Extract and Copy", MinWidth = 174, Height = 40 };
 
     private readonly TextBlock listenerStatusText = new() { Text = "Stopped" };
+    private readonly TextBlock clientRoutingStatusText = Muted("Freeze a client to enable verified local routing.", 52);
     private readonly TextBlock gameplayDataStatusText = new() { Text = "Not checked" };
     private readonly ProgressBar dashboardGameplayProgressBar = new() { Minimum = 0, Maximum = 100, Height = 8 };
     private readonly ProgressBar settingsGameplayProgressBar = new() { Minimum = 0, Maximum = 100, Height = 8 };
@@ -315,7 +320,7 @@ internal sealed class LauncherWindow : Window
         AddRow(leftLayout, Row(stopListenerButton, openUserManagerButton, openWikiButton), 4);
         AddRow(leftLayout, Divider(), 5);
         AddRow(leftLayout, Eyebrow("Client Routing"), 6);
-        AddRow(leftLayout, Row(patchHostsButton, unpatchHostsButton), 7);
+        AddRow(leftLayout, clientRoutingStatusText, 7);
         var logs = Glass(new Thickness(12), new Thickness(0, 18, 0, 0), Color.FromArgb(168, 6, 9, 13));
         logs.Child = Scrollable(logBox);
         AddRow(leftLayout, logs, 8);
@@ -440,12 +445,16 @@ internal sealed class LauncherWindow : Window
 
     private Control BuildClientSettings()
     {
-        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"), ColumnSpacing = 10 };
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto,Auto,Auto"), ColumnSpacing = 10 };
         row.Children.Add(managedDirBox);
         Grid.SetColumn(browseManagedButton, 1);
         row.Children.Add(browseManagedButton);
         Grid.SetColumn(detectManagedButton, 2);
         row.Children.Add(detectManagedButton);
+        Grid.SetColumn(freezeClientButton, 3);
+        row.Children.Add(freezeClientButton);
+        Grid.SetColumn(launchFrozenClientButton, 4);
+        row.Children.Add(launchFrozenClientButton);
         return row;
     }
 
@@ -524,11 +533,11 @@ internal sealed class LauncherWindow : Window
             stopListenerButton,
             openUserManagerButton,
             openWikiButton,
-            patchHostsButton,
-            unpatchHostsButton,
             openLogsButton,
             browseManagedButton,
             detectManagedButton,
+            freezeClientButton,
+            launchFrozenClientButton,
             browseCrossSaveCaptureButton,
             refreshCrossSaveButton,
             verifyGameplayAssetsButton,
@@ -800,10 +809,10 @@ internal sealed class LauncherWindow : Window
             OpenUrl($"http://127.0.0.1:{settings.HttpPort}/user-manager");
         };
         openWikiButton.Click += async (_, _) => await RunUiAction(OpenWikiAsync);
-        patchHostsButton.Click += (_, _) => RunHostsPatch(remove: false);
-        unpatchHostsButton.Click += (_, _) => RunHostsPatch(remove: true);
         browseManagedButton.Click += async (_, _) => await RunUiAction(BrowseManagedAssemblyAsync);
         detectManagedButton.Click += async (_, _) => await RunUiAction(async () => { await DetectManagedAssemblyAsync(showMessage: true); });
+        freezeClientButton.Click += async (_, _) => await RunUiAction(FreezeClientAsync);
+        launchFrozenClientButton.Click += async (_, _) => await RunUiAction(() => LaunchFrozenClientAsync());
         saveSettingsButton.Click += (_, _) => SaveSettingsFromUi();
         browseCrossSaveCaptureButton.Click += async (_, _) => await RunUiAction(StartCrossSaveCaptureAsync);
         refreshCrossSaveButton.Click += (_, _) => StopCrossSaveCapture();
@@ -1520,10 +1529,10 @@ internal sealed class LauncherWindow : Window
     {
         if (listenerProcess is { HasExited: false }) return;
         SaveSettingsFromUi();
+        RequireControlledFrozenClient();
         SetStartButtonPhase("PATCHING");
         try
         {
-            await EnsureHostsPatchedAsync();
             SetStartButtonPhase("STARTING");
             await EnsureListenerDependenciesAsync();
             EnsureRuntimeLayout();
@@ -1532,34 +1541,47 @@ internal sealed class LauncherWindow : Window
             AppendLog($"Gameplay assets ready: {gameplayAssets.Description}");
             gameplayAssets = await EnsureGameplayAssetCacheAsync(force: false);
             AppendLog($"Gameplay asset cache ready: {gameplayAssets.CachedLuaCount:N0} luac files at {gameplayAssets.CacheRoot}");
-            await EnsureClientPatchAsync();
+            await EnsureClientPatchAsync(requireControlledRouting: true);
             var env = BuildListenerEnvironment();
             var logWriter = OpenProcessLog("listener", out var logPath);
             var listenCommand = CreateListenCommand();
             var job = ProcessJob.TryCreateKillOnClose();
+            var readiness = new ListenerReadinessGate();
             var process = new Process
             {
                 StartInfo = listenCommand.StartInfo,
                 EnableRaisingEvents = true,
             };
             foreach (var item in env) process.StartInfo.Environment[item.Key] = item.Value;
-            process.OutputDataReceived += (_, e) => { if (e.Data != null) AppendProcessLog(logWriter, e.Data); };
-            process.ErrorDataReceived += (_, e) => { if (e.Data != null) AppendProcessLog(logWriter, e.Data); };
-            process.Exited += (_, _) => Dispatcher.UIThread.Post(() =>
+            void HandleListenerOutput(string? line)
             {
-                if (ReferenceEquals(listenerProcess, process))
+                if (line == null) return;
+                AppendProcessLog(logWriter, line);
+                readiness.Observe(line);
+            }
+            process.OutputDataReceived += (_, e) => HandleListenerOutput(e.Data);
+            process.ErrorDataReceived += (_, e) => HandleListenerOutput(e.Data);
+            process.Exited += (_, _) =>
+            {
+                var exitDescription = "before reporting ready";
+                try { exitDescription = $"with exit code {process.ExitCode} before reporting ready"; } catch { }
+                readiness.Fail($"Listener exited {exitDescription}.");
+                Dispatcher.UIThread.Post(() =>
                 {
-                    listenerProcess = null;
-                    listenerJob?.Dispose();
-                    listenerJob = null;
-                    process.Dispose();
-                }
-                listenerStatusText.Text = "Stopped";
-                UpdateButtons();
-                HandleBackgroundServiceStopped("Listener");
-                AppendProcessLog(logWriter, "Listener stopped.");
-                CloseProcessLog(logWriter);
-            });
+                    if (ReferenceEquals(listenerProcess, process))
+                    {
+                        listenerProcess = null;
+                        listenerJob?.Dispose();
+                        listenerJob = null;
+                        process.Dispose();
+                    }
+                    listenerStatusText.Text = "Stopped";
+                    UpdateButtons();
+                    HandleBackgroundServiceStopped("Listener");
+                    AppendProcessLog(logWriter, "Listener stopped.");
+                    CloseProcessLog(logWriter);
+                });
+            };
             if (!process.Start())
             {
                 job?.Dispose();
@@ -1580,10 +1602,29 @@ internal sealed class LauncherWindow : Window
             listenerJob = job;
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
-            listenerStatusText.Text = "Running";
+            listenerStatusText.Text = "Starting";
             AppendLog($"Listener started: {listenCommand.Display}");
             AppendLog($"Listener log: {logPath}");
+            AppendLog("Waiting for game listener, captured mirror, fixture directory, and User Manager readiness...");
             UpdateButtons();
+            try
+            {
+                await readiness.Ready.WaitAsync(TimeSpan.FromSeconds(ListenerReadinessTimeoutSeconds));
+            }
+            catch (TimeoutException)
+            {
+                throw new InvalidOperationException(
+                    $"Listener did not become ready within {ListenerReadinessTimeoutSeconds} seconds. Missing: {readiness.DescribeMissing()}.");
+            }
+            if (!ReferenceEquals(listenerProcess, process) || process.HasExited)
+            {
+                throw new InvalidOperationException("Listener stopped before the frozen client could be launched.");
+            }
+
+            listenerStatusText.Text = "Ready";
+            AppendLog("Listener ready: game port, captured HTTP mirror, fixture directory, and User Manager are listening.");
+            SetStartButtonPhase("LAUNCHING");
+            await LaunchFrozenClientAsync(clientPatchAlreadyVerified: true);
         }
         finally
         {
@@ -1605,62 +1646,6 @@ internal sealed class LauncherWindow : Window
         startListenerButton.IsHitTestVisible = true;
         startListenerButton.Content = StartButtonDefaultText;
         UpdateButtons();
-    }
-
-    private static bool IsHostsPatched()
-    {
-        try
-        {
-            var hostsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "drivers", "etc", "hosts");
-            if (!File.Exists(hostsPath)) return false;
-            var text = File.ReadAllText(hostsPath);
-            return text.Contains("# BEGIN RevivalSide", StringComparison.Ordinal)
-                && text.Contains("ctsglobal-login.sbside.com", StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private async Task EnsureHostsPatchedAsync()
-    {
-        if (IsHostsPatched())
-        {
-            AppendLog("Hosts already patched.");
-            return;
-        }
-
-        var script = Path.Combine(appRoot, "tools", "patch-hosts.ps1");
-        if (!File.Exists(script)) throw new FileNotFoundException("hosts patch script was not found.", script);
-
-        AppendLog("Patching hosts (approve the UAC prompt)...");
-        using var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\"",
-                UseShellExecute = true,
-                Verb = "runas",
-                WorkingDirectory = appRoot,
-            },
-        };
-        if (!process.Start()) throw new InvalidOperationException("Could not launch elevated hosts patch.");
-        await process.WaitForExitAsync();
-        if (process.ExitCode != 0) throw new InvalidOperationException($"Hosts patch exited with code {process.ExitCode}.");
-
-        for (var attempt = 0; attempt < 30; attempt++)
-        {
-            if (IsHostsPatched())
-            {
-                AppendLog("Hosts patched successfully.");
-                return;
-            }
-            await Task.Delay(500);
-        }
-
-        throw new InvalidOperationException("Hosts patch finished but RevivalSide entries were not detected in hosts.");
     }
 
     private void StopListener()
@@ -2535,43 +2520,65 @@ internal sealed class LauncherWindow : Window
         }
     }
 
-    private void RunHostsPatch(bool remove)
-    {
-        var script = Path.Combine(appRoot, "tools", "patch-hosts.ps1");
-        if (!File.Exists(script)) throw new FileNotFoundException("hosts patch script was not found.", script);
-        var args = new List<string> { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", Quote(script) };
-        if (remove) args.Add("-Remove");
-        var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                Arguments = string.Join(" ", args),
-                UseShellExecute = true,
-                Verb = "runas",
-                WorkingDirectory = appRoot,
-            },
-        };
-        process.Start();
-        AppendLog(remove ? "Hosts unpatch requested." : "Hosts patch requested.");
-    }
-
-    private async Task EnsureClientPatchAsync()
+    private async Task EnsureClientPatchAsync(bool requireControlledRouting = false)
     {
         var managedDir = RequireConfiguredManagedDir();
+        var frozenClient = IsFrozenManagedDir(managedDir);
+        if (requireControlledRouting && !frozenClient)
+        {
+            throw new InvalidOperationException("The selected CounterSide client is not frozen. Use Freeze before starting RevivalSide.");
+        }
+
         using var logWriter = OpenProcessLog("client-patch", out var logPath);
         AppendLog("Checking CounterSide client patch...");
         AppendLog($"Client patch log: {logPath}");
 
-        using var process = new Process
+        try
         {
-            StartInfo = CreateClientPatchStartInfo(managedDir),
-        };
+            await RunClientPatchProcessAsync(CreateClientPatchStartInfo(managedDir), managedDir, logWriter, "patch");
+            if (frozenClient)
+            {
+                var statusStartInfo = CreateClientPatchStartInfo(managedDir);
+                statusStartInfo.ArgumentList.Add("--status");
+                var statusOutput = await RunClientPatchProcessAsync(statusStartInfo, managedDir, logWriter, "status audit");
+                ValidateControlledClientPatchStatus(statusOutput);
+                verifiedControlledManagedDir = Path.GetFullPath(managedDir);
+                verifiedControlledServerInfoUrl = GetFrozenServerInfoUrl();
+                UpdateClientRoutingStatus();
+                AppendLog($"Controlled client routing verified: {verifiedControlledServerInfoUrl}");
+            }
+            AppendLog("CounterSide client patch ready.");
+        }
+        catch
+        {
+            verifiedControlledManagedDir = "";
+            verifiedControlledServerInfoUrl = "";
+            UpdateClientRoutingStatus(failed: frozenClient);
+            throw;
+        }
+    }
+
+    private async Task<string> RunClientPatchProcessAsync(
+        ProcessStartInfo startInfo,
+        string managedDir,
+        StreamWriter logWriter,
+        string action)
+    {
+        using var process = new Process { StartInfo = startInfo };
         foreach (var item in BuildListenerEnvironment()) process.StartInfo.Environment[item.Key] = item.Value;
         process.StartInfo.Environment["CS_COUNTERSIDE_MANAGED_DIR"] = managedDir;
-        process.OutputDataReceived += (_, e) => { if (e.Data != null) AppendProcessLog(logWriter, e.Data); };
-        process.ErrorDataReceived += (_, e) => { if (e.Data != null) AppendProcessLog(logWriter, e.Data); };
-        if (!process.Start()) throw new InvalidOperationException("Could not start CounterSide client patcher.");
+        var outputLines = new List<string>();
+        var outputLock = new object();
+        void Capture(string? line)
+        {
+            if (line == null) return;
+            lock (outputLock) outputLines.Add(line);
+            AppendProcessLog(logWriter, line);
+        }
+
+        process.OutputDataReceived += (_, e) => Capture(e.Data);
+        process.ErrorDataReceived += (_, e) => Capture(e.Data);
+        if (!process.Start()) throw new InvalidOperationException($"Could not start CounterSide client patcher {action}.");
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
         await process.WaitForExitAsync();
@@ -2579,9 +2586,26 @@ internal sealed class LauncherWindow : Window
         if (process.ExitCode != 0)
         {
             throw new InvalidOperationException(
-                $"CounterSide client patch failed with exit code {process.ExitCode}. Close CounterSide, run the launcher as administrator if needed, then retry. See {logPath}");
+                $"CounterSide client patcher {action} failed with exit code {process.ExitCode}. Close CounterSide and retry. See the client patch log.");
         }
-        AppendLog("CounterSide client patch ready.");
+        lock (outputLock) return string.Join(Environment.NewLine, outputLines);
+    }
+
+    private static void ValidateControlledClientPatchStatus(string output)
+    {
+        var required = new[]
+        {
+            "steam-local-login=True",
+            "steam-standalone=True",
+            "steam-runtime-isolated=True",
+            "steam-interop-callsites=0",
+            "frozen-official-update-bypass=True",
+            "external-endpoint-references=0",
+        };
+        var missing = required.Where(value => !output.Contains(value, StringComparison.Ordinal)).ToArray();
+        if (missing.Length == 0) return;
+        throw new InvalidOperationException(
+            "Frozen client routing verification failed. Missing status: " + string.Join(", ", missing));
     }
 
     private ProcessStartInfo CreateClientPatchStartInfo(string managedDir)
@@ -2590,8 +2614,7 @@ internal sealed class LauncherWindow : Window
         if (File.Exists(packagedPatcher))
         {
             var startInfo = CreateHiddenProcessStartInfo(packagedPatcher);
-            startInfo.ArgumentList.Add("--managed-dir");
-            startInfo.ArgumentList.Add(managedDir);
+            AddClientPatchArguments(startInfo, managedDir);
             return startInfo;
         }
 
@@ -2603,12 +2626,46 @@ internal sealed class LauncherWindow : Window
             startInfo.ArgumentList.Add("--project");
             startInfo.ArgumentList.Add(sourceProject);
             startInfo.ArgumentList.Add("--");
-            startInfo.ArgumentList.Add("--managed-dir");
-            startInfo.ArgumentList.Add(managedDir);
+            AddClientPatchArguments(startInfo, managedDir);
             return startInfo;
         }
 
         throw new FileNotFoundException("CounterSide client patcher was not found.", packagedPatcher);
+    }
+
+    private void AddClientPatchArguments(ProcessStartInfo startInfo, string managedDir)
+    {
+        startInfo.ArgumentList.Add("--managed-dir");
+        startInfo.ArgumentList.Add(managedDir);
+        startInfo.ArgumentList.Add("--include-steam-local-login");
+        if (!IsFrozenManagedDir(managedDir)) return;
+
+        startInfo.ArgumentList.Add("--include-frozen-official-update-bypass");
+        startInfo.ArgumentList.Add("--frozen-server-info-url");
+        startInfo.ArgumentList.Add(GetFrozenServerInfoUrl());
+    }
+
+    private bool IsFrozenManagedDir(string managedDir)
+    {
+        if (!IsManagedDir(managedDir)) return false;
+        var root = FindCounterSideRootDirFromManaged(managedDir);
+        return !string.IsNullOrWhiteSpace(root) && IsFrozenClientRoot(root);
+    }
+
+    private string RequireControlledFrozenClient()
+    {
+        var managedDir = RequireConfiguredManagedDir();
+        if (!IsFrozenManagedDir(managedDir))
+        {
+            throw new InvalidOperationException("Freeze the selected CounterSide installation before starting RevivalSide. Direct local routing is applied only to the frozen copy.");
+        }
+        return managedDir;
+    }
+
+    private string GetFrozenServerInfoUrl()
+    {
+        var httpPort = Convert.ToInt32(ClampPort(settings.HttpPort, 8088));
+        return $"http://127.0.0.1:{httpPort.ToString(CultureInfo.InvariantCulture)}/server_config/live/ServerInfo_V2.json";
     }
 
     private ProcessStartInfo CreateHiddenProcessStartInfo(string fileName) => new()
@@ -2709,6 +2766,7 @@ internal sealed class LauncherWindow : Window
         }
         ApplyAdvancedEnvironment(env, settings.AdvancedEnvText);
         ApplyAuthoritativeManagedEnvironment(env);
+        env["CS_REQUIRE_FROZEN_CLIENT_PATCH"] = "1";
         if (IsManagedDir(GetConfiguredManagedDir()))
         {
             env["CS_GAMEPLAY_TABLES_DIR"] = GameplayLuaCacheDir();
@@ -3249,6 +3307,317 @@ internal sealed class LauncherWindow : Window
         return false;
     }
 
+    private async Task FreezeClientAsync()
+    {
+        var managedDir = GetConfiguredManagedDir();
+        if (!IsManagedDir(managedDir) && !await DetectManagedAssemblyAsync(showMessage: false))
+        {
+            throw new InvalidOperationException("Select or detect CounterSide Data\\Managed\\Assembly-CSharp.dll before freezing the client.");
+        }
+
+        managedDir = RequireConfiguredManagedDir();
+        var sourceRoot = FindCounterSideRootDirFromManaged(managedDir);
+        if (!IsCounterSideGameRoot(sourceRoot))
+        {
+            throw new InvalidOperationException($"CounterSide game root could not be resolved from {managedDir}.");
+        }
+
+        var archiveRoot = FrozenClientArchiveRoot();
+        if (IsSamePathOrInside(archiveRoot, sourceRoot))
+        {
+            await ShowMessageAsync("RevivalSide", $"This client is already frozen:\n{sourceRoot}");
+            return;
+        }
+        if (IsSamePathOrInside(sourceRoot, appRoot))
+        {
+            throw new InvalidOperationException($"Refusing to archive into a folder below the source game root: {sourceRoot}");
+        }
+
+        var targetRoot = Path.Combine(archiveRoot, $"CounterSide-{DateTime.Now:yyyyMMdd-HHmmss}");
+        var confirmed = await ShowConfirmAsync(
+            "Freeze CounterSide Client",
+            $"Copy the current CounterSide install into RevivalSide's frozen archive and switch RevivalSide to that copy?\n\nSource:\n{sourceRoot}\n\nArchive:\n{targetRoot}\n\nSteam updates will not touch the archived copy.",
+            "Freeze",
+            "Cancel");
+        if (!confirmed) return;
+
+        AppendLog($"Freezing CounterSide client from {sourceRoot}");
+        var lastProgressLog = DateTime.MinValue;
+        var progress = new Progress<FrozenClientCopyProgress>(copyProgress =>
+        {
+            if ((DateTime.Now - lastProgressLog).TotalSeconds < 3 && copyProgress.FileCount % 500 != 0) return;
+            lastProgressLog = DateTime.Now;
+            AppendLog($"Freeze copy: {copyProgress.FileCount:N0} files, {FormatBytes(copyProgress.ByteCount)}");
+        });
+
+        var archive = await Task.Run(() => CopyFrozenClientArchive(sourceRoot, managedDir, targetRoot, progress));
+        settings.CounterSideManagedDir = archive.ManagedDir;
+        managedDirBox.Text = archive.ManagedDir;
+        SaveSettings();
+        AppendLog($"Frozen client selected: {archive.ManagedDir}");
+        AppendLog($"Frozen Assembly-CSharp SHA256: {archive.AssemblySha256}");
+        RefreshGameplayAssetStatus(log: true);
+        _ = RefreshCutsceneBackgroundAsync(force: false);
+
+        await EnsureClientPatchAsync(requireControlledRouting: true);
+        var isolatedSteamFiles = IsolateFrozenSteamRuntime(archive.RootDir);
+        var patchedAssemblySha256 = HashFile(Path.Combine(archive.ManagedDir, "Assembly-CSharp.dll"));
+        UpdateFrozenClientPatchedManifest(archive.RootDir, patchedAssemblySha256, steamRuntimeIsolated: true);
+        AppendLog($"Patched frozen Assembly-CSharp SHA256: {patchedAssemblySha256}");
+        AppendLog($"Steam runtime isolated in frozen client: {isolatedSteamFiles} native files quarantined.");
+
+        await ShowMessageAsync(
+            "RevivalSide",
+            $"Frozen client ready.\n\nArchive:\n{archive.RootDir}\n\nRevivalSide now patches and reads:\n{archive.ManagedDir}");
+    }
+
+    private FrozenClientArchive CopyFrozenClientArchive(
+        string sourceRoot,
+        string sourceManagedDir,
+        string targetRoot,
+        IProgress<FrozenClientCopyProgress>? progress)
+    {
+        sourceRoot = Path.GetFullPath(sourceRoot);
+        sourceManagedDir = Path.GetFullPath(sourceManagedDir);
+        targetRoot = Path.GetFullPath(targetRoot);
+        if (!IsCounterSideGameRoot(sourceRoot)) throw new InvalidOperationException($"Source is not a CounterSide game root: {sourceRoot}");
+        if (!IsSamePathOrInside(sourceRoot, sourceManagedDir)) throw new InvalidOperationException($"Managed directory is not inside the game root: {sourceManagedDir}");
+        if (Directory.Exists(targetRoot)) throw new IOException($"Frozen client archive already exists: {targetRoot}");
+
+        Directory.CreateDirectory(targetRoot);
+        var fileCount = 0;
+        var byteCount = 0L;
+        foreach (var directory in Directory.EnumerateDirectories(sourceRoot, "*", SearchOption.AllDirectories))
+        {
+            Directory.CreateDirectory(Path.Combine(targetRoot, Path.GetRelativePath(sourceRoot, directory)));
+        }
+
+        foreach (var sourceFile in Directory.EnumerateFiles(sourceRoot, "*", SearchOption.AllDirectories))
+        {
+            var relative = Path.GetRelativePath(sourceRoot, sourceFile);
+            var targetFile = Path.Combine(targetRoot, relative);
+            Directory.CreateDirectory(Path.GetDirectoryName(targetFile) ?? targetRoot);
+            File.Copy(sourceFile, targetFile, overwrite: false);
+            try { File.SetLastWriteTimeUtc(targetFile, File.GetLastWriteTimeUtc(sourceFile)); } catch { }
+            fileCount++;
+            byteCount += new FileInfo(targetFile).Length;
+            if (fileCount % 100 == 0) progress?.Report(new FrozenClientCopyProgress(fileCount, byteCount));
+        }
+
+        var relativeManagedDir = Path.GetRelativePath(sourceRoot, sourceManagedDir);
+        var targetManagedDir = Path.Combine(targetRoot, relativeManagedDir);
+        if (!IsManagedDir(targetManagedDir))
+        {
+            throw new InvalidOperationException($"Frozen client copy is missing Assembly-CSharp.dll: {targetManagedDir}");
+        }
+
+        var assemblyPath = Path.Combine(targetManagedDir, "Assembly-CSharp.dll");
+        var assemblySha256 = HashFile(assemblyPath);
+        WriteFrozenClientLaunchFiles(targetRoot);
+        var manifest = new FrozenClientManifest
+        {
+            ArchivedAtUtc = DateTime.UtcNow,
+            SourceRoot = sourceRoot,
+            RootDir = targetRoot,
+            ManagedDir = targetManagedDir,
+            FileCount = fileCount,
+            ByteCount = byteCount,
+            AssemblySha256 = assemblySha256,
+        };
+        File.WriteAllText(
+            Path.Combine(targetRoot, "revivalside-frozen-client.json"),
+            JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine,
+            Encoding.UTF8);
+
+        progress?.Report(new FrozenClientCopyProgress(fileCount, byteCount));
+        return new FrozenClientArchive(targetRoot, targetManagedDir, fileCount, byteCount, assemblySha256);
+    }
+
+    private static void WriteFrozenClientLaunchFiles(string targetRoot)
+    {
+        var legacyAppId = Path.Combine(targetRoot, "steam_appid.txt");
+        if (File.Exists(legacyAppId)) File.Delete(legacyAppId);
+        File.WriteAllText(
+            Path.Combine(targetRoot, "Launch Offline CounterSide.bat"),
+            "@echo off\r\ncd /d \"%~dp0\"\r\nstart \"\" \"%~dp0CounterSide.exe\"\r\n",
+            Encoding.ASCII);
+    }
+
+    private static int IsolateFrozenSteamRuntime(string frozenRoot)
+    {
+        frozenRoot = Path.GetFullPath(frozenRoot);
+        var disabledRoot = Path.Combine(frozenRoot, "revivalside-disabled", "steam-runtime");
+        var quarantined = 0;
+
+        foreach (var appIdPath in Directory.EnumerateFiles(frozenRoot, "steam_appid.txt", SearchOption.AllDirectories).ToArray())
+        {
+            if (IsSamePathOrInside(disabledRoot, appIdPath)) continue;
+            File.Delete(appIdPath);
+        }
+
+        foreach (var steamApiPath in Directory
+            .EnumerateFiles(frozenRoot, "steam_api*.dll", SearchOption.AllDirectories)
+            .Where(path => !IsSamePathOrInside(disabledRoot, path))
+            .ToArray())
+        {
+            var relative = Path.GetRelativePath(frozenRoot, steamApiPath);
+            var destination = Path.Combine(disabledRoot, relative + ".revivalside-disabled");
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.Move(steamApiPath, destination, overwrite: true);
+            quarantined++;
+        }
+
+        ValidateFrozenSteamRuntimeIsolation(frozenRoot);
+        return quarantined;
+    }
+
+    private static void ValidateFrozenSteamRuntimeIsolation(string frozenRoot)
+    {
+        var disabledRoot = Path.Combine(frozenRoot, "revivalside-disabled", "steam-runtime");
+        var activeAppIds = Directory
+            .EnumerateFiles(frozenRoot, "steam_appid.txt", SearchOption.AllDirectories)
+            .Where(path => !IsSamePathOrInside(disabledRoot, path))
+            .ToArray();
+        var activeSteamApis = Directory
+            .EnumerateFiles(frozenRoot, "steam_api*.dll", SearchOption.AllDirectories)
+            .Where(path => !IsSamePathOrInside(disabledRoot, path))
+            .ToArray();
+        if (activeAppIds.Length > 0 || activeSteamApis.Length > 0)
+        {
+            throw new InvalidOperationException("Frozen client Steam runtime isolation failed; active Steam bootstrap files remain.");
+        }
+
+        var executable = Path.Combine(frozenRoot, "CounterSide.exe");
+        var executableText = Encoding.ASCII.GetString(File.ReadAllBytes(executable));
+        var nativeSteamMarkers = new[] { "steam_api.dll", "steam_api64.dll", "SteamAPI_RestartAppIfNecessary", "steam://run/" };
+        var marker = nativeSteamMarkers.FirstOrDefault(value => executableText.Contains(value, StringComparison.OrdinalIgnoreCase));
+        if (marker != null)
+        {
+            throw new InvalidOperationException($"Frozen CounterSide.exe contains a native Steam bootstrap marker: {marker}");
+        }
+    }
+
+    private async Task LaunchFrozenClientAsync(bool clientPatchAlreadyVerified = false)
+    {
+        if (listenerProcess is not { HasExited: false })
+        {
+            throw new InvalidOperationException("Start the RevivalSide listener before launching the frozen client.");
+        }
+
+        var frozenRoot = ResolveFrozenClientRoot();
+        if (string.IsNullOrWhiteSpace(frozenRoot))
+        {
+            throw new InvalidOperationException("No frozen CounterSide archive was found. Use Freeze first.");
+        }
+
+        if (!IsFrozenClientRoot(frozenRoot))
+        {
+            throw new InvalidOperationException($"Refusing to launch a non-frozen CounterSide path: {frozenRoot}");
+        }
+
+        var executable = Path.Combine(frozenRoot, "CounterSide.exe");
+        if (!File.Exists(executable))
+        {
+            throw new FileNotFoundException("Frozen CounterSide.exe was not found.", executable);
+        }
+
+        WriteFrozenClientLaunchFiles(frozenRoot);
+        var managedDir = Path.Combine(frozenRoot, "Data", "Managed");
+        if (IsManagedDir(managedDir) && !managedDir.Equals(settings.CounterSideManagedDir, StringComparison.OrdinalIgnoreCase))
+        {
+            settings.CounterSideManagedDir = managedDir;
+            managedDirBox.Text = managedDir;
+            SaveSettings();
+            RefreshGameplayAssetStatus(log: true);
+        }
+
+        if (!clientPatchAlreadyVerified)
+        {
+            await EnsureClientPatchAsync(requireControlledRouting: true);
+        }
+        else
+        {
+            var expectedManagedDir = Path.GetFullPath(managedDir);
+            if (!expectedManagedDir.Equals(verifiedControlledManagedDir, StringComparison.OrdinalIgnoreCase)
+                || !GetFrozenServerInfoUrl().Equals(verifiedControlledServerInfoUrl, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("The frozen client patch verification changed before launch. Stop and press Start again.");
+            }
+        }
+        var isolatedSteamFiles = IsolateFrozenSteamRuntime(frozenRoot);
+        var patchedAssemblySha256 = HashFile(Path.Combine(managedDir, "Assembly-CSharp.dll"));
+        UpdateFrozenClientPatchedManifest(frozenRoot, patchedAssemblySha256, steamRuntimeIsolated: true);
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = executable,
+            WorkingDirectory = frozenRoot,
+            UseShellExecute = false,
+        };
+        foreach (var key in new[] { "SteamAppId", "SteamGameId", "SteamClientLaunch", "SteamEnv", "SteamPath" })
+        {
+            startInfo.Environment.Remove(key);
+        }
+        Process.Start(startInfo);
+        AppendLog($"Launched Steam-isolated frozen CounterSide: {executable} ({isolatedSteamFiles} native files newly quarantined)");
+    }
+
+    private string ResolveFrozenClientRoot()
+    {
+        var managedDir = GetConfiguredManagedDir();
+        if (IsManagedDir(managedDir))
+        {
+            var selectedRoot = FindCounterSideRootDirFromManaged(managedDir);
+            if (IsFrozenClientRoot(selectedRoot)) return selectedRoot;
+        }
+
+        var archiveRoot = FrozenClientArchiveRoot();
+        if (!Directory.Exists(archiveRoot)) return "";
+        try
+        {
+            foreach (var directory in Directory.EnumerateDirectories(archiveRoot)
+                         .OrderByDescending(Directory.GetLastWriteTimeUtc))
+            {
+                if (IsFrozenClientRoot(directory)) return directory;
+            }
+        }
+        catch
+        {
+            return "";
+        }
+        return "";
+    }
+
+    private bool IsFrozenClientRoot(string directory)
+    {
+        if (!IsCounterSideGameRoot(directory)) return false;
+        if (!File.Exists(Path.Combine(directory, "CounterSide.exe"))) return false;
+        return IsSamePathOrInside(FrozenClientArchiveRoot(), directory);
+    }
+
+    private static void UpdateFrozenClientPatchedManifest(string rootDir, string patchedAssemblySha256, bool steamRuntimeIsolated)
+    {
+        var manifestPath = Path.Combine(rootDir, "revivalside-frozen-client.json");
+        var manifest = File.Exists(manifestPath)
+            ? JsonSerializer.Deserialize<FrozenClientManifest>(File.ReadAllText(manifestPath)) ?? new FrozenClientManifest()
+            : new FrozenClientManifest { RootDir = rootDir };
+        manifest.PatchedAtUtc = DateTime.UtcNow;
+        manifest.PatchedAssemblySha256 = patchedAssemblySha256;
+        manifest.SteamRuntimeIsolated = steamRuntimeIsolated;
+        File.WriteAllText(
+            manifestPath,
+            JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine,
+            Encoding.UTF8);
+    }
+
+    private string FrozenClientArchiveRoot() => Path.Combine(appRoot, "frozen-client");
+
+    private static bool IsCounterSideGameRoot(string directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory)) return false;
+        return File.Exists(Path.Combine(directory, "Data", "Managed", "Assembly-CSharp.dll"));
+    }
+
     private LauncherSettings LoadSettings()
     {
         try
@@ -3542,7 +3911,40 @@ internal sealed class LauncherWindow : Window
         refreshCrossSaveButton.IsEnabled = crossSaveCaptureRunning;
         importCrossSaveButton.IsEnabled = !crossSaveCaptureRunning;
         stopListenerButton.IsEnabled = listenerRunning;
+        freezeClientButton.IsEnabled = !listenerRunning && !crossSaveCaptureRunning;
+        launchFrozenClientButton.IsEnabled = !startFlowBusy && listenerRunning && !string.IsNullOrWhiteSpace(ResolveFrozenClientRoot());
+        UpdateClientRoutingStatus();
         UpdateTrayTooltip();
+    }
+
+    private void UpdateClientRoutingStatus(bool failed = false)
+    {
+        var managedDir = GetConfiguredManagedDir();
+        if (!IsFrozenManagedDir(managedDir))
+        {
+            clientRoutingStatusText.Text = "Freeze required. RevivalSide will not redirect the Steam-managed client.";
+            clientRoutingStatusText.Foreground = Brush(255, 202, 87);
+            return;
+        }
+
+        var normalizedManagedDir = Path.GetFullPath(managedDir);
+        var expectedUrl = GetFrozenServerInfoUrl();
+        if (failed)
+        {
+            clientRoutingStatusText.Text = "Routing verification failed. The frozen client will not be launched.";
+            clientRoutingStatusText.Foreground = Brush(255, 112, 112);
+            return;
+        }
+        if (normalizedManagedDir.Equals(verifiedControlledManagedDir, StringComparison.OrdinalIgnoreCase)
+            && expectedUrl.Equals(verifiedControlledServerInfoUrl, StringComparison.Ordinal))
+        {
+            clientRoutingStatusText.Text = $"Verified offline: Steam isolated and all client HTTP endpoints route to {expectedUrl}";
+            clientRoutingStatusText.Foreground = Brush(112, 232, 167);
+            return;
+        }
+
+        clientRoutingStatusText.Text = "Frozen client selected. START will isolate Steam, freeze updates, and verify every HTTP endpoint.";
+        clientRoutingStatusText.Foreground = Brush(190, 202, 220);
     }
 
     private string ServerTimeStatePath() => Path.Combine(appRoot, "server-data", "server-time.json");
@@ -4081,6 +4483,19 @@ internal sealed class LauncherWindow : Window
         return relative.Length > 0 && !relative.StartsWith("..", StringComparison.Ordinal) && !Path.IsPathFullyQualified(relative);
     }
 
+    private static bool IsSamePathOrInside(string root, string target)
+    {
+        var rootFull = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var targetFull = Path.GetFullPath(target).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return targetFull.Equals(rootFull, StringComparison.OrdinalIgnoreCase) || IsPathInside(rootFull, targetFull);
+    }
+
+    private static string HashFile(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+    }
+
     private static string ReadJsonString(JsonElement element, string name)
     {
         if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(name, out var value)) return "";
@@ -4291,7 +4706,62 @@ internal static class StringExtensions
     public static IEnumerable<string> SplitLines(this string value) => value.Replace("\r", "").Split('\n', StringSplitOptions.RemoveEmptyEntries);
 }
 
+internal sealed class ListenerReadinessGate
+{
+    private static readonly (string Name, string Marker)[] Signals =
+    {
+        ("game listener", "[+] Listening on port "),
+        ("captured HTTP mirror", "[+] Captured HTTP mirror listening on "),
+        ("captured fixture directory", "[+] Captured HTTP mirror fixtureDir="),
+        ("User Manager", "[+] User manager listening on "),
+    };
+
+    private readonly object sync = new();
+    private readonly HashSet<string> observed = new(StringComparer.Ordinal);
+    private readonly TaskCompletionSource<bool> ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public Task Ready => ready.Task;
+
+    public void Observe(string line)
+    {
+        lock (sync)
+        {
+            foreach (var signal in Signals)
+            {
+                if (line.Contains(signal.Marker, StringComparison.Ordinal)) observed.Add(signal.Name);
+            }
+            if (Signals.All(signal => observed.Contains(signal.Name))) ready.TrySetResult(true);
+        }
+    }
+
+    public void Fail(string message) => ready.TrySetException(new InvalidOperationException(message));
+
+    public string DescribeMissing()
+    {
+        lock (sync)
+        {
+            var missing = Signals.Where(signal => !observed.Contains(signal.Name)).Select(signal => signal.Name).ToArray();
+            return missing.Length == 0 ? "none" : string.Join(", ", missing);
+        }
+    }
+}
+
 internal sealed record ListenCommand(ProcessStartInfo StartInfo, string Display);
+internal sealed record FrozenClientArchive(string RootDir, string ManagedDir, int FileCount, long ByteCount, string AssemblySha256);
+internal sealed record FrozenClientCopyProgress(int FileCount, long ByteCount);
+internal sealed class FrozenClientManifest
+{
+    public DateTime ArchivedAtUtc { get; set; }
+    public string SourceRoot { get; set; } = "";
+    public string RootDir { get; set; } = "";
+    public string ManagedDir { get; set; } = "";
+    public int FileCount { get; set; }
+    public long ByteCount { get; set; }
+    public string AssemblySha256 { get; set; } = "";
+    public DateTime? PatchedAtUtc { get; set; }
+    public string PatchedAssemblySha256 { get; set; } = "";
+    public bool SteamRuntimeIsolated { get; set; }
+}
 internal sealed record GameplayAssetStatus(string ManagedDir, int ScriptBundleCount, string CacheRoot, int CachedLuaCount, string Description);
 internal sealed record GameplayCacheProgress(string Phase, int Current, int Total, string Message);
 internal sealed record WikiAssetStatus(string CacheRoot, int CachedPngCount);

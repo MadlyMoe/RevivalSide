@@ -293,37 +293,23 @@ The listener is what the game connects to. It uses:
 - TCP `127.0.0.1:22000` for game traffic.
 - HTTP mirror `http://127.0.0.1:8088` for captured boot/config responses.
 
-### Patch Hosts
+### Route The Frozen Client
 
-This step redirects the game's login/CDN hostnames to your own computer.
+Use the desktop launcher's **Freeze** action to copy the installed client outside Steam. When the listener starts, the launcher patches every external HTTP endpoint in that frozen client to the launcher's local ServerInfo URL. It also removes `steam_appid.txt`, quarantines the frozen copy's native `steam_api` DLLs, disables the managed Steam runtime, and refuses to continue unless the audit reports zero Steamworks callsites and zero remaining external endpoints. The frozen client then launches directly without starting or requiring Steam.
 
-Open **PowerShell as Administrator** in the repo folder. If you are not sure how:
+RevivalSide also derives the patch version from the frozen copy's own `Version.json` and serves that copy's installed `Data\StreamingAssets\PatchInfo.json`. A newer captured `liveVersion.json` therefore cannot cause the frozen client to request a large update. These changes replace the old Windows hosts-file patch and do not require an administrator prompt.
 
-1. Open the repo folder in File Explorer.
-2. Click the address bar.
-3. Type `powershell`.
-4. Press Ctrl+Shift+Enter instead of just Enter.
-5. Accept the Windows admin prompt.
+Use **Launch Frozen** for the RevivalSide copy. Keep the Steam-managed installation separate if you still need the normal official client.
 
-Now run:
+If you are upgrading from a release that used the old hosts patch, run this one-time cleanup from an elevated PowerShell prompt:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\patch-hosts.ps1
+powershell -ExecutionPolicy Bypass -File .\tools\remove-legacy-hosts-patch.ps1
 ```
-
-You should see a message saying the hosts file was updated and backed up.
-
-To undo this later, run this from Admin PowerShell:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\patch-hosts.ps1 -Remove
-```
-
-If the normal official game stops loading later, remove the hosts patch or restart after removing it.
 
 ### Run The Listener
 
-Open a normal PowerShell window in the repo folder and run:
+The recommended path is the launcher's **START** button, which patches the selected frozen client and starts the listener. For server-only debugging, open a normal PowerShell window in the repo folder and run:
 
 ```powershell
 npm run listen
@@ -337,7 +323,7 @@ Good startup signs:
 [+] User manager listening on http://127.0.0.1:8088/user-manager
 ```
 
-Keep this PowerShell window open. This window is now the local server log.
+Keep this PowerShell window open. This window is now the local server log. The command does not patch or launch the client.
 
 ### Edit Local User Profiles
 
@@ -363,13 +349,7 @@ To stop the wiki or listener, click the PowerShell window and press:
 Ctrl+C
 ```
 
-If you want the normal official game again, remove the hosts patch:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\patch-hosts.ps1 -Remove
-```
-
-Then close and reopen the game.
+Stopping RevivalSide does not require undoing a system-wide routing change. The launcher patches only the selected frozen client's assembly.
 
 ## Everyday Startup
 
@@ -388,7 +368,7 @@ npm run wiki:serve
 npm run listen
 ```
 
-Make sure the hosts patch is enabled before starting the game.
+Launch the frozen client from RevivalSide so its patched local routing is used.
 
 ## Updating Later
 
@@ -449,26 +429,22 @@ Run `npm run build:gameplay-jsons` if you are refreshing tables. The wiki reads 
 Check these:
 
 - The listener is still running.
-- Admin PowerShell hosts patch was run.
+- The selected client is a frozen copy and the launcher patch completed successfully.
 - `.env` still has `CS_PORT=22000`.
 - No other program is using port `22000`.
-- CounterSide was restarted after patching hosts.
+- CounterSide was launched with **Launch Frozen** after patching.
 
-You can also flush Windows DNS from Admin PowerShell:
+### The frozen client opens Steam
 
-```powershell
-ipconfig /flushdns
-```
+Do not open the original Steam shortcut. Start the listener and use **Launch Frozen** in the current RevivalSide launcher. Before every launch it reapplies the managed isolation patch, removes `steam_appid.txt`, quarantines active `steam_api` DLLs inside the frozen archive, and launches `CounterSide.exe` directly with Steam environment variables removed.
+
+### The frozen client requests a large update
+
+Stop the client instead of accepting the download, then update and restart the RevivalSide launcher. The listener must log the frozen build, for example `frozenClientUpdate=STANDALONE_WINDOWS_335238 frozen=yes required=on`. The mirror now advertises the selected archive's own version and serves its own installed `PatchInfo.json`; it does not use the newer build number from the captured HTTP fixture.
 
 ### The normal official game no longer loads
 
-Remove the hosts patch:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\patch-hosts.ps1 -Remove
-```
-
-Then restart CounterSide. If Windows is still being stubborn, restart the computer.
+Launch the Steam-managed installation instead of the frozen RevivalSide copy. RevivalSide no longer changes the Windows hosts file, so there is no system-wide routing change to undo.
 
 ### Port `8088` or `22000` is already in use
 
