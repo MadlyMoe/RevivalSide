@@ -22,6 +22,9 @@ $payloadAssetZip = Join-Path $expectedPrefix "revivalside-payload.zip"
 $payloadAssetManifest = Join-Path $expectedPrefix "revivalside-payload-manifest.json"
 $gameplayTablesAssetZip = Join-Path $expectedPrefix "revivalside-gameplay-tables.zip"
 $gameplayTablesAssetManifest = Join-Path $expectedPrefix "revivalside-gameplay-tables-manifest.json"
+$includeManagedCombatHostAssets = $IncludeSteamManagedCombatHost -or [bool]$PayloadZip
+$includeAndroidDotnetRuntimeAssets = $IncludeAndroidDotnetRuntime -or [bool]$PayloadZip
+$includeGameplayTablesAssets = $IncludeGameplayTables -or [bool]$PayloadZip
 
 if (-not $assetRootFull.StartsWith($expectedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
   throw "Refusing to write outside Android assets: $assetRootFull"
@@ -169,7 +172,7 @@ function Resolve-CounterSideManagedDir {
 }
 
 function Copy-SteamManagedCombatHost {
-  if (-not $IncludeSteamManagedCombatHost) {
+  if (-not $includeManagedCombatHostAssets) {
     return
   }
 
@@ -268,7 +271,7 @@ function Resolve-AndroidDotnetRuntimeDir {
 }
 
 function Copy-AndroidDotnetRuntime {
-  if (-not $IncludeAndroidDotnetRuntime) {
+  if (-not $includeAndroidDotnetRuntimeAssets) {
     return
   }
 
@@ -341,7 +344,7 @@ function Add-ZipEntryFromFile(
 }
 
 function Write-GameplayTablesArchive {
-  if (-not $IncludeGameplayTables) {
+  if (-not $includeGameplayTablesAssets) {
     return
   }
 
@@ -350,9 +353,13 @@ function Write-GameplayTablesArchive {
     throw "Missing gameplay-tables directory: $sourceRoot"
   }
 
-  $requiredStageTable = Join-Path $sourceRoot "StreamingAssets\ab_script\luac\LUA_STAGE_TEMPLET.luac"
-  if (-not (Test-Path -LiteralPath $requiredStageTable)) {
-    throw "gameplay-tables does not contain required stage table: $requiredStageTable"
+  foreach ($requiredStageTable in @(
+    "StreamingAssets\ab_script\luac\LUA_STAGE_TEMPLET.luac",
+    "Assetbundles\ab_script\luac\LUA_STAGE_TEMPLET.luac"
+  )) {
+    if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot $requiredStageTable) -PathType Leaf)) {
+      throw "gameplay-tables does not contain required stage table: $requiredStageTable"
+    }
   }
 
   Add-Type -AssemblyName System.IO.Compression
@@ -405,9 +412,24 @@ Copy-SteamManagedCombatHost
 Copy-AndroidDotnetRuntime
 Write-GameplayTablesArchive
 
+if ($PayloadZip) {
+  foreach ($requiredPath in @(
+    "combat-managed\Data\Managed\Assembly-CSharp.dll",
+    "combat-runtime\android-arm64\CombatHost.dll",
+    "combat-runtime\android-arm64\libhostfxr.so"
+  )) {
+    if (-not (Test-Path -LiteralPath (Join-Path $assetRootFull $requiredPath) -PathType Leaf)) {
+      throw "Standalone Android payload is missing required managed combat asset: $requiredPath"
+    }
+  }
+  if (-not (Test-Path -LiteralPath $gameplayTablesAssetZip -PathType Leaf)) {
+    throw "Standalone Android payload is missing required managed combat asset: revivalside-gameplay-tables.zip"
+  }
+}
+
 if ($IncludeGameplayJsons) {
   Copy-DirectoryIntoAssets "gameplay-jsons"
 }
 
 Write-Host "Android listener assets staged at $assetRootFull"
-Write-Host "Use -PayloadZip for the full standalone release payload, -IncludeGameplayTables for managed combat tables, or -IncludeGameplayJsons / -IncludeLargeServerData only for oversized diagnostic APKs."
+Write-Host "Use -PayloadZip for the full standalone release payload with managed combat, -IncludeGameplayTables for combat tables, or -IncludeGameplayJsons / -IncludeLargeServerData only for oversized diagnostic APKs."
