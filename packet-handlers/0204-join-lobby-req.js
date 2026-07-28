@@ -16,41 +16,36 @@ module.exports = {
     const user = ctx.findUserByAccessToken(joinReq.accessToken) || socket.session.user || ctx.createEphemeralUser();
     socket.session.user = user;
     if (ctx.config.USE_LOCAL_USER_DB && user.userUid) {
-      if (typeof ctx.prepareUserLobbySession === "function") {
-        ctx.prepareUserLobbySession(user, { source: "join-lobby" });
-      } else {
-        const missionClock = ctx.getMissionClockOptions
-          ? ctx.getMissionClockOptions()
-          : { now: ctx.dateTimeBinaryNow ? ctx.dateTimeBinaryNow() : undefined };
-        let loginMissionChanged = false;
-        try {
-          loginMissionChanged = ctx.recordMissionLogin ? ctx.recordMissionLogin(user, missionClock) : false;
-        } catch (error) {
-          console.log(`[mission-login] skipped join-lobby update: ${error && error.message ? error.message : error}`);
-        }
-        const serverNow = ctx.getServerNowDate ? ctx.getServerNowDate() : new Date();
-        user.lastJoinAt = serverNow.toISOString();
-        const rewardPosts = ensureLoginRewardPosts(user, { now: serverNow });
-        const attendancePosts = ensureAttendanceRewardPosts(user, { now: serverNow, clockNow: serverNow });
-        if (rewardPosts > 0 || attendancePosts > 0) {
-          console.log(
-            `[user-db] queued inbox rewards uid=${user.userUid} loginPosts=${rewardPosts} attendancePosts=${attendancePosts}`
-          );
-        }
-        if (loginMissionChanged) {
-          console.log(`[user-db] login missions updated uid=${user.userUid} day=${String(missionClock.eventDateKey || "")}`);
-        }
-        ctx.saveUserDb();
+      const missionClock = ctx.getMissionClockOptions
+        ? ctx.getMissionClockOptions()
+        : { now: ctx.dateTimeBinaryNow ? ctx.dateTimeBinaryNow() : undefined };
+      let loginMissionChanged = false;
+      try {
+        loginMissionChanged = ctx.recordMissionLogin ? ctx.recordMissionLogin(user, missionClock) : false;
+      } catch (error) {
+        console.log(`[mission-login] skipped join-lobby update: ${error && error.message ? error.message : error}`);
       }
+      const serverNow = ctx.getServerNowDate ? ctx.getServerNowDate() : new Date();
+      user.lastJoinAt = serverNow.toISOString();
+      const rewardPosts = ensureLoginRewardPosts(user);
+      const attendancePosts = ensureAttendanceRewardPosts(user, { now: serverNow, clockNow: serverNow });
+      if (rewardPosts > 0 || attendancePosts > 0) {
+        console.log(
+          `[user-db] queued inbox rewards uid=${user.userUid} loginPosts=${rewardPosts} attendancePosts=${attendancePosts}`
+        );
+      }
+      if (loginMissionChanged) {
+        console.log(`[user-db] login missions updated uid=${user.userUid} day=${String(missionClock.eventDateKey || "")}`);
+      }
+      ctx.saveUserDb();
     }
 
     const replay = socket.session.gameReplay;
 
     if (ctx.config.REPLAY_CAPTURED_GAME_FLOW && ctx.capturedGameFlow) {
       if (ctx.shouldUseLocalJoinLobbyAck(user)) {
-        const joinLobbyPayload =
-          (typeof ctx.takePrewarmedJoinLobbyAckPayload === "function" && ctx.takePrewarmedJoinLobbyAckPayload(user)) ||
-          ctx.buildJoinLobbyAckPayload(user);
+        const joinLobbyPayload = ctx.buildJoinLobbyAckPayload(user);
+        if (ctx.config.USE_LOCAL_USER_DB && user.userUid) ctx.saveUserDb();
         if (shouldUseOfficialTutorialLobbyOrder(user)) {
           sendOfficialTutorialJoinLobby(ctx, socket, replay, joinLobbyPayload, user);
           return true;
@@ -112,9 +107,8 @@ module.exports = {
       return true;
     }
 
-    const joinLobbyPayload =
-      (typeof ctx.takePrewarmedJoinLobbyAckPayload === "function" && ctx.takePrewarmedJoinLobbyAckPayload(user)) ||
-      ctx.buildJoinLobbyAckPayload(user);
+    const joinLobbyPayload = ctx.buildJoinLobbyAckPayload(user);
+    if (ctx.config.USE_LOCAL_USER_DB && user.userUid) ctx.saveUserDb();
     if (shouldUseOfficialTutorialLobbyOrder(user)) {
       sendOfficialTutorialJoinLobby(ctx, socket, replay, joinLobbyPayload, user);
       return true;

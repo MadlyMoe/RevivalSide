@@ -22,7 +22,7 @@ const {
   toBigInt,
 } = require("../packet-codec");
 const { readGameplayTableRecords } = require("../gameplay-jsons");
-const { getRewardGroupRecords, getCompatibleUserTitleId } = require("../game-data");
+const { getRewardGroupRecords } = require("../game-data");
 const { grantMiscItem, getMiscItem, spendMiscItem } = require("../inventory");
 const { ensureArmy, getArmyUnits, buildPlayerDeckForGameLoad } = require("../unit");
 const { addMissionTrackingCondition, completeMissionTracking, makeMissionTracking } = require("../mission-tracking");
@@ -839,6 +839,7 @@ function normalizeMissionState(mission) {
     stMissionIDList: uniquePositiveInts(data.stMissionIDList),
     refreshToken: String(data.refreshToken || ""),
     refreshNonce: Math.max(0, Number(data.refreshNonce || 0) || 0),
+    officialImported: data.officialImported === true,
   };
 }
 
@@ -899,6 +900,10 @@ function refreshWorldMapMissionList(user, cityID, options = {}) {
 
 function refreshCityMissionList(user, city, options = {}) {
   const mission = normalizeMissionState(city.mission);
+  if (!options.force && mission.officialImported && mission.stMissionIDList.length > 0) {
+    city.mission = mission;
+    return city;
+  }
   const token = `${dayKeyFromTicks(ticksNow(options))}:${mission.refreshNonce}`;
   if (!options.force && mission.refreshToken === token && mission.stMissionIDList.length >= 4) {
     city.mission = mission;
@@ -908,6 +913,7 @@ function refreshCityMissionList(user, city, options = {}) {
   if (mission.currentMissionID > 0 && !ids.includes(mission.currentMissionID)) ids[0] = mission.currentMissionID;
   mission.stMissionIDList = uniquePositiveIntsInOrder(ids).slice(0, 4);
   mission.refreshToken = token;
+  mission.officialImported = false;
   city.mission = mission;
   return city;
 }
@@ -2722,7 +2728,7 @@ function buildRaidJoinData(user, raid) {
     writeNullObject(),
     writeBool(false),
     writeSignedVarInt(Math.max(1, Number(user && user.level) || 1)),
-    writeSignedVarInt(getCompatibleUserTitleId(user && (user.titleId || user.titleID))),
+    writeSignedVarInt(Number(user && (user.titleId || user.titleID) || 0) || 0),
   ]);
 }
 

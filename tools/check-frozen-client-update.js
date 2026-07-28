@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 const {
   loadFrozenClientPatchState,
+  readFrozenContentsVersion,
   resolveFrozenClientPatchResponse,
 } = require("../modules/frozen-client-update");
 
@@ -13,11 +14,13 @@ try {
   const streamingAssetsDir = path.join(root, "Data", "StreamingAssets");
   const downloadedAssetsDir = path.join(root, "Assetbundles");
   const gameplayTablesDir = path.join(root, "gameplay-luac");
-  const contentsVersionDir = path.join(gameplayTablesDir, "StreamingAssets", "ab_script", "luac");
+  const streamingContentsVersionDir = path.join(gameplayTablesDir, "StreamingAssets", "ab_script", "luac");
+  const downloadedContentsVersionDir = path.join(gameplayTablesDir, "Assetbundles", "ab_script", "luac");
   fs.mkdirSync(managedDir, { recursive: true });
   fs.mkdirSync(streamingAssetsDir, { recursive: true });
   fs.mkdirSync(downloadedAssetsDir, { recursive: true });
-  fs.mkdirSync(contentsVersionDir, { recursive: true });
+  fs.mkdirSync(streamingContentsVersionDir, { recursive: true });
+  fs.mkdirSync(downloadedContentsVersionDir, { recursive: true });
   fs.writeFileSync(path.join(root, "Version.json"), JSON.stringify({ VersionCode: "LIVE_335238" }));
   fs.writeFileSync(path.join(root, "revivalside-frozen-client.json"), JSON.stringify({ RootDir: root }));
   const patchInfo = Buffer.from("\u0002\u0002\u0000\u0000\u0000\u0007version\u0003\u0019STANDALONE_WINDOWS_335238\u0004data\u0001\u0000\u0000\u0000\u0000", "latin1");
@@ -25,8 +28,13 @@ try {
   fs.writeFileSync(path.join(streamingAssetsDir, "PatchInfo.json"), patchInfo);
   fs.writeFileSync(path.join(downloadedAssetsDir, "PatchInfo.json"), downloadedPatchInfo);
   fs.writeFileSync(
-    path.join(contentsVersionDir, "LUA_CONTENTS_VERSION.luac"),
+    path.join(streamingContentsVersionDir, "LUA_CONTENTS_VERSION.luac"),
     Buffer.from("\u001bLua\u0000ContentsVersion\u0000\u00059.2.b\u0000", "latin1")
+  );
+  const downloadedContentsVersionPath = path.join(downloadedContentsVersionDir, "LUA_CONTENTS_VERSION.luac");
+  fs.writeFileSync(
+    downloadedContentsVersionPath,
+    Buffer.from("\u001bLua\u0000ContentsVersion\u0000\u00059.2.c\u0000", "latin1")
   );
 
   const state = loadFrozenClientPatchState(managedDir, { gameplayTablesDir });
@@ -35,7 +43,9 @@ try {
   assert.strictEqual(state.standaloneVersion, "STANDALONE_WINDOWS_335570");
   assert.strictEqual(state.extraAssetVersion, "ExtraAsset_335570");
   assert.strictEqual(state.patchInfoPath, path.join(downloadedAssetsDir, "PatchInfo.json"));
-  assert.strictEqual(state.contentsVersion, "9.2.b");
+  assert.strictEqual(state.contentsVersion, "9.2.c");
+  fs.rmSync(downloadedContentsVersionPath);
+  assert.strictEqual(readFrozenContentsVersion(gameplayTablesDir), "9.2.b");
 
   const live = resolveFrozenClientPatchResponse("/patchfiles/StandaloneWindows64/liveVersion.json", state);
   assert.deepStrictEqual(JSON.parse(live.body.toString("utf8")), {
@@ -57,7 +67,7 @@ try {
     versionList: [{ version: "ExtraAsset_335570" }],
   });
 
-  console.log("[frozen-client-update] PASS base=335238 installed-assets=335570 contents=9.2.b frozen-without-downgrade");
+  console.log("[frozen-client-update] PASS base=335238 installed-assets=335570 contents=9.2.c asset-priority with streaming fallback");
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

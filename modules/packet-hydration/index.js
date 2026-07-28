@@ -21,7 +21,6 @@ const {
 } = require("../packet-codec");
 const { buildMissionDataEntries, ensureAccountProgress } = require("../account-progression");
 const { MISSION_UPDATE_NOT, buildMissionUpdateNotPayload } = require("../mission");
-const { getCompatibleUserTitleId } = require("../game-data");
 
 const ROOT_DIR = path.resolve(__dirname, "..", "..");
 const schemaPath = path.join(ROOT_DIR, "packet-schema.json");
@@ -352,7 +351,7 @@ function buildCommonProfileData(user) {
     writeSignedVarInt(Number(user.mainUnitSkinId || 0) || 0),
     writeSignedVarInt(Number(user.frameId || 0) || 0),
     writeSignedVarInt(Number(user.mainUnitTacticLevel || 0) || 0),
-    writeSignedVarInt(getCompatibleUserTitleId(user.titleId)),
+    writeSignedVarInt(Number(user.titleId || 0) || 0),
   ]);
 }
 

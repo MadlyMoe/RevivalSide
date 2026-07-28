@@ -409,7 +409,7 @@ function handleParty(ctx, user, req) {
 function handlePresetRegister(ctx, user, req) {
   const state = ensureOfficeState(user);
   const room = ensureOfficeRoom(user, positiveInt(req.roomId));
-  const preset = ensureOfficePreset(state, positiveInt(req.presetId));
+  const preset = ensureOfficePreset(state, nonNegativeInt(req.presetId));
   preset.name = preset.name || `Preset ${preset.presetId}`;
   preset.furnitures = room.furnitures.map(cloneFurniture);
   preset.floorInteriorId = room.floorInteriorId;
@@ -423,7 +423,7 @@ function handlePresetRegister(ctx, user, req) {
 
 function handlePresetApply(ctx, user, req) {
   const room = ensureOfficeRoom(user, positiveInt(req.roomId));
-  const preset = ensureOfficePreset(ensureOfficeState(user), positiveInt(req.presetId));
+  const preset = ensureOfficePreset(ensureOfficeState(user), nonNegativeInt(req.presetId));
   applyPresetToRoom(room, preset);
   const updatedUnits = syncOfficeUnits(user, room);
   return ack(PACKETS.OFFICE_PRESET_APPLY_ACK, [
@@ -450,7 +450,7 @@ function handlePresetAdd(ctx, user, req) {
 }
 
 function handlePresetChangeName(ctx, user, req) {
-  const preset = ensureOfficePreset(ensureOfficeState(user), positiveInt(req.presetId));
+  const preset = ensureOfficePreset(ensureOfficeState(user), nonNegativeInt(req.presetId));
   preset.name = sanitizeRoomName(req.newPresetName || `Preset ${preset.presetId}`);
   return ack(PACKETS.OFFICE_PRESET_CHANGE_NAME_ACK, [
     writeSignedVarInt(0),
@@ -461,8 +461,8 @@ function handlePresetChangeName(ctx, user, req) {
 
 function handlePresetReset(ctx, user, req) {
   const state = ensureOfficeState(user);
-  const presetId = positiveInt(req.presetId);
-  const index = state.presets.findIndex((preset) => positiveInt(preset.presetId) === presetId);
+  const presetId = nonNegativeInt(req.presetId);
+  const index = state.presets.findIndex((preset) => nonNegativeInt(preset.presetId, -1) === presetId);
   if (index >= 0) state.presets[index] = defaultPreset(presetId);
   return ack(PACKETS.OFFICE_PRESET_RESET_ACK, [
     writeSignedVarInt(0),
@@ -613,7 +613,7 @@ function defaultOfficeState() {
     rooms: DEFAULT_ROOM_IDS.map(defaultRoom),
     interiors: defaultInteriors(),
     postState: normalizePostState(),
-    presets: Array.from({ length: DEFAULT_PRESET_COUNT }, (_, index) => defaultPreset(index + 1)),
+    presets: Array.from({ length: DEFAULT_PRESET_COUNT }, (_, index) => defaultPreset(index)),
     chatMessages: [],
     nextFurnitureUid: "1",
     nextMessageUid: "1",
@@ -709,16 +709,16 @@ function normalizePresets(presets) {
   const byId = new Map();
   for (const preset of Array.isArray(presets) ? presets : []) {
     const normalized = normalizePreset(preset);
-    if (normalized.presetId > 0) byId.set(normalized.presetId, normalized);
+    if (normalized.presetId >= 0) byId.set(normalized.presetId, normalized);
   }
-  for (let id = 1; id <= DEFAULT_PRESET_COUNT; id += 1) {
+  for (let id = 0; id < DEFAULT_PRESET_COUNT; id += 1) {
     if (!byId.has(id)) byId.set(id, defaultPreset(id));
   }
   return Array.from(byId.values()).sort((left, right) => left.presetId - right.presetId);
 }
 
 function normalizePreset(preset = {}) {
-  const presetId = positiveInt(preset.presetId) || 1;
+  const presetId = nonNegativeInt(preset.presetId);
   return {
     presetId,
     name: sanitizeRoomName(preset.name || `Preset ${presetId}`),
@@ -730,7 +730,7 @@ function normalizePreset(preset = {}) {
 }
 
 function defaultPreset(presetId) {
-  const id = positiveInt(presetId) || 1;
+  const id = nonNegativeInt(presetId);
   return {
     presetId: id,
     name: `Preset ${id}`,
@@ -936,8 +936,8 @@ function applyPresetToRoom(room, preset) {
 }
 
 function ensureOfficePreset(state, presetId) {
-  const id = positiveInt(presetId) || 1;
-  let preset = state.presets.find((item) => positiveInt(item.presetId) === id);
+  const id = nonNegativeInt(presetId);
+  let preset = state.presets.find((item) => nonNegativeInt(item.presetId, -1) === id);
   if (!preset) {
     preset = defaultPreset(id);
     state.presets.push(preset);
@@ -960,7 +960,7 @@ function nextOfficeMessageUid(state) {
 }
 
 function nextPresetId(state) {
-  return Math.max(0, ...state.presets.map((preset) => positiveInt(preset.presetId))) + 1;
+  return Math.max(-1, ...state.presets.map((preset) => nonNegativeInt(preset.presetId, -1))) + 1;
 }
 
 function findFurniture(room, uid) {
@@ -1174,6 +1174,11 @@ function normalizeRoomName(value) {
 function positiveInt(value) {
   const number = Number(value || 0);
   return Number.isInteger(number) && number > 0 ? number : 0;
+}
+
+function nonNegativeInt(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : fallback;
 }
 
 function clampInt(value, min, max, fallback) {

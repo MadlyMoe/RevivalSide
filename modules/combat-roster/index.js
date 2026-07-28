@@ -40,7 +40,7 @@ const {
   ensureDeck,
   normalizeShipCommandModules,
 } = require("../unit");
-const { getPlayableShipIds, getPlayableOperatorIds, getCompatibleUserTitleId } = require("../game-data");
+const { getPlayableShipIds, getPlayableOperatorIds } = require("../game-data");
 const { getEquipItems } = require("../equipment");
 const { ensureAccountProgress } = require("../account-progression");
 
@@ -572,7 +572,7 @@ function buildCommonProfileData(user) {
     writeSignedVarInt(Number(user.mainUnitSkinId || 0) || 0),
     writeSignedVarInt(Number(user.frameId || 0) || 0),
     writeSignedVarInt(Number(user.mainUnitTacticLevel || 0) || 0),
-    writeSignedVarInt(getCompatibleUserTitleId(user.titleId)),
+    writeSignedVarInt(Number(user.titleId || 0) || 0),
   ]);
 }
 

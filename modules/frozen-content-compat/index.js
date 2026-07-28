@@ -7,11 +7,11 @@ function getCapturedContentsTags(profiles, targetVersion) {
   );
 }
 
-function getCapturedRequestOpenTags(profiles, targetVersion) {
+function getCapturedOpenTags(profiles, targetVersion) {
   return mergeTags(
     ...compatibleProfiles(profiles, targetVersion, ["loginAck", "gamebaseLoginAck"])
       .map((profile) => profile.openTag)
-  ).filter(isFrozenRequestOpenTag);
+  );
 }
 
 function compatibleProfiles(profiles, targetVersion, keys) {
@@ -21,19 +21,14 @@ function compatibleProfiles(profiles, targetVersion, keys) {
     .filter((profile) => {
       if (!profile || typeof profile !== "object") return false;
       const actual = normalizeVersion(profile.contentsVersion);
-      return !expected || !actual || actual === expected;
+      return !expected || !actual || areCompatibleContentsVersions(actual, expected);
     });
 }
 
-function isFrozenRequestOpenTag(value) {
-  const tag = String(value || "").trim().toUpperCase();
-  return (
-    tag === "EPISODE_TAB_SUPPLY" ||
-    tag === "EPISODE_TAB_CHALLENGE" ||
-    tag === "TAG_COMMON_SCAVENGER_SUPPLY" ||
-    tag.startsWith("TAG_COMMON_EPISODE_SUPPLY_") ||
-    tag.startsWith("TAG_COMMON_EPISODE_CHALLENGE_")
-  );
+function areCompatibleContentsVersions(left, right) {
+  const actual = normalizeVersion(left);
+  const expected = normalizeVersion(right);
+  return !actual || !expected || actual === expected;
 }
 
 function hasFrozenMissionSnapshot(rows, mission) {
@@ -46,14 +41,6 @@ function hasFrozenMissionSnapshot(rows, mission) {
     const rowMissionID = Number(row && row.m_MissionID || 0);
     const rowGroupId = Number(row && (row.m_MissionCounterGroupID || row.m_MissionID) || 0);
     return rowTabId === tabId && rowMissionID === missionID && rowGroupId === groupId;
-  });
-}
-
-function filterFrozenInventoryMiscItems(items, getTemplet) {
-  const resolve = typeof getTemplet === "function" ? getTemplet : () => null;
-  return (Array.isArray(items) ? items : []).filter((item) => {
-    const id = Number(item && item.itemId || 0);
-    return Number.isInteger(id) && id > 0 && Boolean(resolve(id));
   });
 }
 
@@ -77,9 +64,8 @@ function mergeTags(...groups) {
 }
 
 module.exports = {
+  areCompatibleContentsVersions,
+  getCapturedOpenTags,
   getCapturedContentsTags,
-  getCapturedRequestOpenTags,
   hasFrozenMissionSnapshot,
-  filterFrozenInventoryMiscItems,
-  isFrozenRequestOpenTag,
 };

@@ -5,8 +5,9 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const {
+  areCompatibleContentsVersions,
+  getCapturedOpenTags,
   getCapturedContentsTags,
-  getCapturedRequestOpenTags,
   hasFrozenMissionSnapshot,
 } = require("../modules/frozen-content-compat");
 const { createServerTime } = require("../modules/server-time");
@@ -35,13 +36,19 @@ assert.deepStrictEqual(getCapturedContentsTags(profiles, "9.2.c"), [
   "TAG_COMMON_SHOP_TAB_CASH",
   "SYSTEM_TRANSCENDENCE_LV120",
 ]);
+assert.strictEqual(areCompatibleContentsVersions("9.2.b", "9.2.c"), false);
+assert.strictEqual(areCompatibleContentsVersions("9.2.c", "9.2.b"), false);
+assert.strictEqual(areCompatibleContentsVersions("9.2.a", "9.2.c"), false);
 assert.deepStrictEqual(getCapturedContentsTags(profiles, "9.2.b"), []);
-assert.deepStrictEqual(getCapturedRequestOpenTags(profiles, "9.2.c"), [
+assert.deepStrictEqual(getCapturedOpenTags(profiles, "9.2.c"), [
   "EPISODE_TAB_SUPPLY",
   "EPISODE_TAB_CHALLENGE",
   "TAG_COMMON_EPISODE_SUPPLY_CREDIT",
   "TAG_COMMON_EPISODE_CHALLENGE_1",
+  "TAG_COMMON_EPISODE_MAIN_EP15_NORMAL",
+  "TAG_COMMON_SHOP_TAB_EXCHANGE_CHALLENGE_TICKET",
 ]);
+assert.deepStrictEqual(getCapturedOpenTags(profiles, "9.2.b"), []);
 assert.strictEqual(
   hasFrozenMissionSnapshot(
     [{ m_MissionTabId: 4, m_MissionID: 1001, m_MissionCounterGroupID: 100 }],
@@ -78,4 +85,4 @@ try {
   fs.rmSync(tempDir, { recursive: true, force: true });
 }
 
-console.log("[frozen-content-compat] PASS captured 9.2.c tags, Request gates, frozen missions, and Event Date clock");
+console.log("[frozen-content-compat] PASS exact-version tags, full open tags, frozen missions, and Event Date clock");

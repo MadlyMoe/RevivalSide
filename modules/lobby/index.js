@@ -196,36 +196,12 @@ function setJukeboxBgm(user, bgmType, bgmId) {
 }
 
 function buildBackgroundInfoData(source) {
-  const isDirectBackground = source && isBackgroundInfoLike(source);
-  const info = isDirectBackground ? normalizeBackgroundInfo(source) : getCompatibleBackgroundInfo(source);
+  const info = source && isBackgroundInfoLike(source) ? normalizeBackgroundInfo(source) : getBackgroundInfo(source);
   return Buffer.concat([
     writeSignedVarInt(info.backgroundItemId),
     writeSignedVarInt(info.backgroundBgmId),
     writeNullableObjectList(info.unitInfoList.map(buildBackgroundUnitInfoData)),
   ]);
-}
-
-function getCompatibleBackgroundInfo(user) {
-  const info = getBackgroundInfo(user);
-  const ownedUids = getOwnedLobbyUnitUids(user);
-  if (!ownedUids.size) return { ...info, unitInfoList: [] };
-  return {
-    ...info,
-    unitInfoList: info.unitInfoList.filter((unit) => ownedUids.has(String(unit && unit.unitUid || ""))),
-  };
-}
-
-function getOwnedLobbyUnitUids(user) {
-  const result = new Set();
-  const army = user && user.army && typeof user.army === "object" ? user.army : {};
-  for (const group of [army.units, army.ships, army.trophies, army.operators]) {
-    const list = Array.isArray(group) ? group : group && typeof group === "object" ? Object.values(group) : [];
-    for (const entry of list) {
-      const uid = entry && (entry.unitUid || entry.uid || entry.operatorUid);
-      if (uid != null && String(uid) !== "0") result.add(String(uid));
-    }
-  }
-  return result;
 }
 
 function buildBackgroundUnitInfoData(unit) {
@@ -491,7 +467,6 @@ module.exports = {
   ensureLobbyCustomization,
   hasLobbyCustomization,
   getBackgroundInfo,
-  getCompatibleBackgroundInfo,
   setBackgroundInfo,
   setJukeboxBgm,
   buildBackgroundInfoData,

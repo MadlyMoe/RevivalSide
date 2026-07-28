@@ -8,8 +8,7 @@ const {
   FROZEN_CLIENT_PATCH_REQUIREMENTS,
   createListenerReadinessGate,
   normalizeExistingManagedDir,
-  resolveFrozenAdvertisedContentsVersion,
-  validateClientManifest,
+  verifyGameplayCacheSource,
 } = require('./revivalside-launcher-backend');
 const { findCounterSideScriptBundleRoots } = require('../modules/counterside-install');
 
@@ -31,29 +30,6 @@ function checkGameRootAssetbundlesDiscovery() {
   }
 }
 
-function checkClientManifestValidation() {
-  const hash = 'a'.repeat(64);
-  const manifest = validateClientManifest({
-    schemaVersion: 1,
-    clientVersion: 'LIVE_335238',
-    rootDirName: 'CounterSide-LIVE_335238',
-    archiveName: 'RevivalSideClient-LIVE_335238.zip',
-    archiveSize: 18,
-    archiveSha256: hash,
-    installedSize: 32,
-    fileCount: 3,
-    chunks: Array.from({ length: 9 }, (_, index) => ({
-      name: `RevivalSideClient-LIVE_335238.zip.${String(index + 1).padStart(3, '0')}`,
-      size: 2,
-      sha256: hash,
-    })),
-  });
-  assert.strictEqual(manifest.chunks.length, 9);
-  assert.strictEqual(manifest.archiveSize, 18);
-  assert.throws(() => validateClientManifest({ ...manifest, rootDirName: '..' }), /rootDirName/);
-  assert.throws(() => validateClientManifest({ ...manifest, archiveSize: 19 }), /chunk total/);
-}
-
 function checkMissingClientMigration() {
   const gameRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'revivalside-client-path-'));
   try {
@@ -65,8 +41,44 @@ function checkMissingClientMigration() {
     assert.strictEqual(
       normalizeExistingManagedDir(managedDir),
       '',
-      'a removed frozen-client path must become not installed so Start can download it'
+      'a removed frozen-client path must become not installed'
     );
+  } finally {
+    fs.rmSync(gameRoot, { recursive: true, force: true });
+  }
+}
+
+function checkFrozenGameplayCacheSource() {
+  const gameRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'revivalside-frozen-source-'));
+  try {
+    const managedDir = path.join(gameRoot, 'Data', 'Managed');
+    const scriptRoot = path.join(gameRoot, 'Assetbundles');
+    const cacheRoot = path.join(gameRoot, 'cache');
+    fs.mkdirSync(managedDir, { recursive: true });
+    fs.mkdirSync(scriptRoot, { recursive: true });
+    fs.mkdirSync(cacheRoot, { recursive: true });
+    fs.writeFileSync(path.join(managedDir, 'Assembly-CSharp.dll'), 'fixture');
+    fs.writeFileSync(path.join(cacheRoot, '.revivalside-gameplay-luac-cache.json'), JSON.stringify({
+      managedDir,
+      scriptRoots: [{ label: 'Assetbundles', root: scriptRoot, files: [] }],
+    }));
+    const source = verifyGameplayCacheSource(managedDir, cacheRoot);
+    assert.strictEqual(source.managedDir, path.resolve(managedDir));
+    assert.deepStrictEqual(source.scriptRoots, [path.resolve(scriptRoot)]);
+
+    const officialRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'revivalside-official-source-'));
+    try {
+      fs.writeFileSync(path.join(cacheRoot, '.revivalside-gameplay-luac-cache.json'), JSON.stringify({
+        managedDir,
+        scriptRoots: [{ label: 'Assetbundles', root: officialRoot, files: [] }],
+      }));
+      assert.throws(
+        () => verifyGameplayCacheSource(managedDir, cacheRoot),
+        /outside the selected frozen client/,
+      );
+    } finally {
+      fs.rmSync(officialRoot, { recursive: true, force: true });
+    }
   } finally {
     fs.rmSync(gameRoot, { recursive: true, force: true });
   }
@@ -74,14 +86,10 @@ function checkMissingClientMigration() {
 
 async function main() {
   checkGameRootAssetbundlesDiscovery();
-  checkClientManifestValidation();
   checkMissingClientMigration();
-  assert.strictEqual(resolveFrozenAdvertisedContentsVersion({}, '9.2.b'), '9.2.c');
-  assert.strictEqual(
-    resolveFrozenAdvertisedContentsVersion({ CS_FROZEN_MASQUERADE_CONTENTS_VERSION: '10.0.a' }, '9.2.b'),
-    '10.0.a'
-  );
-  assert(FROZEN_CLIENT_PATCH_REQUIREMENTS.includes('frozen-login-contents-reconciliation=True'));
+  checkFrozenGameplayCacheSource();
+  assert(FROZEN_CLIENT_PATCH_REQUIREMENTS.includes('frozen-contents-version-isolation=False'));
+  assert(FROZEN_CLIENT_PATCH_REQUIREMENTS.includes('frozen-login-contents-reconciliation=False'));
   const settings = { GamePort: 22000, HttpPort: 8088 };
   const gate = createListenerReadinessGate(settings, 1000);
   let resolved = false;
@@ -101,7 +109,7 @@ async function main() {
   timeoutGate.observe('[+] Listening on port 22000');
   await assert.rejects(timeoutGate.ready, /Missing: captured HTTP mirror, captured fixture directory, User Manager/);
 
-  console.log('[launcher-backend] PASS client manifest, content-version audit, game-root bundles, and four-service readiness');
+  console.log('[launcher-backend] PASS clean client-table audit, game-root bundles, missing-client handling, and four-service readiness');
 }
 
 main().catch((error) => {

@@ -51,24 +51,19 @@ function loadFrozenClientPatchState(managedDir, options = {}) {
 function readFrozenContentsVersion(gameplayTablesDir) {
   const root = String(gameplayTablesDir || "").trim();
   if (!root) return "";
-  const versionFile = path.join(
-    path.resolve(root),
-    "StreamingAssets",
-    "ab_script",
-    "luac",
-    "LUA_CONTENTS_VERSION.luac"
-  );
-  if (!fs.existsSync(versionFile)) return "";
-
-  const body = fs.readFileSync(versionFile);
-  const marker = Buffer.from("ContentsVersion", "ascii");
-  const markerOffset = body.indexOf(marker);
-  if (markerOffset < 0) return "";
-  const nearbyText = body
-    .subarray(markerOffset, Math.min(body.length, markerOffset + 128))
-    .toString("latin1");
-  const match = nearbyText.match(/\b\d{1,4}\.\d{1,4}\.[A-Za-z0-9_-]{1,16}\b/);
-  return match ? match[0] : "";
+  for (const source of ["Assetbundles", "StreamingAssets"]) {
+    const versionFile = path.join(path.resolve(root), source, "ab_script", "luac", "LUA_CONTENTS_VERSION.luac");
+    if (!fs.existsSync(versionFile)) continue;
+    const body = fs.readFileSync(versionFile);
+    const markerOffset = body.indexOf(Buffer.from("ContentsVersion", "ascii"));
+    if (markerOffset < 0) continue;
+    const match = body
+      .subarray(markerOffset, Math.min(body.length, markerOffset + 128))
+      .toString("latin1")
+      .match(/\b\d{1,4}\.\d{1,4}\.[A-Za-z0-9_-]{1,16}\b/);
+    if (match) return match[0];
+  }
+  return "";
 }
 
 function selectInstalledPatchInfo(candidates) {

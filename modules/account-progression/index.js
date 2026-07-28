@@ -1502,7 +1502,7 @@ function shouldSerializeMissionTab(row) {
 
 function missionRowEnabledForUser(user, row) {
   if (!row || row.m_Enabled === false) return false;
-  const contentsTags = tagSet(user && (user.__runtimeContentsTags || user.contentsTags));
+  const contentsTags = tagSet(user && user.contentsTags);
   const allowTags = normalizeTags(row.listContentsTagAllow);
   if (allowTags.length && contentsTags.size && !allowTags.some((tag) => contentsTags.has(tag))) return false;
   const ignoreTags = normalizeTags(row.listContentsTagIgnore);

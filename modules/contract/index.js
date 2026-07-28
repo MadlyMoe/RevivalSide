@@ -366,7 +366,7 @@ function getAllContractStates(user, ctx) {
   const contractIds = new Set(getActiveContractRecords(clockState).map((entry) => Number(entry.contractId) || 0));
   for (const contractId of getStoredContractStateIds(user)) contractIds.add(contractId);
   return Array.from(contractIds)
-    .filter((contractId) => contractId > 0 && Boolean(resolveContractRecord(contractId)))
+    .filter((contractId) => contractId > 0)
     .map((contractId) => getContractState(user, contractId, ctx));
 }
 
@@ -385,23 +385,12 @@ function getAllContractBonusStates(user, ctx) {
   }
   for (const bonusGroupId of getStoredContractBonusGroupIds(user)) {
     if (seen.has(bonusGroupId)) continue;
-    if (!isKnownContractBonusGroupId(bonusGroupId)) continue;
     const state = getContractBonusState(user, bonusGroupId);
     if (seen.has(state.bonusGroupId)) continue;
     seen.add(state.bonusGroupId);
     states.push(state);
   }
   return states;
-}
-
-function isKnownContractBonusGroupId(bonusGroupId) {
-  const target = Number(bonusGroupId || 0);
-  if (!Number.isInteger(target) || target <= 0) return false;
-  for (const contractId of getVisibleContractIds()) {
-    const record = resolveContractRecord(contractId);
-    if (record && getBonusGroupId(record) === target) return true;
-  }
-  return getCustomPickupContractRecords().some((record) => getBonusGroupId(record) === target);
 }
 
 function getStoredContractStateIds(user) {

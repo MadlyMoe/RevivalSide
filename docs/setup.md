@@ -301,15 +301,13 @@ The listener is what the game connects to. It uses:
 - TCP `127.0.0.1:22000` for game traffic.
 - HTTP mirror `http://127.0.0.1:8088` for captured boot/config responses.
 
-### Download And Route The RevivalSide Client
+### Freeze And Route A Local CounterSide Client
 
-Press **START** in the desktop launcher. If the isolated client is missing, the launcher automatically downloads its nine release chunks from the public [RevivalSide-Client repository](https://github.com/MadlyMoe/RevivalSide-Client/releases), verifies each chunk and the reconstructed archive, and installs it under `%LOCALAPPDATA%\RevivalSide\frozen-client`. You can also use **Download RevivalSide Client** in Game Settings to download or verify it before starting.
-
-To create the isolated copy from your own official install instead, open **Game Settings**, use **Detect CounterSide** or **Browse DLL** to select its `Data\Managed\Assembly-CSharp.dll`, then choose **Freeze Selected Client**. The source installation is left untouched. If an older frozen copy shows **A newer content version is available**, choose **Repair Content Version** in the same section.
+Open **Game Settings**, use **Detect CounterSide** or **Browse DLL** to select an official installation's `Data\Managed\Assembly-CSharp.dll`, then choose **Freeze Selected Client**. The launcher creates the isolated copy under `%LOCALAPPDATA%\RevivalSide\frozen-client`; the source installation is left untouched.
 
 When the listener starts, the launcher patches every external HTTP endpoint in that isolated client to the launcher's local ServerInfo URL. It also removes `steam_appid.txt`, quarantines native `steam_api` DLLs, disables the managed Steam runtime, and refuses to continue unless the audit reports zero Steamworks callsites and zero remaining external endpoints. The client then launches directly without starting or requiring Steam.
 
-RevivalSide also derives the patch version from the frozen copy's own `Version.json`, serves that copy's installed `Data\StreamingAssets\PatchInfo.json`, and reconciles the login response's content version and tags before the client performs its mismatch check. Newer captured metadata therefore cannot cause either a large update request or the restart-required content-version popup. These changes replace the old Windows hosts-file patch and do not require an administrator prompt.
+RevivalSide preserves the frozen copy's own gameplay tables and advertises the content version from the same source priority the game uses: downloaded `Assetbundles` first, then base `StreamingAssets`. The patch leaves the client's normal content-version validation untouched while routing official URLs to the local listener, preventing official patch downloads, and removing the Steam runtime dependency. These changes replace the old Windows hosts-file patch and do not require an administrator prompt.
 
 Use **START** for the RevivalSide copy. Keep any Steam-managed installation separate if you still need the normal official client.
 
@@ -321,7 +319,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\remove-legacy-hosts-patch.ps1
 
 ### Run The Listener
 
-The recommended path is the launcher's **START** button, which downloads the client when necessary, patches it, and starts the listener. For server-only debugging, open a normal PowerShell window in the repo folder and run:
+The recommended path is the launcher's **START** button after a client has been frozen; it patches the copy and starts the listener. For server-only debugging, open a normal PowerShell window in the repo folder and run:
 
 ```powershell
 npm run listen
@@ -380,7 +378,7 @@ npm run wiki:serve
 npm run listen
 ```
 
-Press **START** in RevivalSide so the downloaded client's patched local routing is used.
+Press **START** in RevivalSide so the frozen client's patched local routing is used.
 
 ## Updating Later
 
@@ -448,7 +446,7 @@ Check these:
 
 ### The RevivalSide client opens Steam
 
-Do not open the original Steam shortcut. Use **START** in the current RevivalSide launcher. Before every launch it reapplies the managed isolation patch, removes `steam_appid.txt`, quarantines active `steam_api` DLLs inside the downloaded copy, and launches `CounterSide.exe` directly with Steam environment variables removed.
+Do not open the original Steam shortcut. Use **START** in the current RevivalSide launcher. Before every launch it reapplies the managed isolation patch, removes `steam_appid.txt`, quarantines active `steam_api` DLLs inside the frozen copy, and launches `CounterSide.exe` directly with Steam environment variables removed.
 
 ### The RevivalSide client requests a large update
 

@@ -20,7 +20,7 @@ This repository intentionally does not track client assets, raw packet captures,
 
 ## Quick Start
 
-Start with [docs/setup.md](docs/setup.md). It is written for first-time users and walks through the wiki, the downloadable RevivalSide client, local routing, and the listener without assuming software development experience.
+Start with [docs/setup.md](docs/setup.md). It is written for first-time users and walks through the wiki, freezing a local CounterSide client, local routing, and the listener without assuming software development experience.
 
 The very short setup is:
 
@@ -47,7 +47,7 @@ To run the server listener directly:
 npm run listen
 ```
 
-The desktop launcher downloads the non-commercial RevivalSide client from the public [RevivalSide-Client releases](https://github.com/MadlyMoe/RevivalSide-Client/releases) when it is missing, or can freeze a separately installed official client selected in Game Settings. It patches and audits the isolated copy so its official HTTP endpoints route directly to the local listener. It removes the copy's Steam app-ID trigger, quarantines native Steam API DLLs, strips Steam launch variables, and refuses to launch until the managed client has zero remaining Steamworks callsites. The local mirror advertises that copy's own installed build and serves its installed `PatchInfo.json`; the client also reconciles login content metadata to that local build before its mismatch check. This prevents both large patch downloads and the “A newer content version is available” restart popup. RevivalSide does not modify the Windows hosts file. Running `npm run listen` by itself starts only the server; use the launcher to download or freeze, prepare, and launch the client.
+The desktop launcher freezes a separately installed official client selected in Game Settings. It patches and audits the isolated copy so its official HTTP endpoints route directly to the local listener. It removes the copy's Steam app-ID trigger, quarantines native Steam API DLLs, strips Steam launch variables, and refuses to launch until the managed client has zero remaining Steamworks callsites. The local mirror advertises that copy's installed patch and content versions, preferring downloaded `Assetbundles` over base `StreamingAssets`, and serves its installed `PatchInfo.json`. This prevents large patch downloads without overriding the client's normal content-version validation. RevivalSide does not modify the Windows hosts file. Running `npm run listen` by itself starts only the server; use the launcher to freeze, prepare, and launch the client.
 
 The default listener uses TCP `127.0.0.1:22000` and HTTP mirror `http://127.0.0.1:8088`.
 The local user profile manager is served from the same process at `http://127.0.0.1:8088/user-manager`. Profile selection and switching use lightweight summaries plus `server-data/active-user.json`; full profile or database JSON is loaded only when you click the corresponding **Load JSON** button.

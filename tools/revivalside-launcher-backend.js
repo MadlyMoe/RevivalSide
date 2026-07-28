@@ -7,21 +7,18 @@ const fsp = fs.promises;
 const os = require('os');
 const path = require('path');
 const readline = require('readline');
-const { Readable } = require('stream');
 const { findCounterSideScriptBundleRoots } = require('../modules/counterside-install');
-const { readFrozenContentsVersion } = require('../modules/frozen-client-update');
 
 const EVENT_PREFIX = '@@REVIVALSIDE_EVENT@@';
 const GAME_PORTS = new Set(['20001', '20002', '20003', '20004', '22000']);
 const LISTENER_READINESS_TIMEOUT_MS = 120_000;
-const CLIENT_MANIFEST_SCHEMA_VERSION = 1;
+const GAMEPLAY_CACHE_MANIFEST_NAME = '.revivalside-gameplay-luac-cache.json';
 const FROZEN_CLIENT_PATCH_REQUIREMENTS = Object.freeze([
   'steam-local-login=True', 'steam-standalone=True', 'steam-runtime-isolated=True',
   'steam-interop-callsites=0', 'frozen-official-update-bypass=True',
-  'frozen-patch-download-bypass=True', 'frozen-contents-version-isolation=True',
-  'frozen-login-contents-reconciliation=True', 'external-endpoint-references=0',
+  'frozen-patch-download-bypass=True', 'frozen-contents-version-isolation=False',
+  'frozen-login-contents-reconciliation=False', 'external-endpoint-references=0',
 ]);
-const DEFAULT_CLIENT_MANIFEST_URL = 'https://github.com/MadlyMoe/RevivalSide-Client/releases/latest/download/RevivalSideClientManifest.json';
 const DEFAULT_SETTINGS = Object.freeze({
   SettingsVersion: 5,
   GamePort: 22000,
@@ -45,16 +42,6 @@ const DEFAULT_SETTINGS = Object.freeze({
   CrossSavePreserveUid: false,
   CrossSavePreserveFriendCode: false,
 });
-const DEFAULT_FROZEN_MASQUERADE_CONTENTS_VERSION = '9.2.c';
-
-function resolveFrozenAdvertisedContentsVersion(environment, sourceContentsVersion) {
-  const configured = String(
-    (environment && environment.CS_FROZEN_MASQUERADE_CONTENTS_VERSION) ||
-      DEFAULT_FROZEN_MASQUERADE_CONTENTS_VERSION
-  ).trim();
-  return configured || String(sourceContentsVersion || '').trim();
-}
-
 const root = resolveAppRoot();
 const settingsPath = path.join(root, 'launcher-settings.json');
 
@@ -121,10 +108,9 @@ function loadSettings() {
   settings.JoinLobbyAckMode = normalizeLobbyMode(settings.JoinLobbyAckMode);
   settings.CounterSideManagedDir = normalizeExistingManagedDir(settings.CounterSideManagedDir);
   settings.CounterSideSourceManagedDir = normalizeExistingManagedDir(settings.CounterSideSourceManagedDir);
-  // A frozen client can be removed outside the launcher (or by an older
-  // installer) while its Managed path remains in launcher-settings.json.
-  // Treat that stale path as "not installed" so Start can enter the release
-  // downloader instead of failing while it saves settings.
+  // A frozen client can be removed outside the launcher while its Managed
+  // path remains in launcher-settings.json. Treat that stale path as not
+  // installed and retain a valid official install as the next freeze source.
   if (!settings.CounterSideSourceManagedDir && settings.CounterSideManagedDir && !isFrozenManagedDir(settings.CounterSideManagedDir)) {
     settings.CounterSideSourceManagedDir = settings.CounterSideManagedDir;
   }
@@ -422,14 +408,18 @@ function buildListenerEnvironment(settings) {
   if (environment.CS_EVENT_DATE) environment.CS_EVENT_MANAGER = 'auto';
   if (tools.python) environment.CS_PYTHON_PATH = tools.python;
   const packagedCombat = path.join(root, 'combat-host', 'CombatHost.exe');
-  if (fs.existsSync(packagedCombat) && !fs.existsSync(path.join(root, 'combat-host', 'CombatHost.csproj'))) {
+  if (fs.existsSync(packagedCombat)) {
     environment.CS_CSHARP_COMBAT_HOST_DLL = packagedCombat;
     environment.CS_COMBAT_HOST_PATH = packagedCombat;
   }
   applyAdvancedEnvironment(environment, settings.AdvancedEnvText);
   environment.CS_HTTP_MIRROR_HOST = '127.0.0.1';
   environment.CS_HTTP_MIRROR_BASE_URL = `http://127.0.0.1:${settings.HttpPort}`;
-  for (const key of ['CS_COUNTERSIDE_MANAGED_DIR', 'COUNTERSIDE_MANAGED_DIR', 'CS_COUNTERSIDE_DIR', 'CS_GAMEPLAY_TABLES_DIR', 'CS_STAGE_TABLE_PATH', 'CS_MAP_TABLE_PATH']) {
+  for (const key of [
+    'CS_COUNTERSIDE_MANAGED_DIR', 'COUNTERSIDE_MANAGED_DIR', 'CS_COUNTERSIDE_DIR',
+    'CS_GAMEPLAY_TABLES_DIR', 'CS_GAMEPLAY_ASSET_SOURCE', 'CS_GAMEPLAY_TABLE_SOURCE',
+    'CS_STAGE_TABLE_PATH', 'CS_MAP_TABLE_PATH',
+  ]) {
     delete environment[key];
   }
   if (isManagedDir(managed)) {
@@ -438,15 +428,11 @@ function buildListenerEnvironment(settings) {
     environment.CS_COUNTERSIDE_DIR = gameRootFromManaged(managed) || managed;
     const gameplayTablesDir = path.join(root, '.cache', 'gameplay-luac');
     environment.CS_GAMEPLAY_TABLES_DIR = gameplayTablesDir;
+    environment.CS_GAMEPLAY_ASSET_SOURCE = 'installed';
+    environment.CS_GAMEPLAY_TABLE_SOURCE = 'installed';
     if (isFrozenManagedDir(managed)) {
-      const sourceContentsVersion = readFrozenContentsVersion(gameplayTablesDir);
-      if (sourceContentsVersion) {
-        environment.CS_FROZEN_SOURCE_CONTENTS_VERSION = sourceContentsVersion;
-        environment.CS_CONTENTS_VERSION = resolveFrozenAdvertisedContentsVersion(environment, sourceContentsVersion);
-        environment.CS_LOCK_CONTENTS_VERSION = '1';
-        environment.CS_REPLAY_CAPTURED_CONTENTS_VERSION = '0';
-        environment.CS_REPLAY_CAPTURED_LOGIN_ACK = '0';
-      }
+      environment.CS_REPLAY_CAPTURED_CONTENTS_VERSION = '0';
+      environment.CS_REPLAY_CAPTURED_LOGIN_ACK = '0';
     }
   }
   return environment;
@@ -508,9 +494,33 @@ function gameplayStatus(settings) {
   };
 }
 
+function verifyGameplayCacheSource(managedDir, cacheRoot) {
+  const managed = normalizeManagedDir(managedDir);
+  if (!isManagedDir(managed)) throw new Error('The frozen client Data\\Managed directory is unavailable.');
+  const manifestFile = path.join(cacheRoot, GAMEPLAY_CACHE_MANIFEST_NAME);
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+  } catch (error) {
+    throw new Error(`Frozen gameplay cache manifest could not be read: ${error.message}`);
+  }
+  const recordedManaged = normalizeManagedDir(manifest && manifest.managedDir);
+  if (path.resolve(recordedManaged || '.') !== path.resolve(managed)) {
+    throw new Error(`Gameplay cache belongs to a different client: ${recordedManaged || '(missing Managed path)'}`);
+  }
+  const frozenRoot = gameRootFromManaged(managed);
+  const scriptRoots = (Array.isArray(manifest.scriptRoots) ? manifest.scriptRoots : [])
+    .map((entry) => path.resolve(String(entry && entry.root || '')))
+    .filter(Boolean);
+  if (!scriptRoots.length || scriptRoots.some((scriptRoot) => !isPathInside(frozenRoot, scriptRoot))) {
+    throw new Error('Gameplay cache contains script assets outside the selected frozen client.');
+  }
+  return { managedDir: managed, frozenRoot, scriptRoots };
+}
+
 function routingStatus(settings) {
   const managed = selectInstalledClient(settings);
-  if (!isFrozenManagedDir(managed)) return { state: 'missing', message: 'RevivalSide client not installed. Start Game will download it automatically.' };
+  if (!isFrozenManagedDir(managed)) return { state: 'missing', message: 'No frozen client installed. Select an official CounterSide client and freeze it first.' };
   const manifestFile = path.join(gameRootFromManaged(managed), 'revivalside-frozen-client.json');
   let manifest = {};
   try { manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8')); } catch { /* pending first patch */ }
@@ -610,7 +620,7 @@ function createClientPatcher(settings, status = false) {
 
 async function ensureClientPatch(settings, requireFrozen = true) {
   if (requireFrozen && !isFrozenManagedDir(settings.CounterSideManagedDir)) {
-    throw new Error('Download the RevivalSide client before starting RevivalSide.');
+    throw new Error('No frozen client is installed. Select an official CounterSide client and use Freeze Selected CounterSide Client first.');
   }
   log('Checking CounterSide client patch...');
   const patch = createClientPatcher(settings, false);
@@ -721,249 +731,12 @@ async function hashFile(file) {
   });
 }
 
-function formatBytes(value) {
-  const bytes = Math.max(0, Number(value) || 0);
-  if (bytes < 1024) return `${bytes.toFixed(0)} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let amount = bytes;
-  let unit = -1;
-  do {
-    amount /= 1024;
-    unit += 1;
-  } while (amount >= 1024 && unit < units.length - 1);
-  return `${amount.toFixed(amount >= 100 ? 0 : amount >= 10 ? 1 : 2)} ${units[unit]}`;
-}
-
-function requireReleaseName(value, label) {
-  const name = String(value || '').trim();
-  if (!name || name === '.' || name === '..' || name !== path.basename(name) || !/^[A-Za-z0-9._-]+$/.test(name)) {
-    throw new Error(`Client manifest ${label} is invalid.`);
-  }
-  return name;
-}
-
-function requireSha256(value, label) {
-  const hash = String(value || '').trim().toLowerCase();
-  if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error(`Client manifest ${label} must be a SHA-256 hash.`);
-  return hash;
-}
-
-function validateClientManifest(value) {
-  if (!value || Number(value.schemaVersion) !== CLIENT_MANIFEST_SCHEMA_VERSION) {
-    throw new Error(`Unsupported RevivalSide client manifest schema: ${value && value.schemaVersion}.`);
-  }
-  const clientVersion = requireReleaseName(value.clientVersion, 'clientVersion');
-  const rootDirName = requireReleaseName(value.rootDirName, 'rootDirName');
-  const archiveName = requireReleaseName(value.archiveName, 'archiveName');
-  const archiveSize = Number(value.archiveSize);
-  const installedSize = Number(value.installedSize);
-  if (!Number.isSafeInteger(archiveSize) || archiveSize <= 0) throw new Error('Client manifest archiveSize is invalid.');
-  if (!Number.isSafeInteger(installedSize) || installedSize <= 0) throw new Error('Client manifest installedSize is invalid.');
-  if (!Array.isArray(value.chunks) || value.chunks.length === 0) throw new Error('Client manifest has no chunks.');
-  const seen = new Set();
-  const chunks = value.chunks.map((item, index) => {
-    const name = requireReleaseName(item && item.name, `chunks[${index}].name`);
-    const size = Number(item && item.size);
-    if (!Number.isSafeInteger(size) || size <= 0) throw new Error(`Client manifest chunk ${name} has an invalid size.`);
-    if (seen.has(name.toLowerCase())) throw new Error(`Client manifest repeats chunk ${name}.`);
-    seen.add(name.toLowerCase());
-    return { name, size, sha256: requireSha256(item.sha256, `chunk ${name}`) };
-  });
-  const chunkSize = chunks.reduce((total, chunk) => total + chunk.size, 0);
-  if (chunkSize !== archiveSize) throw new Error(`Client manifest chunk total ${chunkSize} does not match archiveSize ${archiveSize}.`);
-  return {
-    schemaVersion: CLIENT_MANIFEST_SCHEMA_VERSION,
-    clientVersion,
-    rootDirName,
-    archiveName,
-    archiveSize,
-    archiveSha256: requireSha256(value.archiveSha256, 'archiveSha256'),
-    installedSize,
-    fileCount: Number(value.fileCount) || 0,
-    chunks,
-  };
-}
-
-function clientManifestUrl() {
-  const configured = String(process.env.REVIVALSIDE_CLIENT_MANIFEST_URL || DEFAULT_CLIENT_MANIFEST_URL).trim();
-  let url;
-  try { url = new URL(configured); } catch { throw new Error('REVIVALSIDE_CLIENT_MANIFEST_URL is not a valid URL.'); }
-  const localHttp = url.protocol === 'http:' && ['127.0.0.1', 'localhost', '::1'].includes(url.hostname);
-  if (url.protocol !== 'https:' && !localHttp) throw new Error('RevivalSide client downloads require HTTPS.');
-  return url;
-}
-
-async function readClientManifest() {
-  const url = clientManifestUrl();
-  log(`Checking RevivalSide client release: ${url}`);
-  const response = await fetch(url, {
-    redirect: 'follow',
-    headers: { accept: 'application/json', 'user-agent': 'RevivalSide-Launcher' },
-    signal: AbortSignal.timeout(60_000),
-  });
-  if (!response.ok) throw new Error(`Client manifest download failed: HTTP ${response.status}.`);
-  return { manifest: validateClientManifest(await response.json()), manifestUrl: url };
-}
-
-async function ensureDownloadCapacity(manifest) {
-  try {
-    await fsp.mkdir(frozenArchiveRoot(), { recursive: true });
-    const disk = await fsp.statfs(frozenArchiveRoot());
-    const available = Number(disk.bavail) * Number(disk.bsize);
-    const required = manifest.archiveSize + manifest.installedSize + 1024 * 1024 * 1024;
-    if (available < required) {
-      throw new Error(`Downloading the RevivalSide client requires about ${formatBytes(required)} free; ${formatBytes(available)} is available.`);
-    }
-  } catch (error) {
-    if (error && /requires about/.test(error.message || '')) throw error;
-    log(`Free-space check skipped: ${error.message}`, 'warn');
-  }
-}
-
-function chunkUrl(manifestUrl, name) {
-  return new URL(encodeURIComponent(name), new URL('.', manifestUrl)).toString();
-}
-
-async function downloadClientChunk(url, destination, chunk, completedBytes, totalBytes, onProgress) {
-  const partFile = `${destination}.part`;
-  if (fs.existsSync(destination)) {
-    const existing = await fsp.stat(destination);
-    if (existing.size === chunk.size && (await hashFile(destination)) === chunk.sha256) {
-      onProgress(completedBytes + chunk.size, totalBytes, `Verified ${chunk.name}`);
-      return;
-    }
-    await fsp.rm(destination, { force: true });
-  }
-
-  let offset = 0;
-  try { offset = (await fsp.stat(partFile)).size; } catch { /* start from zero */ }
-  if (offset > chunk.size) {
-    await fsp.rm(partFile, { force: true });
-    offset = 0;
-  }
-  const headers = { 'accept-encoding': 'identity', 'user-agent': 'RevivalSide-Launcher' };
-  if (offset > 0) headers.range = `bytes=${offset}-`;
-  const response = await fetch(url, { redirect: 'follow', headers });
-  if (!response.ok && response.status !== 206) throw new Error(`Download failed for ${chunk.name}: HTTP ${response.status}.`);
-  const append = offset > 0 && response.status === 206;
-  if (!append) offset = 0;
-  const output = await fsp.open(partFile, append ? 'a' : 'w');
-  let received = offset;
-  let lastReport = 0;
-  try {
-    if (!response.body) throw new Error(`Download returned no data for ${chunk.name}.`);
-    for await (const value of Readable.fromWeb(response.body)) {
-      const buffer = Buffer.from(value);
-      await output.write(buffer);
-      received += buffer.length;
-      const now = Date.now();
-      if (now - lastReport >= 2000) {
-        onProgress(completedBytes + received, totalBytes, `Downloading ${chunk.name}`);
-        lastReport = now;
-      }
-    }
-  } finally {
-    await output.close();
-  }
-  const size = (await fsp.stat(partFile)).size;
-  if (size !== chunk.size) throw new Error(`Download for ${chunk.name} is incomplete: expected ${chunk.size}, received ${size}.`);
-  if ((await hashFile(partFile)) !== chunk.sha256) throw new Error(`SHA-256 verification failed for ${chunk.name}.`);
-  await fsp.rename(partFile, destination);
-  onProgress(completedBytes + chunk.size, totalBytes, `Downloaded ${chunk.name}`);
-}
-
-async function combineClientChunks(manifest, cacheRoot) {
-  const archiveFile = path.join(cacheRoot, manifest.archiveName);
-  const output = await fsp.open(archiveFile, 'w');
-  try {
-    for (const chunk of manifest.chunks) {
-      const chunkFile = path.join(cacheRoot, chunk.name);
-      for await (const value of fs.createReadStream(chunkFile)) await output.write(value);
-      await fsp.rm(chunkFile, { force: true });
-      await fsp.rm(`${chunkFile}.part`, { force: true });
-    }
-  } finally {
-    await output.close();
-  }
-  const size = (await fsp.stat(archiveFile)).size;
-  if (size !== manifest.archiveSize) throw new Error(`Combined client archive has size ${size}; expected ${manifest.archiveSize}.`);
-  if ((await hashFile(archiveFile)) !== manifest.archiveSha256) throw new Error('Combined client archive failed SHA-256 verification.');
-  return archiveFile;
-}
-
-async function extractClientArchive(manifest, archiveFile) {
-  await fsp.mkdir(frozenArchiveRoot(), { recursive: true });
-  const targetRoot = path.join(frozenArchiveRoot(), manifest.rootDirName);
-  if (!isPathInside(frozenArchiveRoot(), targetRoot)) throw new Error('Client manifest extraction path escapes the frozen-client directory.');
-  if (isFrozenRoot(targetRoot)) return targetRoot;
-  if (fs.existsSync(targetRoot)) throw new Error(`A conflicting client directory already exists: ${targetRoot}`);
-  const stagingRoot = path.join(frozenArchiveRoot(), `.install-${manifest.clientVersion}-${process.pid}`);
-  await fsp.rm(stagingRoot, { recursive: true, force: true });
-  await fsp.mkdir(stagingRoot, { recursive: true });
-  const tar = resolveTool('tar.exe') || resolveTool('tar');
-  if (!tar) throw new Error('Windows tar.exe was not found; the RevivalSide client cannot be extracted.');
-  log(`Extracting RevivalSide client ${manifest.clientVersion}...`);
-  await runChecked(tar, ['-xf', archiveFile, '-C', stagingRoot], { description: 'Client extraction' });
-  const stagedClient = path.join(stagingRoot, manifest.rootDirName);
-  if (!fs.existsSync(path.join(stagedClient, 'CounterSide.exe')) || !isManagedDir(path.join(stagedClient, 'Data', 'Managed'))) {
-    throw new Error('Downloaded archive does not contain a valid RevivalSide client.');
-  }
-  await fsp.rename(stagedClient, targetRoot);
-  await fsp.rm(stagingRoot, { recursive: true, force: true });
-  return targetRoot;
-}
-
-async function installClientFromRelease(settings, onProgress = () => {}) {
-  const { manifest, manifestUrl } = await readClientManifest();
-  await ensureDownloadCapacity(manifest);
-  const cacheRoot = path.join(root, 'client-downloads', manifest.clientVersion);
-  await fsp.mkdir(cacheRoot, { recursive: true });
-  let completedBytes = 0;
-  const report = (downloaded, total, message) => {
-    const percent = total > 0 ? Math.min(100, downloaded / total * 100) : 0;
-    log(`${message}: ${percent.toFixed(1)}% (${formatBytes(downloaded)} / ${formatBytes(total)})`);
-    onProgress(percent, message);
-  };
-  for (let index = 0; index < manifest.chunks.length; index += 1) {
-    const chunk = manifest.chunks[index];
-    await downloadClientChunk(
-      chunkUrl(manifestUrl, chunk.name),
-      path.join(cacheRoot, chunk.name),
-      chunk,
-      completedBytes,
-      manifest.archiveSize,
-      report,
-    );
-    completedBytes += chunk.size;
-  }
-  onProgress(100, 'Verifying client archive');
-  const archiveFile = await combineClientChunks(manifest, cacheRoot);
-  const targetRoot = await extractClientArchive(manifest, archiveFile);
-  const managed = path.join(targetRoot, 'Data', 'Managed');
-  settings.CounterSideManagedDir = managed;
-  saveSettings(settings);
-  await fsp.rm(archiveFile, { force: true });
-  await fsp.rm(cacheRoot, { recursive: true, force: true });
-  log(`RevivalSide client ${manifest.clientVersion} installed: ${targetRoot}`);
-  return { manifest, frozenRoot: targetRoot, managedDir: managed, downloaded: true };
-}
-
-async function ensureClientAvailable(settings, onProgress = () => {}) {
+function ensureClientAvailable(settings) {
   const managed = selectInstalledClient(settings, true);
   if (managed) {
-    return { frozenRoot: gameRootFromManaged(managed), managedDir: managed, downloaded: false };
+    return { frozenRoot: gameRootFromManaged(managed), managedDir: managed };
   }
-  return installClientFromRelease(settings, onProgress);
-}
-
-async function downloadClient() {
-  const settings = loadSettings();
-  const installed = await ensureClientAvailable(settings);
-  await ensureClientPatch(settings, true);
-  const quarantined = await isolateSteamRuntime(installed.frozenRoot);
-  writeLaunchFiles(installed.frozenRoot);
-  await updateFrozenClientManifest(installed.frozenRoot, installed.managedDir);
-  return { ...installed, quarantined };
+  throw new Error('No frozen client is installed. Select an official CounterSide client and use Freeze Selected CounterSide Client first.');
 }
 
 async function enumerateFiles(directory) {
@@ -1081,25 +854,12 @@ async function freezeClient() {
   return { frozenRoot: targetRoot, managedDir: managed, fileCount: copied, byteCount: bytes, quarantined };
 }
 
-async function repairContentVersion() {
-  const settings = loadSettings();
-  const managed = selectInstalledClient(settings, true);
-  if (!managed) throw new Error('No RevivalSide client is installed. Download or freeze a client first.');
-  await ensureClientPatch(settings, true);
-  const frozenRoot = gameRootFromManaged(managed);
-  const quarantined = await isolateSteamRuntime(frozenRoot);
-  writeLaunchFiles(frozenRoot);
-  await updateFrozenClientManifest(frozenRoot, managed);
-  log('Content-version reconciliation verified for the frozen client.');
-  return { frozenRoot, managedDir: managed, quarantined, repaired: true };
-}
-
 async function launchClient({ clientPatchVerified = false } = {}) {
   const settings = loadSettings();
   selectInstalledClient(settings, true);
   const managed = normalizeManagedDir(settings.CounterSideManagedDir);
   const frozenRoot = gameRootFromManaged(managed);
-  if (!isFrozenRoot(frozenRoot)) throw new Error('No RevivalSide client is installed. Use Download RevivalSide Client first.');
+  if (!isFrozenRoot(frozenRoot)) throw new Error('No frozen client is installed. Freeze a CounterSide client first.');
   if (!clientPatchVerified) await ensureClientPatch(settings, true);
   const quarantined = await isolateSteamRuntime(frozenRoot);
   writeLaunchFiles(frozenRoot);
@@ -1254,19 +1014,13 @@ async function startListenerService() {
     [path.join('server-data', 'captured-flows', 'manifest.json'), 'Captured mirror manifest'],
   ]) requireFile(relative, description);
   emitService('listener', 'starting', 'Checking RevivalSide client');
-  await ensureClientAvailable(settings, (percent, message) => {
-    emitService('listener', 'starting', `${message} (${percent.toFixed(0)}%)`);
-  });
+  const client = ensureClientAvailable(settings);
   emitService('listener', 'starting', 'Preparing offline client');
   await ensureGameplayCache(settings, false);
-  const sourceContentsVersion = readFrozenContentsVersion(path.join(root, '.cache', 'gameplay-luac'));
-  if (!sourceContentsVersion) {
-    throw new Error('The frozen client content version could not be read from the extracted gameplay cache.');
-  }
+  const gameplaySource = verifyGameplayCacheSource(client.managedDir, path.join(root, '.cache', 'gameplay-luac'));
   const environment = buildListenerEnvironment(settings);
-  log(
-    `Frozen client tables ${sourceContentsVersion} advertised as ${environment.CS_CONTENTS_VERSION || sourceContentsVersion}.`
-  );
+  log(`Frozen Managed runtime source: ${gameplaySource.managedDir}`);
+  log(`Frozen gameplay script roots: ${gameplaySource.scriptRoots.join('; ')}`);
   emitService('listener', 'starting', 'Patching and auditing client');
   await ensureClientPatch(settings, true);
   const tools = toolPaths();
@@ -1474,9 +1228,7 @@ async function runAction(command, payload) {
       return { managedDir: managed };
     }
     case 'detect-client': return { managedDir: detectManagedDir() };
-    case 'download-client': return downloadClient();
     case 'freeze-client': return freezeClient();
-    case 'repair-content-version': return repairContentVersion();
     case 'launch-client': return launchClient();
     case 'verify-assets': return { gameplay: gameplayStatus(loadSettings()) };
     case 'build-cache': return { gameplay: await ensureGameplayCache(loadSettings(), true) };
@@ -1531,6 +1283,5 @@ module.exports = {
   FROZEN_CLIENT_PATCH_REQUIREMENTS,
   createListenerReadinessGate,
   normalizeExistingManagedDir,
-  resolveFrozenAdvertisedContentsVersion,
-  validateClientManifest,
+  verifyGameplayCacheSource,
 };

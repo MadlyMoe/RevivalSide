@@ -128,8 +128,6 @@ const {
   getMissionTempletsByTabId,
   getRewardGroupRecords,
   getPlayerTotalExpForLevel,
-  getMiscItemTemplet,
-  getCompatibleUserTitleId,
 } = require("../modules/game-data");
 const {
   getAllContractStates,
@@ -157,9 +155,8 @@ const { createEventManager } = require("../modules/event-manager");
 const { createServerTime } = require("../modules/server-time");
 const {
   getCapturedContentsTags,
-  getCapturedRequestOpenTags,
+  getCapturedOpenTags,
   hasFrozenMissionSnapshot,
-  filterFrozenInventoryMiscItems,
 } = require("../modules/frozen-content-compat");
 
 function envFlag(...keys) {
@@ -470,50 +467,12 @@ const FROZEN_SOURCE_CONTENTS_VERSION =
 const LOCK_CONTENTS_VERSION = Boolean(FROZEN_SOURCE_CONTENTS_VERSION) || process.env.CS_LOCK_CONTENTS_VERSION === "1";
 const CONTENTS_VERSION = process.env.CS_CONTENTS_VERSION || FROZEN_SOURCE_CONTENTS_VERSION || "9.2.c";
 
-function detectFrozenMainstreamEpisodeLimit(state) {
-  if (!state || !state.isFrozenClient || !state.rootDir) return 0;
-  let latestEpisode = 0;
-  for (const directory of [path.join(state.rootDir, "Assetbundles"), path.join(state.dataDir, "StreamingAssets")]) {
-    let entries = [];
-    try {
-      entries = fs.readdirSync(directory, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (!entry.isFile()) continue;
-      const match = /^(?:ui|shortcut_big)_mainstream_ep_(\d+)(?:_(\d+))?(?:_loc(?:\.[^.]+)?)?\.asset$/i.exec(entry.name);
-      if (!match) continue;
-      const major = Number(match[1] || 0);
-      const minor = match[2] == null ? 0 : Number(match[2] || 0) / 10;
-      latestEpisode = Math.max(latestEpisode, major + minor);
-    }
-  }
-  return latestEpisode;
-}
-
 const REQUIRED_CONTENTS_TAGS = Object.freeze([
   "TAG_COMMON_SHOP_TAB_SUPPLY",
   "TAG_COMMON_SHOP_TAB_PACKAGE_SUPER_PACK",
   "SYSTEM_TRANSCENDENCE_LV120",
 ]);
-const FROZEN_MAINSTREAM_EPISODE_LIMIT = detectFrozenMainstreamEpisodeLimit(FROZEN_CLIENT_PATCH_STATE);
-const ALL_STORY_OPEN_TAGS = Object.freeze(getStoryOpenTags());
-const REQUIRED_STORY_OPEN_TAGS = Object.freeze(
-  getStoryOpenTags(
-    FROZEN_MAINSTREAM_EPISODE_LIMIT > 0
-      ? { maxMainstreamEpisode: FROZEN_MAINSTREAM_EPISODE_LIMIT }
-      : undefined
-  )
-);
-const REQUIRED_STORY_OPEN_TAG_SET = new Set(REQUIRED_STORY_OPEN_TAGS.map((tag) => String(tag || "").toUpperCase()));
-const UNAVAILABLE_FROZEN_STORY_OPEN_TAG_SET = new Set(
-  FROZEN_MAINSTREAM_EPISODE_LIMIT > 0
-    ? ALL_STORY_OPEN_TAGS
-        .map((tag) => String(tag || "").toUpperCase())
-        .filter((tag) => !REQUIRED_STORY_OPEN_TAG_SET.has(tag))
-    : []
-);
+const REQUIRED_STORY_OPEN_TAGS = Object.freeze(getStoryOpenTags());
 const SUPPRESSED_STORY_OPEN_TAGS = Object.freeze(getSuppressedStoryOpenTags());
 const SUPPRESSED_STORY_OPEN_TAG_SET = new Set(SUPPRESSED_STORY_OPEN_TAGS.map((tag) => String(tag || "").toUpperCase()));
 const EXPLICIT_OPEN_TAGS = Object.freeze(parseTags(process.env.CS_OPEN_TAGS || ""));
@@ -760,9 +719,6 @@ function logRuntimeConfig() {
       LOCK_CONTENTS_VERSION ? "yes" : "no"
     }`
   );
-  if (FROZEN_MAINSTREAM_EPISODE_LIMIT > 0) {
-    console.log(`[cfg] frozenMainstreamEpisodeLimit=${FROZEN_MAINSTREAM_EPISODE_LIMIT}`);
-  }
   console.log(`[cfg] contentsTags=${CONTENTS_TAGS.length}`);
   const eventSummary = runtimeEventManager.getSummary();
   const serverTimeSummary = serverTime.getSummary();
@@ -812,7 +768,7 @@ function logRuntimeConfig() {
     console.log(
       `[cfg] frozenCompatibility source=${FROZEN_SOURCE_CONTENTS_VERSION} target=${CONTENTS_VERSION} contentsTags=${
         getCapturedContentsVersionTags().length
-      } requestOpenTags=${getFrozenRequestOpenTags().length}`
+      } openTags=${getFrozenClientOpenTags().length}`
     );
   }
   console.log(`[cfg] gameServer=${GAME_SERVER_IP}:${GAME_SERVER_PORT}`);
@@ -8723,9 +8679,9 @@ function getCapturedContentsVersionTags() {
   return getCapturedContentsTags(capturedTcpProfiles, LOCK_CONTENTS_VERSION ? CONTENTS_VERSION : "");
 }
 
-function getFrozenRequestOpenTags() {
+function getFrozenClientOpenTags() {
   if (!FROZEN_SOURCE_CONTENTS_VERSION) return [];
-  return getCapturedRequestOpenTags(capturedTcpProfiles, CONTENTS_VERSION);
+  return getCapturedOpenTags(capturedTcpProfiles, CONTENTS_VERSION);
 }
 
 function filterCapturedContentsVersionTags(tags) {
@@ -8755,7 +8711,7 @@ function getEffectiveOpenTags(baseTags) {
     filterSuppressedOpenTags(
       mergeTags(
         baseTags,
-        getFrozenRequestOpenTags(),
+        getFrozenClientOpenTags(),
         EXPLICIT_OPEN_TAGS,
         REQUIRED_STORY_OPEN_TAGS,
         activeEventState.openTags,
@@ -8770,7 +8726,6 @@ function getEffectiveOpenTags(baseTags) {
 function filterSuppressedOpenTags(tags) {
   return (Array.isArray(tags) ? tags : []).filter((tag) => {
     const key = String(tag || "").toUpperCase();
-    if (UNAVAILABLE_FROZEN_STORY_OPEN_TAG_SET.has(key) && !EXPLICIT_OPEN_TAG_SET.has(key)) return false;
     return !SUPPRESSED_STORY_OPEN_TAG_SET.has(key) || EXPLICIT_OPEN_TAG_SET.has(key);
   });
 }
@@ -8952,51 +8907,6 @@ function readIntervalDataStrKey(payload) {
   }
 }
 
-function createFrozenClientProgressView() {
-  const stageCatalog = loadStageCatalog();
-  const dungeonCatalog = loadDungeonCatalog();
-  const stageById = stageCatalog && stageCatalog.byId && typeof stageCatalog.byId === "object" ? stageCatalog.byId : {};
-  const dungeonById = dungeonCatalog && dungeonCatalog.byId && typeof dungeonCatalog.byId === "object" ? dungeonCatalog.byId : {};
-  const hasStageTable = Object.keys(stageById).length > 0;
-  const hasDungeonTable = Object.keys(dungeonById).length > 0;
-  const unavailableByField = new Map();
-  const recordUnavailable = (field, id) => {
-    if (!unavailableByField.has(field)) unavailableByField.set(field, new Set());
-    unavailableByField.get(field).add(id);
-    return false;
-  };
-  const acceptsStage = (value, field) => {
-    const stageId = positiveInt(value);
-    if (!stageId) return false;
-    if (!hasStageTable || Object.prototype.hasOwnProperty.call(stageById, String(stageId))) return true;
-    return recordUnavailable(field, stageId);
-  };
-  const acceptsDungeon = (value, field) => {
-    const dungeonId = positiveInt(value);
-    if (!dungeonId) return false;
-    if (!hasDungeonTable || Object.prototype.hasOwnProperty.call(dungeonById, String(dungeonId))) return true;
-    return recordUnavailable(field, dungeonId);
-  };
-  return {
-    acceptsStage,
-    acceptsDungeon,
-    unlockedStageIds(values) {
-      return (Array.isArray(values) ? values : [])
-        .map(positiveInt)
-        .filter((stageId) => stageId > 0 && acceptsStage(stageId, "unlockedStageIds"));
-    },
-    unavailableSummary() {
-      const fields = {};
-      let total = 0;
-      for (const [field, ids] of unavailableByField.entries()) {
-        fields[field] = Array.from(ids).sort((left, right) => left - right);
-        total += fields[field].length;
-      }
-      return { total, fields };
-    },
-  };
-}
-
 function buildMinimalJoinLobbyPayload(user) {
   const scrubbedTutorialClears = scrubTutorialEpisodeClearProgress(user);
   if (scrubbedTutorialClears && USE_LOCAL_USER_DB) saveUserDb();
@@ -9026,12 +8936,10 @@ function buildMinimalJoinLobbyPayload(user) {
   const shipCount = getArmyShips(user).length;
   const operatorCount = getArmyOperators(user).length;
   const worldMapCityIds = worldMap.getWorldMapCityIds(user, { includeDefaults: true, now: lobbyNow });
-  const frozenClientProgress = createFrozenClientProgressView();
-  const userData = buildMinimalUserData(user, userUid, friendCode, nickname, frozenClientProgress);
-  const stagePlayDataList = buildStagePlayDataList(user, frozenClientProgress);
-  const unlockedStageIds = frozenClientProgress.unlockedStageIds(user.unlockedStageIds);
-  const phaseClearDataList = buildPhaseClearDataList(user, frozenClientProgress);
-  const unavailableProgress = frozenClientProgress.unavailableSummary();
+  const userData = buildMinimalUserData(user, userUid, friendCode, nickname);
+  const stagePlayDataList = buildStagePlayDataList(user);
+  const unlockedStageIds = user.unlockedStageIds || [];
+  const phaseClearDataList = buildPhaseClearDataList(user);
 
   console.log(
     `[JOIN_LOBBY_ACK local] uid=${userUid} friendCode=${friendCode} nickname=${JSON.stringify(
@@ -9042,15 +8950,6 @@ function buildMinimalJoinLobbyPayload(user) {
       worldMapCityIds.join(",") || "-"
     }`
   );
-  if (unavailableProgress.total > 0) {
-    const details = Object.entries(unavailableProgress.fields)
-      .map(([field, ids]) => `${field}=${ids.join(",")}`)
-      .join(" ");
-    console.log(
-      `[JOIN_LOBBY_ACK frozen-client-tables] uid=${userUid} unavailable=${unavailableProgress.total} ${details}`
-    );
-  }
-
   return Buffer.concat([
     writeSignedVarInt(0), // errorCode
     writeSignedVarLong(friendCode),
@@ -9145,12 +9044,7 @@ function buildJoinLobbyAckPayload(user) {
       sha1Buffer(localPayload),
     ].join(":");
     const cached = joinLobbyAckPayloadCache.get(cacheKey);
-    if (cached) {
-      console.log(
-        `[JOIN_LOBBY_ACK cache] hit mode=merge uid=${user && user.userUid ? user.userUid : "(ephemeral)"} bytes=${cached.length}`
-      );
-      return cached;
-    }
+    if (cached) return cached;
 
     const merged = combatHandler.mergeJoinLobbyAck
       ? combatHandler.mergeJoinLobbyAck(officialPayload, localPayload, {
@@ -9209,12 +9103,7 @@ function buildJoinLobbyAckPayload(user) {
       sha1Buffer(localPayload),
     ].join(":");
     const cached = joinLobbyAckPayloadCache.get(cacheKey);
-    if (cached) {
-      console.log(
-        `[JOIN_LOBBY_ACK cache] hit mode=normalize uid=${user && user.userUid ? user.userUid : "(ephemeral)"} bytes=${cached.length}`
-      );
-      return cached;
-    }
+    if (cached) return cached;
     const normalized = combatHandler.normalizeJoinLobbyAck
       ? combatHandler.normalizeJoinLobbyAck(localPayload)
       : { ok: false, error: "combat handler normalize unavailable" };
@@ -9374,16 +9263,13 @@ function getCompletedTutorialStageStates(user) {
   }).filter(Boolean);
 }
 
-function buildDungeonClearEntries(user, frozenClientProgress = null) {
+function buildDungeonClearEntries(user) {
   repairDungeonClearDataFromProgress(user);
   const dungeonClear = user && user.dungeonClear && typeof user.dungeonClear === "object" ? user.dungeonClear : {};
   const entries = new Map();
   const addDungeonClearEntry = (dungeonId, options = {}) => {
     const normalizedDungeonId = Number(dungeonId);
     if (!Number.isFinite(normalizedDungeonId) || normalizedDungeonId <= 0) return;
-    if (frozenClientProgress && !frozenClientProgress.acceptsDungeon(normalizedDungeonId, "dungeonClear")) return;
-    const stageId = positiveInt(options.stageId);
-    if (stageId && frozenClientProgress && !frozenClientProgress.acceptsStage(stageId, "dungeonClearStage")) return;
     entries.set(normalizedDungeonId, buildDungeonClearData(normalizedDungeonId, options));
   };
   for (const [key, clear] of Object.entries(dungeonClear)) {
@@ -9420,43 +9306,31 @@ function buildDungeonClearEntries(user, frozenClientProgress = null) {
   return Array.from(entries.entries());
 }
 
-function buildStagePlayDataList(user, frozenClientProgress = null) {
+function buildStagePlayDataList(user) {
   const stagePlayData = user && user.stagePlayData && typeof user.stagePlayData === "object" ? user.stagePlayData : {};
   const entries = new Map();
   for (const [key, data] of Object.entries(stagePlayData)) {
     const stageId = Number((data && data.stageId) || key);
-    if (
-      Number.isFinite(stageId) &&
-      stageId > 0 &&
-      (!frozenClientProgress || frozenClientProgress.acceptsStage(stageId, "stagePlayData"))
-    ) {
+    if (Number.isFinite(stageId) && stageId > 0) {
       entries.set(stageId, writeNullableObject(buildStagePlayData(stageId, { gameTime: Number((data && data.bestClearTimeSec) || 0) })));
     }
   }
   for (const stage of getCompletedTutorialStageStates(user)) {
     const stageId = Number(stage.stageId || 0);
-    if (
-      Number.isFinite(stageId) &&
-      stageId > 0 &&
-      (!frozenClientProgress || frozenClientProgress.acceptsStage(stageId, "stagePlayData"))
-    ) {
+    if (Number.isFinite(stageId) && stageId > 0) {
       entries.set(stageId, writeNullableObject(buildStagePlayData(stageId, { gameTime: Number(stage.bestClearTimeSec || 0) })));
     }
   }
   for (const stage of getMainStoryCompletedStageStates(user)) {
     const stageId = Number(stage.stageId || 0);
-    if (
-      Number.isFinite(stageId) &&
-      stageId > 0 &&
-      (!frozenClientProgress || frozenClientProgress.acceptsStage(stageId, "stagePlayData"))
-    ) {
+    if (Number.isFinite(stageId) && stageId > 0) {
       entries.set(stageId, writeNullableObject(buildStagePlayData(stageId, { gameTime: Number(stage.bestClearTimeSec || 0) })));
     }
   }
   return Array.from(entries.values());
 }
 
-function buildPhaseClearDataList(user, frozenClientProgress = null) {
+function buildPhaseClearDataList(user) {
   repairDungeonClearDataFromProgress(user);
   ensureMainStoryState(user);
   const stages = new Map();
@@ -9476,10 +9350,7 @@ function buildPhaseClearDataList(user, frozenClientProgress = null) {
     }
   }
   return Array.from(stages.values())
-    .filter((stage) => {
-      const stageId = Number(stage.stageId || 0);
-      return stageId > 0 && (!frozenClientProgress || frozenClientProgress.acceptsStage(stageId, "phaseClearData"));
-    })
+    .filter((stage) => Number(stage.stageId || 0) > 0)
     .map((stage) =>
       writeNullableObject(
         buildPhaseClearData(stage.stageId, {
@@ -9509,7 +9380,7 @@ function buildEpisodeCompleteEntries(user) {
   return entries;
 }
 
-function buildMinimalUserData(user, userUid, friendCode, nickname, frozenClientProgress = null) {
+function buildMinimalUserData(user, userUid, friendCode, nickname) {
   const userLevel = getJoinLobbyUserLevel(user);
   const userLevelExp = Number(user && user.exp ? user.exp : 0) || 0;
   const now = dateTimeBinaryNow();
@@ -9525,7 +9396,7 @@ function buildMinimalUserData(user, userUid, friendCode, nickname, frozenClientP
     writeNullableObject(buildMinimalInventoryData(user)),
     writeNullableObject(buildMinimalArmyData(user)),
     writeNullableObject(buildMinimalUserOption(user)),
-    writeObjectMapInt(buildDungeonClearEntries(user, frozenClientProgress)), // m_dicNKMDungeonClearData
+    writeObjectMapInt(buildDungeonClearEntries(user)), // m_dicNKMDungeonClearData
     writeNullableObject(worldMap.buildWorldMapData(user, { now })), // m_WorldmapData
     writeObjectMapInt([]), // m_dicNKMWarfareClearData
     writeNullableObject(buildMinimalShopData(user)),
@@ -9563,8 +9434,7 @@ function buildMinimalInventoryData(user) {
 }
 
 function buildInventoryMiscEntries(user) {
-  return filterFrozenInventoryMiscItems(getMiscItems(user), getMiscItemTemplet)
-    .map((item) => [item.itemId, buildItemMiscData(item)]);
+  return getMiscItems(user).map((item) => [item.itemId, buildItemMiscData(item)]);
 }
 
 function buildInventoryEquipEntries(user) {
@@ -9845,7 +9715,6 @@ function buildUserProfileData(user, userUid, friendCode, nickname) {
 function buildCommonProfileData(user, userUid, friendCode, nickname) {
   ensureAccountProgress(user);
   const mainUnitId = Number(user && user.mainUnitId) || 0;
-  const titleId = Number(user && user.titleId) || 0;
   return Buffer.concat([
     writeSignedVarLong(userUid || 0n),
     writeSignedVarLong(friendCode || 0n),
@@ -9855,7 +9724,7 @@ function buildCommonProfileData(user, userUid, friendCode, nickname) {
     writeSignedVarInt(Number((user && user.mainUnitSkinId) || 0)),
     writeSignedVarInt(Number((user && (user.frameId || user.selfiFrameId)) || 0)),
     writeSignedVarInt(Number((user && user.mainUnitTacticLevel) || 0)),
-    writeSignedVarInt(getCompatibleUserTitleId(titleId)),
+    writeSignedVarInt(Number((user && user.titleId) || 0)),
   ]);
 }
 
@@ -10098,11 +9967,12 @@ function shouldPreferMissionSnapshot(candidate, existing) {
 }
 
 function buildMissionData(missionId, mission = {}) {
+  const times = Math.max(0, Math.trunc(Number(mission.times || 0) || 0));
   return Buffer.concat([
     writeSignedVarInt(Number(mission.tabId || 1)),
     writeSignedVarInt(missionId),
     writeSignedVarInt(Number(mission.groupId || missionId)),
-    writeSignedVarLong(BigInt(Math.max(0, Number(mission.times || 0)))),
+    writeSignedVarLong(BigInt(times)),
     writeSignedVarLong(coerceDateTimeTicks(mission.lastUpdateDate)),
     writeBool(mission.rewardClaimed === true || mission.isComplete === true || Boolean(mission.claimedAt)),
   ]);
@@ -10590,12 +10460,6 @@ function ensureUserDefaults(user) {
     Array.isArray(user.contentsTags) && user.contentsTags.length ? user.contentsTags : CONTENTS_TAGS,
     REQUIRED_CONTENTS_TAGS
   );
-  Object.defineProperty(user, "__runtimeContentsTags", {
-    configurable: true,
-    enumerable: false,
-    writable: true,
-    value: getEffectiveContentsTags(user.contentsTags),
-  });
   user.openTags = filterSuppressedOpenTags(
     mergeTags(Array.isArray(user.openTags) && user.openTags.length ? user.openTags : OPEN_TAGS, EXPLICIT_OPEN_TAGS, REQUIRED_STORY_OPEN_TAGS)
   );
@@ -11252,7 +11116,7 @@ function findDefaultDotnetRuntime() {
 
 function findDefaultCombatHostExecutable(projectPath) {
   const packagedHost = path.join(ROOT_DIR, "combat-host", process.platform === "win32" ? "CombatHost.exe" : "CombatHost");
-  if (fs.existsSync(packagedHost) && !fs.existsSync(projectPath)) return packagedHost;
+  if (fs.existsSync(packagedHost)) return packagedHost;
   return "";
 }
 

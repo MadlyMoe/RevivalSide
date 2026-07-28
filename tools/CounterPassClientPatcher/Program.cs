@@ -1,19 +1,6 @@
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 
-var directRepair = IsDirectRepairInvocation(args);
-if (args.Length == 0 || directRepair || args.Any(arg => arg.Equals("--repair-frozen-content-version", StringComparison.OrdinalIgnoreCase)))
-{
-    var result = RepairFrozenClientContentVersions(args);
-    if ((args.Length == 0 || directRepair) && !Console.IsInputRedirected)
-    {
-        Console.WriteLine();
-        Console.Write("Press Enter to close...");
-        Console.ReadLine();
-    }
-    return result;
-}
-
 LoadDotEnv(ResolveEnvFile(args));
 
 var managedDir = ResolveManagedDir(args);
@@ -62,6 +49,18 @@ if (options.RestoreFirst)
 {
     var prepared = PrepareOriginalAssembly(assemblyPath, backupPath);
     if (prepared != 0) return prepared;
+}
+else if (options.ApplyFrozenOfficialUpdateBypass && HasLegacyFrozenContentOverrides(assemblyPath, managedDir))
+{
+    if (!File.Exists(backupPath))
+    {
+        Console.Error.WriteLine("[counter-pass-patch] obsolete frozen content-version hooks were found, but the original DLL backup is missing.");
+        Console.Error.WriteLine("[counter-pass-patch] Re-freeze the client from a clean source installation.");
+        return 2;
+    }
+
+    File.Copy(backupPath, assemblyPath, overwrite: true);
+    Console.WriteLine($"[counter-pass-patch] removed obsolete frozen content-version hooks using backup={backupPath}");
 }
 else if (!File.Exists(backupPath))
 {
@@ -140,146 +139,6 @@ static int RestoreBackup(string assemblyPath, string backupPath, bool requireBac
     File.Copy(backupPath, assemblyPath, overwrite: true);
     Console.WriteLine($"[counter-pass-patch] restored={assemblyPath} backup={backupPath}");
     return 0;
-}
-
-static int RepairFrozenClientContentVersions(string[] args)
-{
-    var directTarget = IsDirectRepairInvocation(args) ? Path.GetFullPath(args[0]) : "";
-    var configuredRoot = ReadRepairArgValue(args, "--frozen-client-root");
-    var frozenRoot = string.IsNullOrWhiteSpace(configuredRoot)
-        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RevivalSide", "frozen-client")
-        : Path.GetFullPath(configuredRoot);
-    Console.WriteLine("RevivalSide frozen-client content-version repair");
-    Console.WriteLine(directTarget.Length > 0 ? $"Selected: {directTarget}" : $"Scanning: {frozenRoot}");
-
-    var assemblyPaths = new List<string>();
-    if (directTarget.Length > 0)
-    {
-        try
-        {
-            assemblyPaths.AddRange(ResolveRepairAssemblyPaths(directTarget));
-        }
-        catch (Exception error)
-        {
-            Console.Error.WriteLine(error.Message);
-            return 2;
-        }
-    }
-    else if (Directory.Exists(frozenRoot))
-    {
-        assemblyPaths.AddRange(ResolveRepairAssemblyPaths(frozenRoot));
-    }
-    if (assemblyPaths.Count == 0)
-    {
-        Console.Error.WriteLine("No controlled frozen clients were found. The Steam installation was not touched.");
-        Console.Error.WriteLine("Drag the affected client's Data\\Managed\\Assembly-CSharp.dll onto this tool and try again.");
-        return 2;
-    }
-
-    var repaired = 0;
-    var current = 0;
-    var failed = 0;
-    foreach (var assemblyPath in assemblyPaths.Distinct(StringComparer.OrdinalIgnoreCase))
-    {
-        var managedDir = Path.GetDirectoryName(assemblyPath)!;
-        var clientRoot = Directory.GetParent(managedDir)?.Parent?.FullName ?? managedDir;
-        try
-        {
-            var resolver = new DefaultAssemblyResolver();
-            resolver.AddSearchDirectory(managedDir);
-            resolver.AddSearchDirectory(AppContext.BaseDirectory);
-            using var module = ModuleDefinition.ReadModule(assemblyPath, new ReaderParameters
-            {
-                AssemblyResolver = resolver,
-                ReadWrite = true,
-                InMemory = true,
-            });
-            var markedClient = File.Exists(Path.Combine(clientRoot, "revivalside-frozen-client.json"));
-            var previouslyControlled = HasFrozenPatchDownloadBypass(module) && FindExternalEndpointStrings(module).Count == 0;
-            if (!markedClient && !previouslyControlled)
-            {
-                throw new InvalidOperationException("This DLL is not recognized as a controlled RevivalSide frozen client. The file was not changed.");
-            }
-            if (HasFrozenContentsVersionIsolation(module))
-            {
-                Console.WriteLine($"Already fixed: {clientRoot}");
-                current += 1;
-                continue;
-            }
-
-            var backupPath = assemblyPath + ".revivalside-content-version-fix.bak";
-            if (!File.Exists(backupPath)) File.Copy(assemblyPath, backupPath);
-            if (!PatchFrozenContentsVersionIsolation(module) || !HasFrozenContentsVersionIsolation(module))
-            {
-                throw new InvalidOperationException("The content-version check could not be patched safely.");
-            }
-            module.Write(assemblyPath);
-            Console.WriteLine($"Fixed: {clientRoot}");
-            repaired += 1;
-        }
-        catch (Exception error)
-        {
-            Console.Error.WriteLine($"Failed: {clientRoot}");
-            Console.Error.WriteLine($"  {error.Message}");
-            if (error is AssemblyResolutionException)
-            {
-                Console.Error.WriteLine("  Drag the DLL from inside the actual Data\\Managed folder so its neighboring Unity DLLs are available.");
-            }
-            failed += 1;
-        }
-    }
-
-    Console.WriteLine();
-    Console.WriteLine($"Complete. Fixed: {repaired}; already fixed: {current}; failed: {failed}.");
-    return failed == 0 ? 0 : 1;
-}
-
-static bool IsDirectRepairInvocation(string[] args)
-{
-    return args.Length == 1
-        && !args[0].StartsWith("-", StringComparison.Ordinal)
-        && (File.Exists(args[0]) || Directory.Exists(args[0]));
-}
-
-static IEnumerable<string> ResolveRepairAssemblyPaths(string target)
-{
-    var fullPath = Path.GetFullPath(target);
-    if (File.Exists(fullPath))
-    {
-        if (!Path.GetFileName(fullPath).Equals("Assembly-CSharp.dll", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new ArgumentException("Select the original file named Assembly-CSharp.dll inside the affected client's Data\\Managed folder.");
-        }
-        return new[] { fullPath };
-    }
-    if (!Directory.Exists(fullPath)) return Array.Empty<string>();
-
-    var candidates = new List<string>();
-    foreach (var candidate in new[]
-    {
-        Path.Combine(fullPath, "Assembly-CSharp.dll"),
-        Path.Combine(fullPath, "Data", "Managed", "Assembly-CSharp.dll"),
-    })
-    {
-        if (File.Exists(candidate)) candidates.Add(candidate);
-    }
-    foreach (var child in Directory.GetDirectories(fullPath).OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
-    {
-        var candidate = Path.Combine(child, "Data", "Managed", "Assembly-CSharp.dll");
-        if (File.Exists(candidate)) candidates.Add(candidate);
-    }
-    return candidates;
-}
-
-static string? ReadRepairArgValue(string[] args, string name)
-{
-    for (var index = 0; index < args.Length; index += 1)
-    {
-        if (!args[index].Equals(name, StringComparison.OrdinalIgnoreCase)) continue;
-        if (index + 1 >= args.Length) throw new ArgumentException($"{name} requires a path.");
-        return args[index + 1];
-    }
-    return null;
 }
 
 static int PrintStatus(string assemblyPath, string backupPath)
@@ -2197,7 +2056,6 @@ static bool PatchFrozenOfficialUpdateBypass(ModuleDefinition module, string serv
     changed |= PatchFrozenNoticeIsolation(module, serverInfoUrl);
     changed |= PatchExternalUrlOperands(module, serverInfoUrl);
     changed |= PatchFrozenPatchDownloadBypass(module);
-    changed |= PatchFrozenContentsVersionIsolation(module);
 
     var mismatchedHttpEndpoints = FindMismatchedHttpEndpointStrings(module, serverInfoUrl);
     if (mismatchedHttpEndpoints.Count > 0)
@@ -2217,91 +2075,6 @@ static bool PatchFrozenOfficialUpdateBypass(ModuleDefinition module, string serv
     return changed;
 }
 
-static bool PatchFrozenContentsVersionIsolation(ModuleDefinition module)
-{
-    const string localVersionMarker = "revivalside-frozen-contents-version-isolation";
-    var changed = false;
-    var mainType = FindTypeDefinition(module, "NKC.NKCMain");
-    var localVersionMethods = mainType?.Methods.Where(method =>
-        method.Name == "NKCInitLocalContentsVersion"
-        && method.HasBody
-        && method.ReturnType.MetadataType == MetadataType.Void).ToArray() ?? Array.Empty<MethodDefinition>();
-    if (mainType != null && localVersionMethods.Length > 0)
-    {
-        changed |= PatchVoidMethodsNoOp(mainType, "NKCInitLocalContentsVersion", localVersionMarker);
-    }
-
-    var loginMethods = FindContentsVersionPopupMethods(module);
-    if (localVersionMethods.Length == 0 && loginMethods.Length == 0)
-    {
-        throw new InvalidOperationException("No supported CounterSide content-version checks were found.");
-    }
-    changed |= PatchLoginContentsVersionReconciliation(module, loginMethods);
-    return changed;
-}
-
-static bool PatchLoginContentsVersionReconciliation(ModuleDefinition module, MethodDefinition[]? methods = null)
-{
-    const string marker = "revivalside-frozen-login-contents-pass-v2";
-    var popupMethods = methods ?? FindContentsVersionPopupMethods(module);
-    if (popupMethods.Length == 0) return false;
-
-    var contentsVersionManager = FindTypeDefinition(module, "NKM.NKMContentsVersionManager")
-        ?? throw new InvalidOperationException("NKMContentsVersionManager was not found.");
-    var clientContentsVersionManager = FindTypeDefinition(module, "NKC.NKCContentsVersionManager")
-        ?? throw new InvalidOperationException("NKCContentsVersionManager was not found.");
-    var changed = false;
-
-    foreach (var method in popupMethods)
-    {
-        if (HasMarker(method, marker)) continue;
-        var versionParameter = FindContentsVersionParameter(method)
-            ?? throw new InvalidOperationException($"{method.FullName} content-version parameter was not found.");
-        var tagParameter = FindContentsTagParameter(method)
-            ?? throw new InvalidOperationException($"{method.FullName} content-tag parameter was not found.");
-        var setCurrent = contentsVersionManager.Methods.FirstOrDefault(candidate =>
-            candidate.Name == "SetCurrent"
-            && candidate.IsStatic
-            && candidate.Parameters.Count == 1
-            && candidate.Parameters[0].ParameterType.FullName == versionParameter.ParameterType.FullName
-            && candidate.ReturnType.MetadataType == MetadataType.Boolean)
-            ?? throw new InvalidOperationException("NKMContentsVersionManager.SetCurrent(string) was not found.");
-        var setTagList = clientContentsVersionManager.Methods.FirstOrDefault(candidate =>
-            candidate.Name == "SetTagList"
-            && candidate.IsStatic
-            && candidate.Parameters.Count == 1
-            && candidate.Parameters[0].ParameterType.FullName == tagParameter.ParameterType.FullName
-            && candidate.ReturnType.MetadataType == MetadataType.Void)
-            ?? throw new InvalidOperationException("NKCContentsVersionManager.SetTagList(contentsTagList) was not found.");
-        var openTagSetCall = method.Body.Instructions.FirstOrDefault(instruction =>
-            instruction.Operand is MethodReference calledMethod
-            && calledMethod.DeclaringType.FullName == "NKM.NKMOpenTagManager"
-            && calledMethod.Name == "SetTagList")
-            ?? throw new InvalidOperationException($"{method.FullName} open-tag success path was not found.");
-        var successTarget = openTagSetCall.Previous
-            ?? throw new InvalidOperationException($"{method.FullName} open-tag success target was not found.");
-
-        var first = method.Body.Instructions.First();
-        var il = method.Body.GetILProcessor();
-        foreach (var instruction in new[]
-        {
-            il.Create(OpCodes.Ldstr, marker),
-            il.Create(OpCodes.Pop),
-            il.Create(OpCodes.Ldarg, versionParameter),
-            il.Create(OpCodes.Call, module.ImportReference(setCurrent)),
-            il.Create(OpCodes.Pop),
-            il.Create(OpCodes.Ldarg, tagParameter),
-            il.Create(OpCodes.Call, module.ImportReference(setTagList)),
-            il.Create(OpCodes.Br, successTarget),
-        })
-        {
-            il.InsertBefore(first, instruction);
-        }
-        changed = true;
-    }
-    return changed;
-}
-
 static MethodDefinition[] FindContentsVersionPopupMethods(ModuleDefinition module)
 {
     return AllTypes(module)
@@ -2313,66 +2086,6 @@ static MethodDefinition[] FindContentsVersionPopupMethods(ModuleDefinition modul
                 instruction.Operand is MethodReference calledMethod
                 && calledMethod.Name == "get_GET_STRING_CONTENTS_VERSION_CHANGE"))
         .ToArray();
-}
-
-static ParameterDefinition? FindContentsVersionParameter(MethodDefinition method)
-{
-    var named = method.Parameters.FirstOrDefault(parameter =>
-        parameter.ParameterType.MetadataType == MetadataType.String
-        && parameter.Name.Contains("contentsVersion", StringComparison.OrdinalIgnoreCase));
-    if (named != null) return named;
-
-    foreach (var instruction in method.Body.Instructions.Where(instruction =>
-        instruction.Operand is MethodReference calledMethod
-        && calledMethod.DeclaringType.FullName == "System.String"
-        && calledMethod.Name is "op_Inequality" or "op_Equality"))
-    {
-        for (var current = instruction.Previous; current != null; current = current.Previous)
-        {
-            var parameter = GetLoadedParameter(method, current);
-            if (parameter?.ParameterType.MetadataType == MetadataType.String) return parameter;
-            if (instruction.Offset - current.Offset > 24) break;
-        }
-    }
-    return null;
-}
-
-static ParameterDefinition? FindContentsTagParameter(MethodDefinition method)
-{
-    var named = method.Parameters.FirstOrDefault(parameter =>
-        parameter.Name.Contains("contentsTag", StringComparison.OrdinalIgnoreCase));
-    if (named != null) return named;
-
-    foreach (var instruction in method.Body.Instructions.Where(instruction =>
-        instruction.Operand is MethodReference calledMethod
-        && calledMethod.Name == "CheckSameTagList"))
-    {
-        for (var current = instruction.Previous; current != null; current = current.Previous)
-        {
-            var parameter = GetLoadedParameter(method, current);
-            if (parameter != null) return parameter;
-            if (instruction.Offset - current.Offset > 16) break;
-        }
-    }
-    return null;
-}
-
-static ParameterDefinition? GetLoadedParameter(MethodDefinition method, Instruction instruction)
-{
-    if (instruction.Operand is ParameterDefinition parameter) return parameter;
-    var argumentIndex = instruction.OpCode.Code switch
-    {
-        Code.Ldarg_0 => 0,
-        Code.Ldarg_1 => 1,
-        Code.Ldarg_2 => 2,
-        Code.Ldarg_3 => 3,
-        _ => -1,
-    };
-    if (argumentIndex < 0) return null;
-    if (method.HasThis) argumentIndex -= 1;
-    return argumentIndex >= 0 && argumentIndex < method.Parameters.Count
-        ? method.Parameters[argumentIndex]
-        : null;
 }
 
 static bool PatchFrozenPatchDownloadBypass(ModuleDefinition module)
@@ -2916,7 +2629,6 @@ static bool HasFrozenOfficialUpdateBypassPatch(ModuleDefinition module)
         && HasStringReturnMarker(module, "NKC.Publisher.NKCPMNone/ServerInfoDefault", "GetServerConfigPath", "revivalside-frozen-official-update-bypass")
         && HasMethodMarker(module, "NKC.Publisher.NKCPMSteamPC/NoticeSteam", "OpenURL", "revivalside-frozen-notice-isolation")
         && HasFrozenPatchDownloadBypass(module)
-        && HasFrozenContentsVersionIsolation(module)
         && FindExternalEndpointStrings(module).Count == 0;
 }
 
@@ -2931,24 +2643,32 @@ static bool HasFrozenPatchDownloadBypass(ModuleDefinition module)
 
 static bool HasFrozenContentsVersionIsolation(ModuleDefinition module)
 {
-    const string localVersionMarker = "revivalside-frozen-contents-version-isolation";
-    var mainType = FindTypeDefinition(module, "NKC.NKCMain");
-    var localVersionMethods = mainType?.Methods.Where(method =>
-        method.Name == "NKCInitLocalContentsVersion"
-        && method.HasBody
-        && method.ReturnType.MetadataType == MetadataType.Void).ToArray() ?? Array.Empty<MethodDefinition>();
-    var localVersionPatched = localVersionMethods.Length == 0 || localVersionMethods.All(method => HasMarker(method, localVersionMarker));
-    var popupMethods = FindContentsVersionPopupMethods(module);
-    var loginReconciliationPatched = popupMethods.Length == 0 || popupMethods.All(method =>
-        HasMarker(method, "revivalside-frozen-login-contents-pass-v2"));
-    return localVersionPatched && loginReconciliationPatched;
+    return HasMethodMarker(
+        module,
+        "NKC.NKCMain",
+        "NKCInitLocalContentsVersion",
+        "revivalside-frozen-contents-version-isolation");
 }
 
 static bool HasFrozenLoginContentsReconciliation(ModuleDefinition module)
 {
     var popupMethods = FindContentsVersionPopupMethods(module);
-    return popupMethods.Length > 0 && popupMethods.All(method =>
-        HasMarker(method, "revivalside-frozen-login-contents-pass-v2"));
+    return popupMethods.Any(method =>
+        HasMarker(method, "revivalside-frozen-login-contents-pass-v2")
+        || HasMarker(method, "revivalside-frozen-login-contents-reconciliation"));
+}
+
+static bool HasLegacyFrozenContentOverrides(string assemblyPath, string managedDir)
+{
+    var resolver = new DefaultAssemblyResolver();
+    resolver.AddSearchDirectory(managedDir);
+    resolver.AddSearchDirectory(AppContext.BaseDirectory);
+    using var module = ModuleDefinition.ReadModule(assemblyPath, new ReaderParameters
+    {
+        AssemblyResolver = resolver,
+        InMemory = true,
+    });
+    return HasFrozenContentsVersionIsolation(module) || HasFrozenLoginContentsReconciliation(module);
 }
 
 static bool HasStringReturnMarker(ModuleDefinition module, string typeFullName, string methodName, string marker)
