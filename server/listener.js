@@ -156,6 +156,7 @@ const { createServerTime } = require("../modules/server-time");
 const {
   getCapturedContentsTags,
   getCapturedOpenTags,
+  getFrozenContentsTags,
   hasFrozenMissionSnapshot,
 } = require("../modules/frozen-content-compat");
 
@@ -8671,6 +8672,9 @@ function getEventContentsTagsForContentsVersion() {
 }
 
 function getEffectiveContentsTags(baseTags) {
+  if (FROZEN_SOURCE_CONTENTS_VERSION) {
+    return getFrozenContentsTags(capturedTcpProfiles, CONTENTS_VERSION, CONTENTS_TAGS, REQUIRED_CONTENTS_TAGS);
+  }
   const eventTags = getEventContentsTagsForContentsVersion();
   return mergeTags(getCapturedContentsVersionTags(), baseTags, REQUIRED_CONTENTS_TAGS, eventTags);
 }
@@ -8741,6 +8745,7 @@ function filterInactiveCustomOperatorOpenTags(tags, activeOpenTags) {
 }
 
 function getRequiredContentsTags() {
+  if (FROZEN_SOURCE_CONTENTS_VERSION) return getEffectiveContentsTags(CONTENTS_TAGS);
   return mergeTags(getCapturedContentsVersionTags(), REQUIRED_CONTENTS_TAGS, getEventContentsTagsForContentsVersion());
 }
 

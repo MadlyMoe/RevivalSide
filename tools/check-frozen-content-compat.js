@@ -8,6 +8,7 @@ const {
   areCompatibleContentsVersions,
   getCapturedOpenTags,
   getCapturedContentsTags,
+  getFrozenContentsTags,
   hasFrozenMissionSnapshot,
 } = require("../modules/frozen-content-compat");
 const { createServerTime } = require("../modules/server-time");
@@ -40,6 +41,11 @@ assert.strictEqual(areCompatibleContentsVersions("9.2.b", "9.2.c"), false);
 assert.strictEqual(areCompatibleContentsVersions("9.2.c", "9.2.b"), false);
 assert.strictEqual(areCompatibleContentsVersions("9.2.a", "9.2.c"), false);
 assert.deepStrictEqual(getCapturedContentsTags(profiles, "9.2.b"), []);
+assert.deepStrictEqual(
+  getFrozenContentsTags(profiles, "9.2.c", ["GLOBAL", "MULTITASK_DOWNLOAD"], ["SYSTEM_TRANSCENDENCE_LV120"]),
+  ["GLOBAL", "TAG_COMMON_SHOP_TAB_CASH", "SYSTEM_TRANSCENDENCE_LV120", "MULTITASK_DOWNLOAD"],
+  "the frozen handshake must use one canonical tag list instead of clock or user tags"
+);
 assert.deepStrictEqual(getCapturedOpenTags(profiles, "9.2.c"), [
   "EPISODE_TAB_SUPPLY",
   "EPISODE_TAB_CHALLENGE",

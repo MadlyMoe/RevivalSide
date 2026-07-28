@@ -14,6 +14,10 @@ function getCapturedOpenTags(profiles, targetVersion) {
   );
 }
 
+function getFrozenContentsTags(profiles, targetVersion, serverTags, requiredTags) {
+  return mergeTags(getCapturedContentsTags(profiles, targetVersion), serverTags, requiredTags);
+}
+
 function compatibleProfiles(profiles, targetVersion, keys) {
   const expected = normalizeVersion(targetVersion);
   return (Array.isArray(keys) ? keys : [])
@@ -67,5 +71,6 @@ module.exports = {
   areCompatibleContentsVersions,
   getCapturedOpenTags,
   getCapturedContentsTags,
+  getFrozenContentsTags,
   hasFrozenMissionSnapshot,
 };
