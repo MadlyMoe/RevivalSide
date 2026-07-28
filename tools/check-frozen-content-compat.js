@@ -12,6 +12,7 @@ const {
   hasFrozenMissionSnapshot,
 } = require("../modules/frozen-content-compat");
 const { createServerTime } = require("../modules/server-time");
+const { getActiveScheduledBannerIntervalTags } = require("../modules/event-manager");
 
 const profiles = {
   contentsVersionAck: {
@@ -61,6 +62,24 @@ assert.strictEqual(
     { tabId: 4, missionID: 1001, groupId: 100 }
   ),
   true
+);
+assert.deepStrictEqual(
+  getActiveScheduledBannerIntervalTags({
+    officialScheduleEntries: [
+      { raw: { scheduleType: "contract" }, intervalTags: ["DATE_GLOBAL_FIRST_CONTRACT_SKY", "DATE_GLOBAL_PICKUP_CONTRACT_SKY"] },
+      { raw: { scheduleType: "contract" }, intervalTags: ["DATE_GLOBAL_CLASSIFIED_CONTRACT_ROSARIA", "DATE_GLOBAL_PICKUP_CONTRACT_ROSARIA"] },
+      { raw: { scheduleType: "contract" }, intervalTags: ["DATE_GLOBAL_CONTRACT_OPR_DAIN_PR_V4", "DATE_GLOBAL_CONTRACT_OPR_DAIN_V4"] },
+      { raw: { scheduleType: "contract" }, intervalTags: ["DATE_KOR_CLASSIFIED_CONTRACT_FENRIR_INTERN"] },
+      { label: "The 6th Prestige Service: Wolf's Wintering", raw: { scheduleType: "event" }, intervalTags: ["DATE_COMMON_EVENT_PAYBACK_003"] },
+    ],
+  }),
+  [
+    "DATE_GLOBAL_PICKUP_CONTRACT_SKY",
+    "DATE_GLOBAL_CLASSIFIED_CONTRACT_ROSARIA",
+    "DATE_GLOBAL_CONTRACT_OPR_DAIN_V4",
+    "DATE_KOR_CLASSIFIED_CONTRACT_FENRIR_INTERN",
+    "DATE_COMMON_EVENT_PAYBACK_003",
+  ]
 );
 assert.strictEqual(
   hasFrozenMissionSnapshot(

@@ -151,7 +151,7 @@ const {
   buildSupportUnitData: buildPersistedSupportUnitData,
   ensureSupportUnit,
 } = require("../modules/combat-roster");
-const { createEventManager } = require("../modules/event-manager");
+const { createEventManager, getActiveScheduledBannerIntervalTags } = require("../modules/event-manager");
 const { createServerTime } = require("../modules/server-time");
 const {
   getCapturedContentsTags,
@@ -8886,6 +8886,11 @@ function getIntervalPayloadStrKeys(intervalPayloads = []) {
     .filter(Boolean);
 }
 
+function isEventMissionIntervalStrKey(strKey) {
+  const key = String(strKey || "").trim().toUpperCase();
+  return key.startsWith("DATE_") && key.includes("_MISSION_EVENT_");
+}
+
 function buildIntervalData(interval) {
   const data = interval || {};
   return Buffer.concat([
@@ -9025,7 +9030,17 @@ function buildJoinLobbyAckPayload(user) {
   const preserveOfficialContractData = process.env.CS_JOIN_LOBBY_PRESERVE_OFFICIAL_CONTRACTS !== "0";
   const overlayLocalContractData = preserveOfficialContractData && hasLocalContractState(user);
   const activeIntervalStrKeys = getIntervalPayloadStrKeys(localIntervalData);
-  const explicitMergeIntervalStrKeys = activeIntervalStrKeys;
+  const activeEventMissionIntervalStrKeys = activeIntervalStrKeys.filter(isEventMissionIntervalStrKey);
+  const eventShopIntervalStrKeys = getActiveEventShopTags().intervalTags;
+  const fierceIntervalStrKeys = getFierceSeasonIntervalStrKeys();
+  const eventShopMergeIntervalStrKeys =
+    process.env.CS_JOIN_LOBBY_MERGE_EVENT_SHOP_INTERVALS !== "0" ? eventShopIntervalStrKeys : [];
+  const explicitMergeIntervalStrKeys = mergeTags(
+    eventShopMergeIntervalStrKeys,
+    fierceIntervalStrKeys,
+    activeEventMissionIntervalStrKeys,
+    getActiveScheduledBannerIntervalTags(getActiveEventState())
+  );
   const mergeExplicitIntervalsIntoOfficial = preserveOfficialContractData && explicitMergeIntervalStrKeys.length > 0;
   const inactiveEventIntervalStrKeys = getInactiveEventIntervalStrKeys(localIntervalData);
   if (officialPayload && Buffer.isBuffer(officialPayload)) {

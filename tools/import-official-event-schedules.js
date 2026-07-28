@@ -632,6 +632,18 @@ function buildEntrySearchText(fileName, record, stringMap, unitAliasMap) {
 function mapScheduleToGameplay(range, entries) {
   const query = String(range.name || "");
   const queryTokens = tokensForText(query);
+  const prestigeNumber = prestigeServiceNumber(query);
+  if (prestigeNumber >= 4 && prestigeNumber <= 8) {
+    const suffix = String(prestigeNumber - 3).padStart(3, "0");
+    return {
+      confidence: 10,
+      matchTokens: Array.from(queryTokens).slice(0, 8),
+      openTags: [`TAG_COMMON_EVENT_PAYBACK_${suffix}`],
+      intervalTags: [`DATE_COMMON_EVENT_PAYBACK_${suffix}`],
+      contentsTags: [],
+      counterPassIds: [],
+    };
+  }
   if (!queryTokens.size) {
     return {
       confidence: 0,
@@ -677,6 +689,15 @@ function mapScheduleToGameplay(range, entries) {
     contentsTags,
     counterPassIds,
   };
+}
+
+function prestigeServiceNumber(value) {
+  const text = String(value || "").toUpperCase();
+  if (!/PRESTIGE (?:SERVICE|SEASON)/.test(text)) return 0;
+  for (const [token, number] of [["FOURTH", 4], ["4TH", 4], ["FIFTH", 5], ["5TH", 5], ["SIXTH", 6], ["6TH", 6], ["SEVENTH", 7], ["7TH", 7], ["EIGHTH", 8], ["8TH", 8]]) {
+    if (text.includes(token)) return number;
+  }
+  return 0;
 }
 
 function scoreEntry(queryTokens, query, entry, scheduleType, contractCategoryHint) {
