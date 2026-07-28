@@ -22,6 +22,7 @@ const {
 const { getMiscItem } = require("../inventory");
 const { ensureArmy, ensureDeck } = require("../unit");
 const { getEquipItems } = require("../equipment");
+const { getCompatibleUserTitleId } = require("../game-data");
 const { buildSupportUnitData: buildPersistedSupportUnitData, ensureSupportUnit } = require("../combat-roster");
 const {
   ensureAccountProgress,
@@ -145,7 +146,7 @@ function buildResponse(ctx, user, packetId, req) {
       return ack(468, Buffer.concat([writeSignedVarInt(0), writeSignedVarInt(user.selfiFrameId || 0)]), `frame=${user.selfiFrameId || 0}`);
     case 495:
       setProfileTitle(user, req.titleId);
-      return ack(496, Buffer.concat([writeSignedVarInt(0), writeSignedVarInt(user.titleId || 0)]), `title=${user.titleId || 0}`);
+      return ack(496, Buffer.concat([writeSignedVarInt(0), writeSignedVarInt(getCompatibleUserTitleId(user.titleId))]), `title=${getCompatibleUserTitleId(user.titleId)}`);
     case 3200:
       return ack(
         3201,
@@ -232,7 +233,7 @@ function buildCommonProfileData(user) {
     writeSignedVarInt(Number(user.mainUnitSkinId || 0) || 0),
     writeSignedVarInt(Number(user.frameId || user.selfiFrameId || 0) || 0),
     writeSignedVarInt(Number(user.mainUnitTacticLevel || 0) || 0),
-    writeSignedVarInt(Number(user.titleId || 0) || 0),
+    writeSignedVarInt(getCompatibleUserTitleId(user.titleId)),
   ]);
 }
 

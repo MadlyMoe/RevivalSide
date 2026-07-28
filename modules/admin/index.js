@@ -21,12 +21,14 @@ const {
   getMiscItemTemplet,
   getUnitTemplet,
   getEquipTemplet,
+  getEquipMoldTemplet,
   getAllEquipRandomStatRecords,
   getEquipSetOption,
   getEquipSetOptionIds,
   getAllEquipSetOptionRecords,
   getSkinTemplet,
   getEmoticonTemplet,
+  getCompatibleUserTitleId,
   getAllMiscItemIds,
   getPlayableUnitIds,
   getPlayableShipIds,
@@ -1521,6 +1523,7 @@ function grantPostRewards(ctx, user, post) {
   const total = createEmptyReward();
   const regDate = ctx && ctx.dateTimeBinaryNow ? ctx.dateTimeBinaryNow() : dateTimeBinaryNow();
   for (const reward of post && Array.isArray(post.rewards) ? post.rewards : []) {
+    if (!isFrozenRewardSpec(reward)) continue;
     const options = {
       expandPackages: true,
       regDate,
@@ -1536,13 +1539,14 @@ function grantPostRewards(ctx, user, post) {
 }
 
 function buildPostData(post) {
+  const rewards = (post.rewards || []).filter(isFrozenRewardSpec);
   return Buffer.concat([
     writeSignedVarInt(Number(post.postId || ADMIN_POST_ID) || 0),
     writeSignedVarLong(toBigInt(post.postIndex || 0)),
     writeString(post.title || "Admin Delivery"),
-    writeString(post.contents || summarizeRewards(post.rewards || [])),
+    writeString(post.contents || summarizeRewards(rewards)),
     writeInt64FromStoredDate(post.sendDate),
-    writeObjectList((post.rewards || []).map((reward) => writeNullableObject(buildRewardInfoData(reward)))),
+    writeObjectList(rewards.map((reward) => writeNullableObject(buildRewardInfoData(reward)))),
     writeInt64FromStoredDate(post.expirationDate || farFutureDateTimeBinary()),
   ]);
 }
@@ -1584,6 +1588,7 @@ function buildChatMessageData(message) {
 
 function buildCommonProfileData(profile) {
   const data = profile || {};
+  const titleId = Number(data.titleId || 0) || 0;
   return Buffer.concat([
     writeSignedVarLong(toBigInt(data.userUid || 0)),
     writeSignedVarLong(toBigInt(data.friendCode || 0)),
@@ -1593,7 +1598,7 @@ function buildCommonProfileData(profile) {
     writeSignedVarInt(Number(data.mainUnitSkinId || 0) || 0),
     writeSignedVarInt(Number(data.frameId || 0) || 0),
     writeSignedVarInt(Number(data.mainUnitTacticLevel || 0) || 0),
-    writeSignedVarInt(Number(data.titleId || 0) || 0),
+    writeSignedVarInt(getCompatibleUserTitleId(titleId)),
   ]);
 }
 
@@ -1702,6 +1707,29 @@ function normalizeRewardSpec(reward) {
     if (gearOptions) spec.gearOptions = gearOptions;
   }
   return spec;
+}
+
+function isFrozenRewardSpec(reward) {
+  const spec = normalizeRewardSpec(reward);
+  if (!spec) return false;
+  switch (spec.rewardType) {
+    case "RT_MISC":
+      return Boolean(getMiscItemTemplet(spec.id));
+    case "RT_UNIT":
+    case "RT_SHIP":
+    case "RT_OPERATOR":
+      return Boolean(getUnitTemplet(spec.id));
+    case "RT_EQUIP":
+      return Boolean(getEquipTemplet(spec.id));
+    case "RT_MOLD":
+      return Boolean(getEquipMoldTemplet(spec.id));
+    case "RT_SKIN":
+      return Boolean(getSkinTemplet(spec.id));
+    case "RT_EMOTICON":
+      return Boolean(getEmoticonTemplet(spec.id));
+    default:
+      return true;
+  }
 }
 
 function normalizeGearRewardOptions(options) {
@@ -2369,5 +2397,6 @@ module.exports = {
   clearAdminInbox,
   handleAdminCommand,
   buildPostData,
+  isFrozenRewardSpec,
   buildChatMessageData,
 };

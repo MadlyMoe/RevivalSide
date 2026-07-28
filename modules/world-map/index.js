@@ -22,7 +22,7 @@ const {
   toBigInt,
 } = require("../packet-codec");
 const { readGameplayTableRecords } = require("../gameplay-jsons");
-const { getRewardGroupRecords } = require("../game-data");
+const { getRewardGroupRecords, getCompatibleUserTitleId } = require("../game-data");
 const { grantMiscItem, getMiscItem, spendMiscItem } = require("../inventory");
 const { ensureArmy, getArmyUnits, buildPlayerDeckForGameLoad } = require("../unit");
 const { addMissionTrackingCondition, completeMissionTracking, makeMissionTracking } = require("../mission-tracking");
@@ -2722,7 +2722,7 @@ function buildRaidJoinData(user, raid) {
     writeNullObject(),
     writeBool(false),
     writeSignedVarInt(Math.max(1, Number(user && user.level) || 1)),
-    writeSignedVarInt(Number(user && (user.titleId || user.titleID) || 0) || 0),
+    writeSignedVarInt(getCompatibleUserTitleId(user && (user.titleId || user.titleID))),
   ]);
 }
 

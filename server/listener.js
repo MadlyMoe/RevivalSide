@@ -128,6 +128,8 @@ const {
   getMissionTempletsByTabId,
   getRewardGroupRecords,
   getPlayerTotalExpForLevel,
+  getMiscItemTemplet,
+  getCompatibleUserTitleId,
 } = require("../modules/game-data");
 const {
   getAllContractStates,
@@ -156,6 +158,8 @@ const { createServerTime } = require("../modules/server-time");
 const {
   getCapturedContentsTags,
   getCapturedRequestOpenTags,
+  hasFrozenMissionSnapshot,
+  filterFrozenInventoryMiscItems,
 } = require("../modules/frozen-content-compat");
 
 function envFlag(...keys) {
@@ -9559,7 +9563,8 @@ function buildMinimalInventoryData(user) {
 }
 
 function buildInventoryMiscEntries(user) {
-  return getMiscItems(user).map((item) => [item.itemId, buildItemMiscData(item)]);
+  return filterFrozenInventoryMiscItems(getMiscItems(user), getMiscItemTemplet)
+    .map((item) => [item.itemId, buildItemMiscData(item)]);
 }
 
 function buildInventoryEquipEntries(user) {
@@ -9840,6 +9845,7 @@ function buildUserProfileData(user, userUid, friendCode, nickname) {
 function buildCommonProfileData(user, userUid, friendCode, nickname) {
   ensureAccountProgress(user);
   const mainUnitId = Number(user && user.mainUnitId) || 0;
+  const titleId = Number(user && user.titleId) || 0;
   return Buffer.concat([
     writeSignedVarLong(userUid || 0n),
     writeSignedVarLong(friendCode || 0n),
@@ -9849,7 +9855,7 @@ function buildCommonProfileData(user, userUid, friendCode, nickname) {
     writeSignedVarInt(Number((user && user.mainUnitSkinId) || 0)),
     writeSignedVarInt(Number((user && (user.frameId || user.selfiFrameId)) || 0)),
     writeSignedVarInt(Number((user && user.mainUnitTacticLevel) || 0)),
-    writeSignedVarInt(Number((user && user.titleId) || 0)),
+    writeSignedVarInt(getCompatibleUserTitleId(titleId)),
   ]);
 }
 
@@ -10041,13 +10047,18 @@ function buildPersistedLobbyMissionEntries(user) {
   const result = new Map();
   for (const [key, mission] of Object.entries(completedMissions)) {
     const snapshot = normalizePersistedMissionSnapshot(key, mission);
-    if (!snapshot || shouldSkipPersistedLobbyMission(snapshot)) continue;
+    if (!snapshot || shouldSkipPersistedLobbyMission(snapshot) || !hasFrozenMissionTemplet(snapshot)) continue;
     const groupId = Number(snapshot.groupId || snapshot.missionID || 0);
     if (!Number.isInteger(groupId) || groupId <= 0) continue;
     const existing = result.get(groupId);
     if (!existing || shouldPreferMissionSnapshot(snapshot, existing)) result.set(groupId, snapshot);
   }
   return Array.from(result.entries());
+}
+
+function hasFrozenMissionTemplet(mission) {
+  const tabId = Number(mission && mission.tabId || 0);
+  return hasFrozenMissionSnapshot(getMissionTempletsByTabId(tabId), mission);
 }
 
 function normalizePersistedMissionSnapshot(key, mission) {
@@ -10579,6 +10590,12 @@ function ensureUserDefaults(user) {
     Array.isArray(user.contentsTags) && user.contentsTags.length ? user.contentsTags : CONTENTS_TAGS,
     REQUIRED_CONTENTS_TAGS
   );
+  Object.defineProperty(user, "__runtimeContentsTags", {
+    configurable: true,
+    enumerable: false,
+    writable: true,
+    value: getEffectiveContentsTags(user.contentsTags),
+  });
   user.openTags = filterSuppressedOpenTags(
     mergeTags(Array.isArray(user.openTags) && user.openTags.length ? user.openTags : OPEN_TAGS, EXPLICIT_OPEN_TAGS, REQUIRED_STORY_OPEN_TAGS)
   );

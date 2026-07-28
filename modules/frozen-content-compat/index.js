@@ -36,6 +36,27 @@ function isFrozenRequestOpenTag(value) {
   );
 }
 
+function hasFrozenMissionSnapshot(rows, mission) {
+  const tabId = Number(mission && mission.tabId || 0);
+  const missionID = Number(mission && mission.missionID || 0);
+  const groupId = Number(mission && mission.groupId || missionID || 0);
+  if (!Number.isInteger(tabId) || tabId <= 0 || !Number.isInteger(missionID) || missionID <= 0) return false;
+  return (Array.isArray(rows) ? rows : []).some((row) => {
+    const rowTabId = Number(row && row.m_MissionTabId || 0);
+    const rowMissionID = Number(row && row.m_MissionID || 0);
+    const rowGroupId = Number(row && (row.m_MissionCounterGroupID || row.m_MissionID) || 0);
+    return rowTabId === tabId && rowMissionID === missionID && rowGroupId === groupId;
+  });
+}
+
+function filterFrozenInventoryMiscItems(items, getTemplet) {
+  const resolve = typeof getTemplet === "function" ? getTemplet : () => null;
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    const id = Number(item && item.itemId || 0);
+    return Number.isInteger(id) && id > 0 && Boolean(resolve(id));
+  });
+}
+
 function normalizeVersion(value) {
   return String(value || "").trim().toLowerCase();
 }
@@ -58,5 +79,7 @@ function mergeTags(...groups) {
 module.exports = {
   getCapturedContentsTags,
   getCapturedRequestOpenTags,
+  hasFrozenMissionSnapshot,
+  filterFrozenInventoryMiscItems,
   isFrozenRequestOpenTag,
 };

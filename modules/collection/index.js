@@ -597,7 +597,8 @@ function buildIllustratedUnitIds(user) {
 function addIllustratedUnitId(ids, unitId) {
   const id = Number(unitId);
   if (!Number.isInteger(id) || id <= 0) return;
-  const templet = getUnitTemplet(id) || {};
+  const templet = getUnitTemplet(id);
+  if (!templet) return;
   const baseId = Number(templet.m_BaseUnitID || 0);
   if (Number.isInteger(baseId) && baseId > 0) ids.add(baseId);
   ids.add(id);

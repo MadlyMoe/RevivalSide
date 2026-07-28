@@ -7,6 +7,7 @@ const path = require("path");
 const {
   getCapturedContentsTags,
   getCapturedRequestOpenTags,
+  hasFrozenMissionSnapshot,
 } = require("../modules/frozen-content-compat");
 const { createServerTime } = require("../modules/server-time");
 
@@ -41,6 +42,21 @@ assert.deepStrictEqual(getCapturedRequestOpenTags(profiles, "9.2.c"), [
   "TAG_COMMON_EPISODE_SUPPLY_CREDIT",
   "TAG_COMMON_EPISODE_CHALLENGE_1",
 ]);
+assert.strictEqual(
+  hasFrozenMissionSnapshot(
+    [{ m_MissionTabId: 4, m_MissionID: 1001, m_MissionCounterGroupID: 100 }],
+    { tabId: 4, missionID: 1001, groupId: 100 }
+  ),
+  true
+);
+assert.strictEqual(
+  hasFrozenMissionSnapshot(
+    [{ m_MissionTabId: 4, m_MissionID: 1001, m_MissionCounterGroupID: 100 }],
+    { tabId: 4, missionID: 9001, groupId: 9001 }
+  ),
+  false,
+  "mission snapshots missing from the frozen table must not reach the client UI"
+);
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "revivalside-clock-"));
 try {
@@ -62,4 +78,4 @@ try {
   fs.rmSync(tempDir, { recursive: true, force: true });
 }
 
-console.log("[frozen-content-compat] PASS captured 9.2.c tags, Request gates, and Event Date clock");
+console.log("[frozen-content-compat] PASS captured 9.2.c tags, Request gates, frozen missions, and Event Date clock");

@@ -178,6 +178,12 @@ function loadGameData() {
     if (Number.isInteger(emoticonId) && emoticonId > 0 && !emoticonById.has(emoticonId)) emoticonById.set(emoticonId, record);
   }
 
+  const userTitleById = new Map();
+  for (const record of readRecords("ab_script", "LUA_USER_TITLE_TEMPLET.json")) {
+    const titleId = Number(record && record.UserTitleID);
+    if (Number.isInteger(titleId) && titleId > 0 && !userTitleById.has(titleId)) userTitleById.set(titleId, record);
+  }
+
   const unitExpTable = new Map();
   for (const record of readRecords("ab_script_unit_data", "LUA_UNIT_EXP_TABLE.json")) {
     const level = Number(record && record.m_iLevel);
@@ -321,6 +327,7 @@ function loadGameData() {
     eventDecks,
     skinById,
     emoticonById,
+    userTitleById,
     unitExpTable,
     shipLevelUpByKey,
     playerExpTable,
@@ -900,6 +907,15 @@ function getEmoticonTemplet(emoticonId) {
   return loadGameData().emoticonById.get(Number(emoticonId)) || null;
 }
 
+function getUserTitleTemplet(titleId) {
+  return loadGameData().userTitleById.get(Number(titleId)) || null;
+}
+
+function getCompatibleUserTitleId(titleId) {
+  const id = Number(titleId || 0);
+  return Number.isInteger(id) && id > 0 && getUserTitleTemplet(id) ? id : 0;
+}
+
 function getAllEmoticonIds() {
   return Array.from(loadGameData().emoticonById.keys()).sort((a, b) => a - b);
 }
@@ -1260,6 +1276,8 @@ module.exports = {
   getSkinTemplet,
   getAllSkinIds,
   getEmoticonTemplet,
+  getUserTitleTemplet,
+  getCompatibleUserTitleId,
   getAllEmoticonIds,
   getLimitBreakInfo,
   getLimitBreakMaxLevel,

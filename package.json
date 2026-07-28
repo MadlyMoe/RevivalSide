@@ -5,7 +5,7 @@
   "description": "Local CounterSide revival server research tooling.",
   "scripts": {
     "listen": "node cs-listener.js",
-    "check:listener": "node --check cs-listener.js && node --check server/listener.js && node --check server/userManager.js && node --check server/packetHandlerLoader.js && node --check modules/user-db-selection/index.js && node --check tools/import-official-join-lobby-profile.js && node tools/check-frozen-client-update.js && node tools/check-user-manager-lightweight.js && node tools/check-story-open-tags.js && node tools/check-frozen-content-compat.js",
+    "check:listener": "node --check cs-listener.js && node --check server/listener.js && node --check server/userManager.js && node --check server/packetHandlerLoader.js && node --check modules/user-db-selection/index.js && node --check tools/import-official-join-lobby-profile.js && node tools/check-frozen-client-update.js && node tools/check-user-manager-lightweight.js && node tools/check-story-open-tags.js && node tools/check-frozen-content-compat.js && node tools/check-frozen-profile-view.js",
     "check:handlers": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Get-ChildItem packet-handlers,modules -Recurse -Filter *.js | Where-Object { $_.DirectoryName -match '[\\\\/]handlers$' } | ForEach-Object { node --check $_.FullName }\"",
     "build:combat-host": "dotnet build combat-host/CombatHost.csproj --nologo",
     "build:launcher": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-revivalside-launcher.ps1",
