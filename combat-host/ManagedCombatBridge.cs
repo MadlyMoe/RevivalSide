@@ -3374,6 +3374,7 @@ internal static class ManagedCombatBridge
         private readonly Assembly assembly;
         private readonly string managedDir;
         private readonly IReadOnlyList<string> nativeSearchDirs;
+        private readonly HashSet<string> nativeResolverAssemblies = new(StringComparer.OrdinalIgnoreCase);
         private readonly object packetController;
         private readonly Type serializableType;
         private readonly MethodInfo packetCreate;
@@ -3398,7 +3399,7 @@ internal static class ManagedCombatBridge
             assembly = Assembly.LoadFrom(ManagedAssemblyPatcher.GetAssemblyPath(managedDir, gameplayTablesDir));
             nativeSearchDirs = BuildNativeSearchDirs(managedDir);
             PrimeNativeSearchPath(nativeSearchDirs);
-            NativeLibrary.SetDllImportResolver(assembly, ResolveNativeLibrary);
+            RegisterNativeResolvers();
             serializableType = GetType("Cs.Protocol.ISerializable");
 
             var packetControllerType = GetType("Cs.Protocol.PacketController");
@@ -6206,7 +6207,56 @@ internal static class ManagedCombatBridge
                 }
             }
 
+            foreach (var fileName in fileNames)
+            {
+                if (NativeLibrary.TryLoad(fileName, sourceAssembly, searchPath, out var handle))
+                {
+                    return handle;
+                }
+            }
+
             return IntPtr.Zero;
+        }
+
+        private void RegisterNativeResolvers()
+        {
+            RegisterNativeResolver(assembly);
+            foreach (var loadedAssembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                RegisterNativeResolver(loadedAssembly);
+            }
+            AppDomain.CurrentDomain.AssemblyLoad += (_, args) => RegisterNativeResolver(args.LoadedAssembly);
+        }
+
+        private void RegisterNativeResolver(Assembly targetAssembly)
+        {
+            if (!ShouldResolveNativeImports(targetAssembly)) return;
+            var key = targetAssembly.Location;
+            if (string.IsNullOrWhiteSpace(key) || !nativeResolverAssemblies.Add(key)) return;
+            try
+            {
+                NativeLibrary.SetDllImportResolver(targetAssembly, ResolveNativeLibrary);
+            }
+            catch (InvalidOperationException)
+            {
+                // Another resolver is already attached to this assembly.
+            }
+        }
+
+        private bool ShouldResolveNativeImports(Assembly targetAssembly)
+        {
+            if (targetAssembly.IsDynamic || string.IsNullOrWhiteSpace(targetAssembly.Location)) return false;
+            var location = Path.GetFullPath(targetAssembly.Location);
+            return IsUnderDirectory(location, managedDir)
+                || IsUnderDirectory(location, AppContext.BaseDirectory)
+                || string.Equals(targetAssembly, assembly);
+        }
+
+        private static bool IsUnderDirectory(string path, string directory)
+        {
+            if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(directory)) return false;
+            var fullDirectory = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return path.StartsWith(fullDirectory, StringComparison.OrdinalIgnoreCase);
         }
 
         private static IReadOnlyList<string> BuildNativeSearchDirs(string managedDir)
@@ -6238,6 +6288,15 @@ internal static class ManagedCombatBridge
 
         private static IEnumerable<string> NativeLibraryFileNames(string libraryName)
         {
+            if (IsLuaLibraryName(libraryName))
+            {
+                foreach (var luaName in LuaNativeLibraryFileNames())
+                {
+                    yield return luaName;
+                }
+                yield break;
+            }
+
             yield return libraryName;
             if (!libraryName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
             {
@@ -6261,21 +6320,85 @@ internal static class ManagedCombatBridge
             }
         }
 
+        private static bool IsLuaLibraryName(string libraryName)
+        {
+            var name = Path.GetFileNameWithoutExtension(libraryName);
+            return name.Equals("lua54", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("lua5.4", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("liblua54", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("liblua5.4", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static IEnumerable<string> LuaNativeLibraryFileNames()
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                yield return "lua54.dll";
+                yield return "lua54";
+                yield break;
+            }
+
+            yield return "liblua54.so";
+            yield return "liblua5.4.so";
+            yield return "liblua5.4.so.5.4";
+            yield return "liblua.so.5.4";
+            yield return "liblua5.4.so.0";
+            yield return "liblua.so";
+            yield return "lua54";
+        }
+
         private static void PrimeNativeSearchPath(IEnumerable<string> nativeSearchDirs)
         {
-            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
+                foreach (var directory in nativeSearchDirs)
+                {
+                    if (File.Exists(Path.Combine(directory, "lua54.dll")))
+                    {
+                        SetDllDirectory(directory);
+                        break;
+                    }
+                }
                 return;
             }
 
-            foreach (var directory in nativeSearchDirs)
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
             {
-                if (File.Exists(Path.Combine(directory, "lua54.dll")))
+                foreach (var directory in nativeSearchDirs)
                 {
-                    SetDllDirectory(directory);
-                    break;
+                    foreach (var fileName in LuaNativeLibraryFileNames())
+                    {
+                        var libraryPath = Path.Combine(directory, fileName);
+                        if (File.Exists(libraryPath) && NativeLibrary.TryLoad(libraryPath, out _))
+                        {
+                            return;
+                        }
+                    }
                 }
+
+                foreach (var fileName in LuaNativeLibraryFileNames())
+                {
+                    if (NativeLibrary.TryLoad(fileName, out _))
+                    {
+                        return;
+                    }
+                }
+                return;
             }
+        }
+
+        private static string DescribeNativeSearchState(string managedDir)
+        {
+            var searchDirs = BuildNativeSearchDirs(managedDir);
+            var luaCandidates = searchDirs
+                .SelectMany(directory => LuaNativeLibraryFileNames().Select(fileName => Path.Combine(directory, fileName)))
+                .Where(File.Exists)
+                .ToArray();
+            return "Native Lua search dirs: "
+                + (searchDirs.Count > 0 ? string.Join(Path.PathSeparator, searchDirs) : "(none)")
+                + Environment.NewLine
+                + "Native Lua candidates found: "
+                + (luaCandidates.Length > 0 ? string.Join(Path.PathSeparator, luaCandidates) : "(none)");
         }
 
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]

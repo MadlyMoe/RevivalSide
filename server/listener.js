@@ -330,19 +330,33 @@ const NGS_FINISH = 4;
 const NTT_A1 = 1;
 const NTT_B1 = 3;
 
-const CAPTURED_FLOW_DIR =
-  process.env.CS_CAPTURED_FLOW_DIR || path.join(ROOT_DIR, "server-data", "captured-flows");
-const CAPTURED_TCP_DIR =
-  process.env.CS_CAPTURED_TCP_DIR || path.join(ROOT_DIR, "server-data", "captured-tcp");
-const CAPTURED_GAME_FLOW_DIR =
-  process.env.CS_CAPTURED_GAME_FLOW_DIR || path.join(ROOT_DIR, "server-data", "captured-game-flow");
-const PACKET_HANDLER_DIR = process.env.CS_PACKET_HANDLER_DIR || path.join(ROOT_DIR, "packet-handlers");
+const CAPTURED_FLOW_DIR = resolveConfigPath(
+  process.env.CS_CAPTURED_FLOW_DIR || path.join(ROOT_DIR, "server-data", "captured-flows")
+);
+const CAPTURED_TCP_DIR = resolveConfigPath(
+  process.env.CS_CAPTURED_TCP_DIR || path.join(ROOT_DIR, "server-data", "captured-tcp")
+);
+const CAPTURED_GAME_FLOW_DIR = resolveConfigPath(
+  process.env.CS_CAPTURED_GAME_FLOW_DIR || path.join(ROOT_DIR, "server-data", "captured-game-flow")
+);
+const PACKET_HANDLER_DIR = resolveConfigPath(
+  process.env.CS_PACKET_HANDLER_DIR || path.join(ROOT_DIR, "packet-handlers")
+);
 const MODULE_HANDLER_ROOT = path.join(ROOT_DIR, "modules");
-const UNIT_TABLE_PATH = process.env.CS_UNIT_TABLE_PATH || path.join(ROOT_DIR, "server-data", "units.json");
-const DUNGEON_TABLE_OVERRIDE_PATH = String(process.env.CS_DUNGEON_TABLE_PATH || "").trim();
-const DUNGEON_TABLE_FALLBACK_PATH = path.join(ROOT_DIR, "server-data", "dungeons.json");
-const STAGE_TABLE_PATH = process.env.CS_STAGE_TABLE_PATH || "";
-const MAP_TABLE_PATH = process.env.CS_MAP_TABLE_PATH || "";
+const UNIT_TABLE_PATH = resolveConfigPath(
+  process.env.CS_UNIT_TABLE_PATH || path.join(ROOT_DIR, "server-data", "units.json")
+);
+
+const DUNGEON_TABLE_OVERRIDE_PATH = resolveOptionalConfigPath(
+  process.env.CS_DUNGEON_TABLE_PATH
+);
+
+const DUNGEON_TABLE_FALLBACK_PATH = resolveConfigPath(
+  path.join(ROOT_DIR, "server-data", "dungeons.json")
+);
+
+const STAGE_TABLE_PATH = resolveOptionalConfigPath(process.env.CS_STAGE_TABLE_PATH);
+const MAP_TABLE_PATH = resolveOptionalConfigPath(process.env.CS_MAP_TABLE_PATH);
 const USE_LOCAL_USER_DB = process.env.CS_USE_LOCAL_USER_DB !== "0";
 const STAGE_REWARD_CHANCE_DENOMINATOR = 10000;
 const FIERCE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -11142,6 +11156,19 @@ function loadDotEnv(filePath) {
   } catch (err) {
     console.log(`[env] failed to load ${filePath}: ${err.message}`);
   }
+}
+
+function resolveConfigPath(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (process.platform !== "win32" && !/^[A-Za-z]:[\\/]/.test(text)) {
+    return path.resolve(ROOT_DIR, text.replace(/\\/g, path.sep));
+  }
+  return path.resolve(ROOT_DIR, text);
+}
+
+function resolveOptionalConfigPath(value) {
+  return value ? resolveConfigPath(value) : "";
 }
 
 function findDefaultDotnetRuntime() {
