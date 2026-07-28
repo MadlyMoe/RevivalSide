@@ -3,6 +3,7 @@
 const assert = require("assert");
 const path = require("path");
 const { loadPacketHandlers } = require("../server/packetHandlerLoader");
+const { createLoginLikeHydratedHandler } = require("../modules/packet-hydration");
 
 const rootDir = path.resolve(__dirname, "..");
 const handlers = loadPacketHandlers(
@@ -46,4 +47,22 @@ for (const [packetId, expectedPrefix] of specialistOwners) {
   );
 }
 
-console.log(`[packet-handler-registry] PASS handlers=${handlers.size} specialist precedence verified`);
+let gamebaseAck = null;
+createLoginLikeHydratedHandler(229, { ackPacketId: 230 }).handle(
+  {
+    capturedTcpResponses: new Map(),
+    capturedTcpProfiles: { loginAck: {} },
+    config: { REPLAY_CAPTURED_LOGIN_ACK: true },
+    sendResponse(_socket, _sequence, _packetId, build) {
+      gamebaseAck = build();
+    },
+    buildCapturedGamebaseLoginAck() {
+      return "official-gamebase-ack";
+    },
+  },
+  { session: { user: { userUid: 1, accessToken: "token" } } },
+  { sequence: 1 }
+);
+assert.strictEqual(gamebaseAck, "official-gamebase-ack", "GAMEBASE login must reuse the official login template");
+
+console.log(`[packet-handler-registry] PASS handlers=${handlers.size} specialist precedence and GAMEBASE template fallback verified`);
