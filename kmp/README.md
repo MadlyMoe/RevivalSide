@@ -95,4 +95,4 @@ The fallback Kotlin control API is used only if the bundled Node runtime or list
 - The app does not require root.
 - It cannot run alongside another Android VPN.
 - IPv4 is required for the current VPN packet bridge.
-- Standalone payload builds include the existing Android arm64 .NET combat host. Compact diagnostic builds still require `-IncludeSteamManagedCombatHost -IncludeAndroidDotnetRuntime` when managed combat is needed.
+- Standalone payload builds include Android arm and arm64 .NET combat hosts. Compact diagnostic builds still require `-IncludeSteamManagedCombatHost -IncludeAndroidDotnetRuntime` when managed combat is needed.

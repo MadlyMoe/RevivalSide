@@ -763,7 +763,9 @@ private class NodeProcessRuntime(
         for (abi in Build.SUPPORTED_ABIS.orEmpty()) {
             val rid = androidRuntimeIdentifier(abi) ?: continue
             val runtime = File(root, "combat-runtime/$rid")
-            if (File(runtime, "CombatHost.dll").isFile && File(runtime, "libhostfxr.so").isFile) {
+            if (File(runtime, "CombatHost.dll").isFile &&
+                (File(runtime, "libhostfxr.so").isFile || File(runtime, "libmonosgen-2.0.so").isFile)
+            ) {
                 return runtime
             }
         }
