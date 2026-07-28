@@ -2242,7 +2242,7 @@ static bool PatchFrozenContentsVersionIsolation(ModuleDefinition module)
 
 static bool PatchLoginContentsVersionReconciliation(ModuleDefinition module, MethodDefinition[]? methods = null)
 {
-    const string marker = "revivalside-frozen-login-contents-reconciliation";
+    const string marker = "revivalside-frozen-login-contents-pass-v2";
     var popupMethods = methods ?? FindContentsVersionPopupMethods(module);
     if (popupMethods.Length == 0) return false;
 
@@ -2273,6 +2273,13 @@ static bool PatchLoginContentsVersionReconciliation(ModuleDefinition module, Met
             && candidate.Parameters[0].ParameterType.FullName == tagParameter.ParameterType.FullName
             && candidate.ReturnType.MetadataType == MetadataType.Void)
             ?? throw new InvalidOperationException("NKCContentsVersionManager.SetTagList(contentsTagList) was not found.");
+        var openTagSetCall = method.Body.Instructions.FirstOrDefault(instruction =>
+            instruction.Operand is MethodReference calledMethod
+            && calledMethod.DeclaringType.FullName == "NKM.NKMOpenTagManager"
+            && calledMethod.Name == "SetTagList")
+            ?? throw new InvalidOperationException($"{method.FullName} open-tag success path was not found.");
+        var successTarget = openTagSetCall.Previous
+            ?? throw new InvalidOperationException($"{method.FullName} open-tag success target was not found.");
 
         var first = method.Body.Instructions.First();
         var il = method.Body.GetILProcessor();
@@ -2285,6 +2292,7 @@ static bool PatchLoginContentsVersionReconciliation(ModuleDefinition module, Met
             il.Create(OpCodes.Pop),
             il.Create(OpCodes.Ldarg, tagParameter),
             il.Create(OpCodes.Call, module.ImportReference(setTagList)),
+            il.Create(OpCodes.Br, successTarget),
         })
         {
             il.InsertBefore(first, instruction);
@@ -2932,7 +2940,7 @@ static bool HasFrozenContentsVersionIsolation(ModuleDefinition module)
     var localVersionPatched = localVersionMethods.Length == 0 || localVersionMethods.All(method => HasMarker(method, localVersionMarker));
     var popupMethods = FindContentsVersionPopupMethods(module);
     var loginReconciliationPatched = popupMethods.Length == 0 || popupMethods.All(method =>
-        HasMarker(method, "revivalside-frozen-login-contents-reconciliation"));
+        HasMarker(method, "revivalside-frozen-login-contents-pass-v2"));
     return localVersionPatched && loginReconciliationPatched;
 }
 
@@ -2940,7 +2948,7 @@ static bool HasFrozenLoginContentsReconciliation(ModuleDefinition module)
 {
     var popupMethods = FindContentsVersionPopupMethods(module);
     return popupMethods.Length > 0 && popupMethods.All(method =>
-        HasMarker(method, "revivalside-frozen-login-contents-reconciliation"));
+        HasMarker(method, "revivalside-frozen-login-contents-pass-v2"));
 }
 
 static bool HasStringReturnMarker(ModuleDefinition module, string typeFullName, string methodName, string marker)

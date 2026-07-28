@@ -45,6 +45,15 @@ const DEFAULT_SETTINGS = Object.freeze({
   CrossSavePreserveUid: false,
   CrossSavePreserveFriendCode: false,
 });
+const DEFAULT_FROZEN_MASQUERADE_CONTENTS_VERSION = '9.2.c';
+
+function resolveFrozenAdvertisedContentsVersion(environment, sourceContentsVersion) {
+  const configured = String(
+    (environment && environment.CS_FROZEN_MASQUERADE_CONTENTS_VERSION) ||
+      DEFAULT_FROZEN_MASQUERADE_CONTENTS_VERSION
+  ).trim();
+  return configured || String(sourceContentsVersion || '').trim();
+}
 
 const root = resolveAppRoot();
 const settingsPath = path.join(root, 'launcher-settings.json');
@@ -110,8 +119,12 @@ function loadSettings() {
   settings.HttpPort = clampPort(settings.HttpPort, DEFAULT_SETTINGS.HttpPort);
   settings.WikiPort = clampPort(settings.WikiPort, DEFAULT_SETTINGS.WikiPort);
   settings.JoinLobbyAckMode = normalizeLobbyMode(settings.JoinLobbyAckMode);
-  settings.CounterSideManagedDir = normalizeManagedDir(settings.CounterSideManagedDir);
-  settings.CounterSideSourceManagedDir = normalizeManagedDir(settings.CounterSideSourceManagedDir);
+  settings.CounterSideManagedDir = normalizeExistingManagedDir(settings.CounterSideManagedDir);
+  settings.CounterSideSourceManagedDir = normalizeExistingManagedDir(settings.CounterSideSourceManagedDir);
+  // A frozen client can be removed outside the launcher (or by an older
+  // installer) while its Managed path remains in launcher-settings.json.
+  // Treat that stale path as "not installed" so Start can enter the release
+  // downloader instead of failing while it saves settings.
   if (!settings.CounterSideSourceManagedDir && settings.CounterSideManagedDir && !isFrozenManagedDir(settings.CounterSideManagedDir)) {
     settings.CounterSideSourceManagedDir = settings.CounterSideManagedDir;
   }
@@ -189,10 +202,15 @@ function applyClientSettings(settings, client) {
   settings.CrossSavePreserveUid = !!client.keepOfficialUid;
   settings.CrossSavePreserveFriendCode = !!client.keepOfficialFriendCode;
   if (client.capturePath != null) settings.CrossSaveCaptureDir = String(client.capturePath).trim();
-  if (client.clientPath != null && String(client.clientPath).trim()) {
-    const managed = normalizeManagedDir(client.clientPath);
-    if (!isManagedDir(managed)) throw new Error('Select CounterSide Data\\Managed\\Assembly-CSharp.dll.');
-    settings.CounterSideManagedDir = managed;
+  if (client.clientPath != null) {
+    const requested = String(client.clientPath).trim();
+    if (!requested) {
+      settings.CounterSideManagedDir = '';
+    } else {
+      const managed = normalizeManagedDir(requested);
+      if (!isManagedDir(managed)) throw new Error('Select CounterSide Data\\Managed\\Assembly-CSharp.dll.');
+      settings.CounterSideManagedDir = managed;
+    }
   }
   if (client.sourceClientPath != null) {
     const source = String(client.sourceClientPath).trim();
@@ -250,6 +268,11 @@ function normalizeManagedDir(value) {
 
 function isManagedDir(directory) {
   return !!directory && fs.existsSync(path.join(directory, 'Assembly-CSharp.dll'));
+}
+
+function normalizeExistingManagedDir(value) {
+  const managed = normalizeManagedDir(value);
+  return isManagedDir(managed) ? managed : '';
 }
 
 function gameRootFromManaged(managed) {
@@ -416,9 +439,10 @@ function buildListenerEnvironment(settings) {
     const gameplayTablesDir = path.join(root, '.cache', 'gameplay-luac');
     environment.CS_GAMEPLAY_TABLES_DIR = gameplayTablesDir;
     if (isFrozenManagedDir(managed)) {
-      const contentsVersion = readFrozenContentsVersion(gameplayTablesDir);
-      if (contentsVersion) {
-        environment.CS_CONTENTS_VERSION = contentsVersion;
+      const sourceContentsVersion = readFrozenContentsVersion(gameplayTablesDir);
+      if (sourceContentsVersion) {
+        environment.CS_FROZEN_SOURCE_CONTENTS_VERSION = sourceContentsVersion;
+        environment.CS_CONTENTS_VERSION = resolveFrozenAdvertisedContentsVersion(environment, sourceContentsVersion);
         environment.CS_LOCK_CONTENTS_VERSION = '1';
         environment.CS_REPLAY_CAPTURED_CONTENTS_VERSION = '0';
         environment.CS_REPLAY_CAPTURED_LOGIN_ACK = '0';
@@ -1235,16 +1259,19 @@ async function startListenerService() {
   });
   emitService('listener', 'starting', 'Preparing offline client');
   await ensureGameplayCache(settings, false);
-  const contentsVersion = readFrozenContentsVersion(path.join(root, '.cache', 'gameplay-luac'));
-  if (!contentsVersion) {
+  const sourceContentsVersion = readFrozenContentsVersion(path.join(root, '.cache', 'gameplay-luac'));
+  if (!sourceContentsVersion) {
     throw new Error('The frozen client content version could not be read from the extracted gameplay cache.');
   }
-  log(`Frozen client content version locked to ${contentsVersion}.`);
+  const environment = buildListenerEnvironment(settings);
+  log(
+    `Frozen client tables ${sourceContentsVersion} advertised as ${environment.CS_CONTENTS_VERSION || sourceContentsVersion}.`
+  );
   emitService('listener', 'starting', 'Patching and auditing client');
   await ensureClientPatch(settings, true);
   const tools = toolPaths();
   const child = childProcess.spawn(tools.node, [path.join(root, 'cs-listener.js')], {
-    cwd: root, env: buildListenerEnvironment(settings), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: root, env: environment, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
   });
   const readiness = createListenerReadinessGate(settings);
   const onExitBeforeReady = (code) => readiness.fail(new Error(`Listener exited with code ${code ?? 'unknown'} before reporting ready.`));
@@ -1503,5 +1530,7 @@ if (require.main === module) {
 module.exports = {
   FROZEN_CLIENT_PATCH_REQUIREMENTS,
   createListenerReadinessGate,
+  normalizeExistingManagedDir,
+  resolveFrozenAdvertisedContentsVersion,
   validateClientManifest,
 };

@@ -7,6 +7,8 @@ const path = require('path');
 const {
   FROZEN_CLIENT_PATCH_REQUIREMENTS,
   createListenerReadinessGate,
+  normalizeExistingManagedDir,
+  resolveFrozenAdvertisedContentsVersion,
   validateClientManifest,
 } = require('./revivalside-launcher-backend');
 const { findCounterSideScriptBundleRoots } = require('../modules/counterside-install');
@@ -52,9 +54,33 @@ function checkClientManifestValidation() {
   assert.throws(() => validateClientManifest({ ...manifest, archiveSize: 19 }), /chunk total/);
 }
 
+function checkMissingClientMigration() {
+  const gameRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'revivalside-client-path-'));
+  try {
+    const managedDir = path.join(gameRoot, 'Data', 'Managed');
+    fs.mkdirSync(managedDir, { recursive: true });
+    fs.writeFileSync(path.join(managedDir, 'Assembly-CSharp.dll'), 'fixture');
+    assert.strictEqual(normalizeExistingManagedDir(managedDir), path.resolve(managedDir));
+    fs.rmSync(gameRoot, { recursive: true, force: true });
+    assert.strictEqual(
+      normalizeExistingManagedDir(managedDir),
+      '',
+      'a removed frozen-client path must become not installed so Start can download it'
+    );
+  } finally {
+    fs.rmSync(gameRoot, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   checkGameRootAssetbundlesDiscovery();
   checkClientManifestValidation();
+  checkMissingClientMigration();
+  assert.strictEqual(resolveFrozenAdvertisedContentsVersion({}, '9.2.b'), '9.2.c');
+  assert.strictEqual(
+    resolveFrozenAdvertisedContentsVersion({ CS_FROZEN_MASQUERADE_CONTENTS_VERSION: '10.0.a' }, '9.2.b'),
+    '10.0.a'
+  );
   assert(FROZEN_CLIENT_PATCH_REQUIREMENTS.includes('frozen-login-contents-reconciliation=True'));
   const settings = { GamePort: 22000, HttpPort: 8088 };
   const gate = createListenerReadinessGate(settings, 1000);
