@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RevivalSide Wiki</title>
+    <script>
+      (() => {
+        try {
+          const saved = localStorage.getItem("revivalside-wiki-theme");
+          const theme = saved || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+          document.documentElement.dataset.theme = theme;
+        } catch {
+          document.documentElement.dataset.theme = "light";
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" role="img">
+            <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v13a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.5v-13Zm4 2v2h8v-2H8Zm0 4v1.75h8V11.5H8Zm0 3.75V17h5v-1.75H8Z"></path>
+          </svg>
+        </span>
+        <div>
+          <h1>RevivalSide Wiki</h1>
+          <p id="dataStamp">Loading tables</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <label class="search">
+          <span aria-hidden="true">
+            <svg viewBox="0 0 24 24" role="img">
+              <path d="M10.5 4a6.5 6.5 0 0 1 5.14 10.48l4.44 4.44-1.16 1.16-4.44-4.44A6.5 6.5 0 1 1 10.5 4Zm0 1.7a4.8 4.8 0 1 0 0 9.6 4.8 4.8 0 0 0 0-9.6Z"></path>
+            </svg>
+          </span>
+          <input id="searchInput" type="search" placeholder="Search id, name, stat, string id">
+        </label>
+        <button id="themeToggle" class="theme-toggle" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">
+          <svg class="sun" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 5.4A6.6 6.6 0 1 1 12 18.6 6.6 6.6 0 0 1 12 5.4Zm0 1.8a4.8 4.8 0 1 0 0 9.6 4.8 4.8 0 0 0 0-9.6ZM11.1 1.5h1.8v2.6h-1.8V1.5Zm0 18.4h1.8v2.6h-1.8v-2.6ZM1.5 11.1h2.6v1.8H1.5v-1.8Zm18.4 0h2.6v1.8h-2.6v-1.8ZM4.1 2.9l1.84 1.84-1.27 1.27L2.83 4.17 4.1 2.9Zm15.2 15.2 1.84 1.84-1.27 1.27-1.84-1.84 1.27-1.27ZM19.9 2.9l1.27 1.27-1.84 1.84-1.27-1.27 1.84-1.84ZM4.7 18.1l1.27 1.27-1.84 1.84-1.27-1.27 1.84-1.84Z"></path>
+          </svg>
+          <svg class="moon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20.1 15.4A8.3 8.3 0 0 1 8.6 3.9 8.9 8.9 0 1 0 20.1 15.4Z"></path>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar">
+        <nav class="section-tabs" id="sectionTabs" aria-label="Asset sections"></nav>
+        <div class="filter-panel">
+          <div class="panel-heading">
+            <h2>Filters</h2>
+            <button id="clearFilters" type="button">Clear</button>
+          </div>
+          <div id="filters" class="filters"></div>
+        </div>
+      </aside>
+
+      <section class="content">
+        <div class="summary-row" id="summaryRow"></div>
+        <div class="table-toolbar">
+          <div>
+            <h2 id="sectionTitle">Assets</h2>
+            <p id="resultCount"></p>
+          </div>
+          <div class="toolbar-actions">
+            <label>
+              Sort
+              <select id="sortSelect"></select>
+            </label>
+            <button id="downloadJson" type="button">Export JSON</button>
+          </div>
+        </div>
+        <div class="table-shell">
+          <table>
+            <thead id="tableHead"></thead>
+            <tbody id="tableBody"></tbody>
+          </table>
+        </div>
+        <div class="load-row">
+          <button id="loadMore" type="button">Load more</button>
+        </div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
