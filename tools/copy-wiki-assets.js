@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { readWikiDataFiles } = require("./ensure-wiki-assets");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const args = parseArgs(process.argv.slice(2));
@@ -13,9 +14,8 @@ function main() {
   if (!fs.existsSync(assetsJsonPath)) throw new Error(`Missing wiki asset data: ${assetsJsonPath}`);
   if (!fs.existsSync(sourceRoot)) throw new Error(`Missing extracted asset root: ${sourceRoot}`);
 
-  const data = JSON.parse(fs.readFileSync(assetsJsonPath, "utf8"));
   const urls = new Set();
-  collectAssetUrls(data, urls);
+  for (const data of readWikiDataFiles(assetsJsonPath)) collectAssetUrls(data, urls);
 
   fs.rmSync(outputRoot, { recursive: true, force: true });
   fs.mkdirSync(outputRoot, { recursive: true });

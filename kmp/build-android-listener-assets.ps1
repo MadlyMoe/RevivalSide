@@ -7,6 +7,8 @@ param(
   [string]$CounterSideManagedDir = "",
   [string]$CounterSideAndroidSplitApk = "",
   [string]$AndroidDotnetRuntimeDir = "",
+  [string]$AndroidScriptBundle = "",
+  [string]$AndroidPatchInfo = "",
   [string]$PayloadZip = "",
   [string]$PayloadManifest = ""
 )
@@ -22,6 +24,9 @@ $payloadAssetZip = Join-Path $expectedPrefix "revivalside-payload.zip"
 $payloadAssetManifest = Join-Path $expectedPrefix "revivalside-payload-manifest.json"
 $gameplayTablesAssetZip = Join-Path $expectedPrefix "revivalside-gameplay-tables.zip"
 $gameplayTablesAssetManifest = Join-Path $expectedPrefix "revivalside-gameplay-tables-manifest.json"
+$legacyClientAssetRoot = Join-Path $expectedPrefix "revivalside-client-assets"
+$scriptBundle = ""
+$androidPatchInfoPath = ""
 $includeManagedCombatHostAssets = $IncludeSteamManagedCombatHost -or [bool]$PayloadZip
 $includeAndroidDotnetRuntimeAssets = $IncludeAndroidDotnetRuntime -or [bool]$PayloadZip
 $includeGameplayTablesAssets = $IncludeGameplayTables -or [bool]$PayloadZip
@@ -44,7 +49,9 @@ function Write-AndroidPayloadArchive([string]$SourcePath, [string]$DestinationPa
     $destination = New-Object System.IO.Compression.ZipArchive($destinationStream, [System.IO.Compression.ZipArchiveMode]::Create)
     try {
       foreach ($entry in $source.Entries) {
-        if ([string]::IsNullOrEmpty($entry.Name) -or -not $entry.FullName.StartsWith("payload/app/", [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ([string]::IsNullOrEmpty($entry.Name) -or
+            -not $entry.FullName.StartsWith("payload/app/", [System.StringComparison]::OrdinalIgnoreCase) -or
+            $entry.FullName.Equals("payload/app/.env", [System.StringComparison]::OrdinalIgnoreCase)) {
           continue
         }
         $outputEntry = $destination.CreateEntry($entry.FullName, [System.IO.Compression.CompressionLevel]::Optimal)
@@ -75,6 +82,17 @@ Remove-Item -LiteralPath $payloadAssetZip -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $payloadAssetManifest -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $gameplayTablesAssetZip -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $gameplayTablesAssetManifest -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $legacyClientAssetRoot -Recurse -Force -ErrorAction SilentlyContinue
+if ($AndroidScriptBundle -or $AndroidPatchInfo) {
+  if (-not $AndroidScriptBundle -or -not $AndroidPatchInfo) {
+    throw "AndroidScriptBundle and AndroidPatchInfo must be provided together."
+  }
+  $scriptBundle = (Resolve-Path -LiteralPath $AndroidScriptBundle).Path
+  $androidPatchInfoPath = (Resolve-Path -LiteralPath $AndroidPatchInfo).Path
+  if ([System.IO.Path]::GetFileName($scriptBundle) -cne "ab_script") {
+    throw "Android script bundle must keep the encrypted file name ab_script: $scriptBundle"
+  }
+}
 
 if ($PayloadZip) {
   $payloadZipPath = (Resolve-Path -LiteralPath $PayloadZip).Path
@@ -473,6 +491,13 @@ Copy-DirectoryIntoAssets "combat-handler"
 Copy-DirectoryIntoAssets "combat-host"
 Copy-DirectoryIntoAssets "stages"
 Copy-ServerDataIntoAssets
+if ($scriptBundle) {
+  $clientAssetRoot = Join-Path $assetRootFull "server-data\android-client-update"
+  New-Item -ItemType Directory -Path $clientAssetRoot -Force | Out-Null
+  Copy-Item -LiteralPath $scriptBundle -Destination (Join-Path $clientAssetRoot "ab_script") -Force
+  Copy-Item -LiteralPath $androidPatchInfoPath -Destination (Join-Path $clientAssetRoot "LatestPatchInfo.json") -Force
+  Write-Host "CounterSide Android asset-manager update staged at $clientAssetRoot."
+}
 Copy-DirectoryIntoAssets "server-data\captured-tcp"
 Copy-SteamManagedCombatHost
 Ensure-AndroidLuaLibraries

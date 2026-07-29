@@ -416,8 +416,7 @@ internal sealed class InstallerWindow : Window
         var nodePayload = Path.Combine(payloadRoot, "runtime-node", rid);
         var pythonPayload = Path.Combine(payloadRoot, "runtime-python", rid);
         var wiresharkPayload = Path.Combine(payloadRoot, "runtime-wireshark", rid);
-        var dotnetInstallerPayload = Path.Combine(payloadRoot, "runtime-installers", "dotnet");
-        var npcapInstallerPayload = Path.Combine(payloadRoot, "runtime-installers", "npcap");
+        var dotnetInstallerPayload = Path.Combine(payloadRoot, "runtime-installers", "dotnet", rid);
 
         SetStatus("Checking package");
         RequireDirectory(appPayload, "app payload");
@@ -427,9 +426,7 @@ internal sealed class InstallerWindow : Window
         RequireFile(Path.Combine(pythonPayload, "python.exe"), $"python.exe for {rid}");
         RequireFile(Path.Combine(wiresharkPayload, "dumpcap.exe"), $"dumpcap.exe for {rid}");
         RequireFile(Path.Combine(wiresharkPayload, "tshark.exe"), $"tshark.exe for {rid}");
-        RequireDirectory(dotnetInstallerPayload, ".NET runtime installers");
-        RequireDirectory(npcapInstallerPayload, "Npcap installer");
-        RequireMatchingFile(npcapInstallerPayload, "npcap-*.exe", "Npcap installer");
+        RequireDirectory(dotnetInstallerPayload, $".NET runtime installer for {rid}");
         var payloadApp = ValidateAppPayload(appPayload, "app payload");
         SetGameplayStatus("Client luac");
         AppendLog($"App payload ready: {payloadApp.FileCount:N0} files; gameplay tables load from the user's installed CounterSide assets.");
@@ -443,9 +440,18 @@ internal sealed class InstallerWindow : Window
         CopyDirectory(nodePayload, Path.Combine(target, "runtime", "node"), preserveUserData: false);
         CopyDirectory(pythonPayload, Path.Combine(target, "runtime", "python"), preserveUserData: false);
         CopyDirectory(wiresharkPayload, Path.Combine(target, "runtime", "Wireshark"), preserveUserData: false);
-        CopyDirectory(dotnetInstallerPayload, Path.Combine(target, "runtime", "installers", "dotnet"), preserveUserData: false);
-        CopyDirectory(npcapInstallerPayload, Path.Combine(target, "runtime", "installers", "npcap"), preserveUserData: false);
-        AppendLog("Bundled Node, Python, and Wireshark binaries staged; .NET 8 and Npcap installers staged.");
+        CopyDirectory(dotnetInstallerPayload, Path.Combine(target, "runtime", "installers", "dotnet", rid), preserveUserData: false);
+        var legacyNpcapInstaller = Path.Combine(target, "runtime", "installers", "npcap");
+        if (Directory.Exists(legacyNpcapInstaller)) Directory.Delete(legacyNpcapInstaller, recursive: true);
+        var managedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        CollectManagedFiles(managedFiles, appPayload, "", preserveUserData: true);
+        CollectManagedFiles(managedFiles, runtimePayload, "", preserveUserData: false);
+        CollectManagedFiles(managedFiles, nodePayload, Path.Combine("runtime", "node"), preserveUserData: false);
+        CollectManagedFiles(managedFiles, pythonPayload, Path.Combine("runtime", "python"), preserveUserData: false);
+        CollectManagedFiles(managedFiles, wiresharkPayload, Path.Combine("runtime", "Wireshark"), preserveUserData: false);
+        CollectManagedFiles(managedFiles, dotnetInstallerPayload, Path.Combine("runtime", "installers", "dotnet", rid), preserveUserData: false);
+        UpdateInstalledFileReceipt(target, managedFiles);
+        AppendLog("Bundled Node, Python, and Wireshark binaries staged; .NET 8 installers staged. Npcap is installed separately from npcap.com when Cross Save capture is needed.");
         ClearRuntimeCaches(target);
 
         EnsureCleanUserDbSeed(target);
@@ -458,9 +464,7 @@ internal sealed class InstallerWindow : Window
         RequireFile(Path.Combine(target, "runtime", "python", "python.exe"), "installed python.exe");
         RequireFile(Path.Combine(target, "runtime", "Wireshark", "dumpcap.exe"), "installed dumpcap.exe");
         RequireFile(Path.Combine(target, "runtime", "Wireshark", "tshark.exe"), "installed tshark.exe");
-        RequireDirectory(Path.Combine(target, "runtime", "installers", "dotnet"), "installed .NET runtime installers");
-        RequireDirectory(Path.Combine(target, "runtime", "installers", "npcap"), "installed Npcap installer");
-        RequireMatchingFile(Path.Combine(target, "runtime", "installers", "npcap"), "npcap-*.exe", "installed Npcap installer");
+        RequireDirectory(Path.Combine(target, "runtime", "installers", "dotnet", rid), $"installed .NET runtime installer for {rid}");
         SetGameplayStatus("Built on launch");
         AppendLog($"Installed app ready: {installedApp.FileCount:N0} files; no gameplay JSON dump was installed.");
         CreateDesktopShortcut(target);
@@ -499,6 +503,11 @@ internal sealed class InstallerWindow : Window
             ?? throw new InvalidOperationException("Release payload manifest was empty or invalid.");
         manifest.Validate();
 
+        if (manifest.SchemaVersion == 2)
+        {
+            return await DownloadComponentPayloadAsync(client, manifestUri, manifest);
+        }
+
         var archiveHashToken = manifest.ArchiveSha256[..Math.Min(16, manifest.ArchiveSha256.Length)];
         var manifestPayloadId = string.IsNullOrWhiteSpace(manifest.PayloadId) ? "payload" : manifest.PayloadId;
         if (!manifestPayloadId.Contains(archiveHashToken[..Math.Min(12, archiveHashToken.Length)], StringComparison.OrdinalIgnoreCase))
@@ -535,10 +544,88 @@ internal sealed class InstallerWindow : Window
         var extractRoot = Path.Combine(cacheRoot, "extract");
         if (Directory.Exists(extractRoot)) Directory.Delete(extractRoot, recursive: true);
         Directory.CreateDirectory(extractRoot);
-        ZipFile.ExtractToDirectory(archivePath, extractRoot, overwriteFiles: true);
+        ExtractZipToDirectory(archivePath, extractRoot);
         if (!IsReleasePayloadReady(extractedPayloadRoot))
         {
             throw new InvalidOperationException("Downloaded payload archive did not contain a valid payload folder.");
+        }
+
+        payloadText.Text = "Downloaded";
+        AppendLog($"Payload ready: {extractedPayloadRoot}");
+        return extractedPayloadRoot;
+    }
+
+    private async Task<string> DownloadComponentPayloadAsync(HttpClient client, Uri manifestUri, ReleasePayloadManifest manifest)
+    {
+        var rid = GetWindowsRid();
+        if (!manifest.Components.TryGetValue("common", out var common) ||
+            !manifest.Components.TryGetValue(rid, out var platform))
+        {
+            throw new InvalidOperationException($"Release manifest does not support {rid}.");
+        }
+
+        var components = common.Concat(platform).OrderBy(component => component.Id, StringComparer.OrdinalIgnoreCase).ToList();
+        var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            string.Join("\n", components.Select(component => $"{component.Id}:{component.Sha256}"))))).ToLowerInvariant()[..16];
+        var payloadId = SanitizeFileName($"{manifest.PayloadId}-{rid}-{fingerprint}");
+        var cacheRoot = Path.Combine(GetSetupPayloadCacheRoot(), "assembled", payloadId);
+        downloadedPayloadCacheRoot = cacheRoot;
+        var extractRoot = Path.Combine(cacheRoot, "extract");
+        var extractedPayloadRoot = Path.Combine(extractRoot, "payload");
+        if (IsReleasePayloadReady(extractedPayloadRoot))
+        {
+            SetStatus("Using cached payload");
+            payloadText.Text = "Cached";
+            AppendLog($"Payload cache: {extractedPayloadRoot}");
+            return extractedPayloadRoot;
+        }
+
+        var componentCache = Path.Combine(GetSetupPayloadCacheRoot(), "components");
+        Directory.CreateDirectory(componentCache);
+        progress.IsIndeterminate = false;
+        long downloadedBytes = 0;
+        var totalBytes = components.Sum(component => component.Size);
+        var archives = new List<string>();
+        for (var index = 0; index < components.Count; index++)
+        {
+            var component = components[index];
+            var archivePath = Path.Combine(componentCache, $"{component.Sha256[..16]}-{component.Name}");
+            archives.Add(archivePath);
+            if (File.Exists(archivePath) && HashFile(archivePath).Equals(component.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                downloadedBytes += component.Size;
+                UpdateDownloadProgress(downloadedBytes, totalBytes);
+                AppendLog($"Component cached: {component.Id}");
+                continue;
+            }
+
+            SetStatus($"Downloading {index + 1}/{components.Count}");
+            var componentUri = ResolvePayloadAssetUri(manifestUri, component);
+            AppendLog($"Downloading {component.Id}");
+            using var response = await client.GetAsync(componentUri, HttpCompletionOption.ResponseHeadersRead);
+            response.EnsureSuccessStatusCode();
+            await using var source = await response.Content.ReadAsStreamAsync();
+            await using var destination = File.Open(archivePath, FileMode.Create, FileAccess.Write, FileShare.None);
+            var buffer = new byte[1024 * 1024];
+            int read;
+            while ((read = await source.ReadAsync(buffer)) > 0)
+            {
+                await destination.WriteAsync(buffer.AsMemory(0, read));
+                downloadedBytes += read;
+                UpdateDownloadProgress(downloadedBytes, totalBytes);
+            }
+            destination.Close();
+            VerifyFileHash(archivePath, component.Sha256, component.Id);
+        }
+
+        SetStatus("Extracting components");
+        progress.IsIndeterminate = true;
+        if (Directory.Exists(extractRoot)) Directory.Delete(extractRoot, recursive: true);
+        Directory.CreateDirectory(extractRoot);
+        foreach (var archive in archives) ExtractZipToDirectory(archive, extractRoot);
+        if (!IsReleasePayloadReady(extractedPayloadRoot))
+        {
+            throw new InvalidOperationException("Downloaded components did not assemble a valid payload folder.");
         }
 
         payloadText.Text = "Downloaded";
@@ -564,7 +651,7 @@ internal sealed class InstallerWindow : Window
             }
 
             SetStatus($"Downloading {index + 1}/{manifest.Chunks.Count}");
-            var chunkUri = ResolvePayloadChunkUri(manifestUri, chunk.Name);
+            var chunkUri = ResolvePayloadAssetUri(manifestUri, chunk);
             AppendLog($"Downloading {chunk.Name}");
             using var response = await client.GetAsync(chunkUri, HttpCompletionOption.ResponseHeadersRead);
             response.EnsureSuccessStatusCode();
@@ -626,14 +713,15 @@ internal sealed class InstallerWindow : Window
         }
     }
 
-    private static Uri ResolvePayloadChunkUri(Uri manifestUri, string chunkName)
+    private static Uri ResolvePayloadAssetUri(Uri manifestUri, ReleasePayloadChunk asset)
     {
+        if (!string.IsNullOrWhiteSpace(asset.Url)) return new Uri(asset.Url, UriKind.Absolute);
         if (manifestUri.AbsolutePath.TrimEnd('/').EndsWith("/manifest", StringComparison.OrdinalIgnoreCase))
         {
-            return new Uri(manifestUri, $"assets/{Uri.EscapeDataString(chunkName)}");
+            return new Uri(manifestUri, $"assets/{Uri.EscapeDataString(asset.Name)}");
         }
 
-        return new Uri(manifestUri, Uri.EscapeDataString(chunkName));
+        return new Uri(manifestUri, Uri.EscapeDataString(asset.Name));
     }
 
     private async Task<bool> PromptInstallDotNet8IfMissingAsync(string target)
@@ -811,10 +899,49 @@ internal sealed class InstallerWindow : Window
         }
     }
 
+    private static void CollectManagedFiles(HashSet<string> files, string source, string destinationPrefix, bool preserveUserData)
+    {
+        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        {
+            var relative = Path.GetRelativePath(source, file);
+            if (ShouldNeverInstallPayloadPath(relative)) continue;
+            if (preserveUserData && ShouldSkipUserDataPath(relative, isDirectory: false)) continue;
+            files.Add(string.IsNullOrEmpty(destinationPrefix) ? relative : Path.Combine(destinationPrefix, relative));
+        }
+    }
+
+    private void UpdateInstalledFileReceipt(string target, HashSet<string> managedFiles)
+    {
+        var receiptPath = Path.Combine(target, ".revivalside-install.json");
+        if (File.Exists(receiptPath))
+        {
+            try
+            {
+                var oldReceipt = JsonSerializer.Deserialize<InstalledPayloadReceipt>(File.ReadAllText(receiptPath), JsonOptions);
+                foreach (var relative in oldReceipt?.Files ?? [])
+                {
+                    if (managedFiles.Contains(relative)) continue;
+                    var stalePath = Path.GetFullPath(Path.Combine(target, relative));
+                    if (IsChildPath(target, stalePath) && File.Exists(stalePath)) File.Delete(stalePath);
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"Old install receipt ignored: {ex.Message}");
+            }
+        }
+
+        var receipt = new InstalledPayloadReceipt { Files = managedFiles.Order(StringComparer.OrdinalIgnoreCase).ToList() };
+        var temporaryPath = $"{receiptPath}.tmp";
+        File.WriteAllText(temporaryPath, JsonSerializer.Serialize(receipt, new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
+        File.Move(temporaryPath, receiptPath, overwrite: true);
+    }
+
     private static bool ShouldNeverInstallPayloadPath(string relativePath)
     {
         var normalized = relativePath.Replace('\\', '/').Trim('/');
-        return normalized.Equals(".cache", StringComparison.OrdinalIgnoreCase)
+        return normalized.Equals(".env", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals(".cache", StringComparison.OrdinalIgnoreCase)
             || normalized.StartsWith(".cache/", StringComparison.OrdinalIgnoreCase);
     }
 
@@ -956,6 +1083,30 @@ internal sealed class InstallerWindow : Window
         File.Copy(source, destination, overwrite: true);
     }
 
+    private static void ExtractZipToDirectory(string archivePath, string destination)
+    {
+        var root = Path.GetFullPath(destination).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        using var archive = ZipFile.OpenRead(archivePath);
+        foreach (var entry in archive.Entries)
+        {
+            var target = Path.GetFullPath(Path.Combine(destination, entry.FullName.Replace('/', Path.DirectorySeparatorChar)));
+            if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"Archive entry escapes the payload folder: {entry.FullName}");
+            }
+            if (string.IsNullOrEmpty(entry.Name))
+            {
+                Directory.CreateDirectory(target);
+                continue;
+            }
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            using var source = entry.Open();
+            using var output = File.Open(target, FileMode.Create, FileAccess.Write, FileShare.None);
+            source.CopyTo(output);
+        }
+    }
+
     private static string NormalizeTargetPath(string value)
     {
         var target = string.IsNullOrWhiteSpace(value)
@@ -1050,15 +1201,6 @@ internal sealed class InstallerWindow : Window
         if (!File.Exists(path)) throw new FileNotFoundException($"{name} was not found.", path);
     }
 
-    private static void RequireMatchingFile(string directory, string pattern, string name)
-    {
-        RequireDirectory(directory, name);
-        if (!Directory.EnumerateFiles(directory, pattern, SearchOption.AllDirectories).Any())
-        {
-            throw new FileNotFoundException($"{name} was not found.", Path.Combine(directory, pattern));
-        }
-    }
-
     private static ReleasePayloadStatus ValidateReleasePayload(string root)
     {
         RequireDirectory(root, "release payload");
@@ -1071,8 +1213,6 @@ internal sealed class InstallerWindow : Window
         RequireFile(Path.Combine(root, "runtime-wireshark", rid, "dumpcap.exe"), $"dumpcap.exe for {rid}");
         RequireFile(Path.Combine(root, "runtime-wireshark", rid, "tshark.exe"), $"tshark.exe for {rid}");
         RequireDirectory(Path.Combine(root, "runtime-installers", "dotnet"), ".NET runtime installers");
-        RequireDirectory(Path.Combine(root, "runtime-installers", "npcap"), "Npcap installer");
-        RequireMatchingFile(Path.Combine(root, "runtime-installers", "npcap"), "npcap-*.exe", "Npcap installer");
         var app = ValidateAppPayload(Path.Combine(root, "app"), "app payload");
         return new ReleasePayloadStatus(root, app.FileCount);
     }
@@ -1272,31 +1412,61 @@ internal sealed class ReleasePayloadManifest
     public long ArchiveSize { get; set; }
     public string ArchiveSha256 { get; set; } = "";
     public List<ReleasePayloadChunk> Chunks { get; set; } = [];
+    public Dictionary<string, List<ReleasePayloadChunk>> Components { get; set; } = [];
 
     public void Validate()
     {
+        if (SchemaVersion == 2)
+        {
+            if (string.IsNullOrWhiteSpace(PayloadId)) throw new InvalidOperationException("Component manifest is missing payloadId.");
+            if (!Components.ContainsKey("common")) throw new InvalidOperationException("Component manifest is missing the common component group.");
+            var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (group, components) in Components)
+            {
+                if (group != "common" && group is not ("win-x64" or "win-x86" or "win-arm64"))
+                    throw new InvalidOperationException($"Unsupported component group: {group}.");
+                if (components.Count == 0) throw new InvalidOperationException($"Component group {group} is empty.");
+                foreach (var component in components)
+                {
+                    component.Validate(requireId: true);
+                    if (!ids.Add(component.Id)) throw new InvalidOperationException($"Duplicate component id: {component.Id}.");
+                }
+            }
+            return;
+        }
         if (SchemaVersion != 1) throw new InvalidOperationException($"Unsupported payload manifest schema version: {SchemaVersion}.");
         if (string.IsNullOrWhiteSpace(ArchiveName)) throw new InvalidOperationException("Payload manifest is missing archiveName.");
         if (string.IsNullOrWhiteSpace(ArchiveSha256) || ArchiveSha256.Length < 16) throw new InvalidOperationException("Payload manifest is missing archiveSha256.");
         if (ArchiveSize <= 0) throw new InvalidOperationException("Payload manifest archiveSize must be positive.");
         if (Chunks.Count == 0) throw new InvalidOperationException("Payload manifest has no chunks.");
-        foreach (var chunk in Chunks) chunk.Validate();
+        foreach (var chunk in Chunks) chunk.Validate(requireId: false);
     }
 }
 
 internal sealed class ReleasePayloadChunk
 {
+    public string Id { get; set; } = "";
     public string Name { get; set; } = "";
     public long Size { get; set; }
     public string Sha256 { get; set; } = "";
+    public string Url { get; set; } = "";
 
-    public void Validate()
+    public void Validate(bool requireId)
     {
+        if (requireId && string.IsNullOrWhiteSpace(Id)) throw new InvalidOperationException("Payload component is missing an id.");
         if (string.IsNullOrWhiteSpace(Name)) throw new InvalidOperationException("Payload manifest contains a chunk without a name.");
         if (Name.Contains('/') || Name.Contains('\\')) throw new InvalidOperationException($"Payload chunk name must not contain a path: {Name}");
         if (Size <= 0) throw new InvalidOperationException($"Payload chunk {Name} has an invalid size.");
         if (string.IsNullOrWhiteSpace(Sha256) || Sha256.Length < 16) throw new InvalidOperationException($"Payload chunk {Name} is missing sha256.");
+        if (!string.IsNullOrWhiteSpace(Url) && (!Uri.TryCreate(Url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps))
+            throw new InvalidOperationException($"Payload component {Name} has an invalid HTTPS URL.");
     }
+}
+
+internal sealed class InstalledPayloadReceipt
+{
+    public int SchemaVersion { get; set; } = 1;
+    public List<string> Files { get; set; } = [];
 }
 
 internal sealed record AppPayloadStatus(string Path, int FileCount);

@@ -14,7 +14,9 @@ const {
   writeActiveUserSelection,
 } = require("../modules/user-db-selection");
 const {
+  loadAndroidClientUpdateState,
   loadFrozenClientPatchState,
+  resolveAndroidClientUpdateResponse,
   resolveFrozenClientPatchResponse,
 } = require("../modules/frozen-client-update");
 const {
@@ -374,6 +376,9 @@ const GAMEPLAY_TABLES_DIR = getDefaultGameplayTablesDir({ rootDir: ROOT_DIR, env
 const FROZEN_CLIENT_PATCH_STATE = loadFrozenClientPatchState(COUNTERSIDE_MANAGED_DIR, {
   gameplayTablesDir: GAMEPLAY_TABLES_DIR,
 });
+const ANDROID_CLIENT_UPDATE_STATE = loadAndroidClientUpdateState(
+  process.env.CS_ANDROID_CLIENT_UPDATE_DIR || path.join(ROOT_DIR, "server-data", "android-client-update")
+);
 if (REQUIRE_FROZEN_CLIENT_PATCH && (!FROZEN_CLIENT_PATCH_STATE || !FROZEN_CLIENT_PATCH_STATE.isFrozenClient)) {
   throw new Error("The controlled frozen client marker and version metadata could not be loaded.");
 }
@@ -650,6 +655,7 @@ if (process.env.CS_DUMP_MERGED_JOIN_LOBBY_ACK_PAYLOAD) {
 
 let lastSteamAccessToken = "";
 let lastEffectiveAccessToken = "";
+// Android negotiates contents and logs in on consecutive TCP connections.
 let lastAckContentsVersion = "";
 let lastAckContentsTags = [];
 let runtimeConfigPrinted = false;
@@ -669,8 +675,6 @@ function startTcpServer() {
       gameReplay: createGameReplayState(),
     };
     lastSteamAccessToken = "";
-    lastAckContentsVersion = "";
-    lastAckContentsTags = [];
 
     console.log(`\n[+] Client connected: ${socket.remoteAddress}:${socket.remotePort}`);
     logRuntimeConfig();
@@ -818,10 +822,13 @@ function logRuntimeConfig() {
       REQUIRE_FROZEN_CLIENT_PATCH ? "on" : "off"
     }`
   );
+  console.log(
+    `[cfg] androidClientUpdate=${ANDROID_CLIENT_UPDATE_STATE ? `${ANDROID_CLIENT_UPDATE_STATE.sourceVersion}->${ANDROID_CLIENT_UPDATE_STATE.version}` : "unavailable"}`
+  );
 }
 
 function startHttpMirror() {
-  if (!capturedFlowMirror && !userManager) {
+  if (!capturedFlowMirror && !userManager && !ANDROID_CLIENT_UPDATE_STATE) {
     console.log(`[mirror] disabled; no manifest at ${path.join(CAPTURED_FLOW_DIR, "manifest.json")}`);
     return;
   }
@@ -860,14 +867,16 @@ function startHttpMirror() {
 function serveFrozenClientPatchMetadata(req, res) {
   if (req.method !== "GET" && req.method !== "HEAD") return false;
   const requestUrl = new URL(req.url || "/", MIRROR_PUBLIC_BASE_URL);
-  const response = resolveFrozenClientPatchResponse(requestUrl.pathname, FROZEN_CLIENT_PATCH_STATE);
+  const response =
+    resolveAndroidClientUpdateResponse(requestUrl.pathname, ANDROID_CLIENT_UPDATE_STATE) ||
+    resolveFrozenClientPatchResponse(requestUrl.pathname, FROZEN_CLIENT_PATCH_STATE);
   if (!response) return false;
 
   res.writeHead(200, {
     "Content-Type": response.contentType,
     "Content-Length": response.body.length,
     "Cache-Control": "no-store",
-    "X-RevivalSide-Frozen-Version": FROZEN_CLIENT_PATCH_STATE.standaloneVersion,
+    "X-RevivalSide-Asset-Update": response.label,
   });
   if (req.method === "HEAD") res.end();
   else res.end(response.body);
@@ -8563,7 +8572,9 @@ function buildCapturedLoginLikeAck(sequence, packetId, user, label, fallbackBuil
   if (user && token) user.accessToken = token;
   const contentsTag = getEffectiveContentsTags(lastAckContentsTags.length ? lastAckContentsTags : template.contentsTag);
   const openTag = getEffectiveOpenTags(template.openTag);
-  const contentsVersion = LOCK_CONTENTS_VERSION ? CONTENTS_VERSION : template.contentsVersion;
+  const contentsVersion = LOCK_CONTENTS_VERSION
+    ? CONTENTS_VERSION
+    : lastAckContentsVersion || template.contentsVersion || CONTENTS_VERSION;
 
   const rawPayload = buildLoginAckRaw({
     errorCode: template.errorCode,

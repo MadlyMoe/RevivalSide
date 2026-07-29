@@ -357,8 +357,9 @@ if (Test-Path -LiteralPath $outputPath) {
 New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
 
 $wikiAssetsJson = Join-Path $rootPath "wiki\data\assets.json"
-$wikiRuntimeCache = Join-Path $rootPath ".cache\wiki-assets\all"
-if ((Test-Path -LiteralPath $wikiRuntimeCache -PathType Container) -or -not (Test-Path -LiteralPath $wikiAssetsJson -PathType Leaf)) {
+$missingWikiData = @("assets.json", "units.json", "gears.json", "gearStats.json", "gearSetBonuses.json", "items.json", "skins.json", "contracts.json", "idIndex.json") |
+  Where-Object { -not (Test-Path -LiteralPath (Join-Path $rootPath "wiki\data\$_") -PathType Leaf) }
+if ($missingWikiData.Count -gt 0) {
   & node (Join-Path $rootPath "tools\build-revivalside-wiki.js")
   if ($LASTEXITCODE -ne 0) {
     throw "Wiki build failed"
@@ -412,7 +413,7 @@ if ($LASTEXITCODE -ne 0) { throw "CounterSide client patcher publish failed" }
 Remove-PdbFiles $clientPatcherOut
 Assert-ExecutableArchitecture (Join-Path $clientPatcherOut "CounterPassClientPatcher.exe") $targetArch "CounterPassClientPatcher.exe"
 
-foreach ($fileName in @("cs-listener.js", "package.json", "package-lock.json", ".env", ".env.example", "README.md", "CONTRIBUTING.md", "packet-schema.json")) {
+foreach ($fileName in @("cs-listener.js", "package.json", "package-lock.json", ".env.example", "README.md", "CONTRIBUTING.md", "packet-schema.json")) {
   Copy-FileIfPresent (Join-Path $rootPath $fileName) (Join-Path $outputPath $fileName)
 }
 

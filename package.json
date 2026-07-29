@@ -1,6 +1,6 @@
 {
   "name": "revivalside",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "private": true,
   "description": "Local CounterSide revival server research tooling.",
   "scripts": {
@@ -29,6 +29,7 @@
     "coverage:join-lobby-ack": "node tools/report-join-lobby-ack-coverage.js",
     "wiki:build": "node tools/build-revivalside-wiki.js",
     "wiki:assets": "node tools/copy-wiki-assets.js",
-    "wiki:serve": "node tools/serve-revivalside-wiki.js"
+    "wiki:serve": "node tools/serve-revivalside-wiki.js",
+    "check:wiki": "node --check wiki/app.js && node --check tools/build-revivalside-wiki.js && node --check tools/ensure-wiki-assets.js && node --check tools/serve-revivalside-wiki.js && node tools/check-revivalside-wiki.js"
   }
 }

@@ -3,8 +3,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const {
+  loadAndroidClientUpdateState,
   loadFrozenClientPatchState,
   readFrozenContentsVersion,
+  resolveAndroidClientUpdateResponse,
   resolveFrozenClientPatchResponse,
 } = require("../modules/frozen-client-update");
 
@@ -13,12 +15,14 @@ try {
   const managedDir = path.join(root, "Data", "Managed");
   const streamingAssetsDir = path.join(root, "Data", "StreamingAssets");
   const downloadedAssetsDir = path.join(root, "Assetbundles");
+  const androidUpdateDir = path.join(root, "android-client-update");
   const gameplayTablesDir = path.join(root, "gameplay-luac");
   const streamingContentsVersionDir = path.join(gameplayTablesDir, "StreamingAssets", "ab_script", "luac");
   const downloadedContentsVersionDir = path.join(gameplayTablesDir, "Assetbundles", "ab_script", "luac");
   fs.mkdirSync(managedDir, { recursive: true });
   fs.mkdirSync(streamingAssetsDir, { recursive: true });
   fs.mkdirSync(downloadedAssetsDir, { recursive: true });
+  fs.mkdirSync(androidUpdateDir, { recursive: true });
   fs.mkdirSync(streamingContentsVersionDir, { recursive: true });
   fs.mkdirSync(downloadedContentsVersionDir, { recursive: true });
   fs.writeFileSync(path.join(root, "Version.json"), JSON.stringify({ VersionCode: "LIVE_335238" }));
@@ -67,7 +71,22 @@ try {
     versionList: [{ version: "ExtraAsset_335570" }],
   });
 
-  console.log("[frozen-client-update] PASS base=335238 installed-assets=335570 contents=9.2.c asset-priority with streaming fallback");
+  const androidPatchInfo = Buffer.concat([
+    Buffer.from("\u0002\u0002\u0000\u0000\u0000\u0007version\u0003\u000eANDROID_335570\u0004data\u0001\u0001\u0000\u0000\u0000\u0001\u0003\u0000\u0000\u0000\u0003\u0009ab_script\u0003\u0020", "latin1"),
+    Buffer.from("10bc66034d78fd8dcaa78cbcc5e0a2f9\u0003\u000211", "latin1"),
+  ]);
+  fs.writeFileSync(path.join(androidUpdateDir, "LatestPatchInfo.json"), androidPatchInfo);
+  fs.writeFileSync(path.join(androidUpdateDir, "ab_script"), Buffer.alloc(10, 7));
+  const android = loadAndroidClientUpdateState(androidUpdateDir);
+  assert.strictEqual(android.version, "ANDROID_335571");
+  assert(android.patchInfo.includes(Buffer.from("10", "ascii")));
+  assert.deepStrictEqual(
+    JSON.parse(resolveAndroidClientUpdateResponse("/patchfiles/Android/liveVersion.json", android).body.toString("utf8")),
+    { versionList: [{ version: "ANDROID_335571" }] }
+  );
+  assert.strictEqual(resolveAndroidClientUpdateResponse("/patchfiles/Android/ANDROID_335571/ab_script", android).body.length, 10);
+
+  console.log("[frozen-client-update] PASS PC and Android asset updates with aligned contents metadata");
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

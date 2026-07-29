@@ -532,12 +532,23 @@ function routingStatus(settings) {
 
 function dependencyStatus() {
   const tools = toolPaths();
+  let captureDriver = { available: false, path: 'Install Npcap from npcap.com' };
+  if (tools.dumpcap && fs.existsSync(tools.dumpcap)) {
+    const probe = childProcess.spawnSync(tools.dumpcap, ['-D'], {
+      encoding: 'utf8', timeout: 10_000, windowsHide: true,
+    });
+    const detail = firstLine(probe.stderr) || (probe.error ? probe.error.message : 'No capture interfaces found');
+    captureDriver = probe.status === 0 && String(probe.stdout || '').trim()
+      ? { available: true, path: 'Detected by bundled dumpcap' }
+      : { available: false, path: detail };
+  }
   return {
     node: { available: !!tools.node && fs.existsSync(tools.node), path: tools.node || '' },
     npm: { available: !!tools.npm && fs.existsSync(tools.npm), path: tools.npm || '' },
     dotnet: { available: !!tools.dotnet && fs.existsSync(tools.dotnet), path: tools.dotnet || '' },
     python: { available: !!tools.python && fs.existsSync(tools.python), path: tools.python || '' },
     wireshark: { available: !!tools.dumpcap && !!tools.tshark, path: tools.dumpcap ? path.dirname(tools.dumpcap) : '' },
+    captureDriver,
   };
 }
 
@@ -577,7 +588,9 @@ function run(file, args, options = {}) {
     child.stdout.on('data', (chunk) => {
       const text = chunk.toString();
       stdout += text;
-      for (const line of text.replace(/\r/g, '').split('\n').filter(Boolean)) log(line, options.level || 'info');
+      if (options.logStdout !== false) {
+        for (const line of text.replace(/\r/g, '').split('\n').filter(Boolean)) log(line, options.level || 'info');
+      }
     });
     child.stderr.on('data', (chunk) => {
       const text = chunk.toString();
@@ -904,10 +917,6 @@ async function postJson(url, value) {
   }
 }
 
-function safeName(value) {
-  return String(value || 'interface').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'interface';
-}
-
 async function listCaptureInterfaces(dumpcap) {
   const result = await runChecked(dumpcap, ['-D'], { description: 'dumpcap interface scan' });
   const interfaces = [];
@@ -1054,8 +1063,6 @@ async function startListenerService() {
 async function startWikiService() {
   const settings = loadSettings();
   ensureRuntimeLayout(settings);
-  const count = await ensureWikiCache(settings, false);
-  log(`Wiki image cache ready: ${count.toLocaleString()} PNGs.`);
   const script = requireFile(path.join('tools', 'serve-revivalside-wiki.js'), 'Wiki server');
   const child = childProcess.spawn(toolPaths().node, [script, '--port', String(settings.WikiPort)], {
     cwd: root, env: buildListenerEnvironment(settings), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
@@ -1069,37 +1076,49 @@ async function startCaptureService() {
   const settings = loadSettings();
   ensureRuntimeLayout(settings);
   const dumpcap = toolPaths().dumpcap;
-  if (!dumpcap || !fs.existsSync(dumpcap)) throw new Error('dumpcap.exe was not found. Install Wireshark with Npcap.');
-  const interfaces = await listCaptureInterfaces(dumpcap);
-  if (!interfaces.length) throw new Error('No dumpcap interfaces were found.');
+  if (!dumpcap || !fs.existsSync(dumpcap)) throw new Error('Bundled dumpcap.exe was not found. Reinstall RevivalSide.');
+  let interfaces;
+  try {
+    interfaces = await listCaptureInterfaces(dumpcap);
+  } catch (error) {
+    throw new Error(`Packet capture is unavailable. Install Npcap, then retry. ${error.message}`);
+  }
+  if (!interfaces.length) throw new Error('No capture interfaces were found. Install Npcap, then retry.');
   const captureDir = crossSaveCaptureDir(settings);
   const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-  const children = [];
-  for (const iface of interfaces) {
-    const file = path.join(captureDir, `counterside-all-${iface.id}-${safeName(iface.name)}-${stamp}.pcapng`);
-    const child = childProcess.spawn(dumpcap, ['-i', iface.id, '-s', '0', '-w', file], {
-      cwd: root, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'],
-    });
-    pipeServiceChild(child, `[${iface.id}] `);
-    children.push(child);
-  }
-  emitService('capture', 'running', `${children.length} interfaces / ${stamp}`);
-  await waitForChildren(children);
+  const file = path.join(captureDir, `counterside-all-interfaces-${stamp}.pcapng`);
+  const args = ['-s', '0', '-f', 'tcp'];
+  for (const iface of interfaces) args.push('-i', iface.id);
+  args.push('-Q', '-w', file);
+  const child = childProcess.spawn(dumpcap, args, {
+    cwd: root, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  pipeServiceChild(child);
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, 500);
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('exit', (code) => { clearTimeout(timer); reject(new Error(`dumpcap exited during startup (${code ?? 'unknown'}). See Logs for details.`)); });
+  });
+  emitService('capture', 'running', `${interfaces.length} interfaces / ${path.basename(file)}`);
+  await waitForChildren([child]);
 }
 
 function newestCaptureStamp(captureDir) {
   if (!fs.existsSync(captureDir)) return '';
-  const matches = fs.readdirSync(captureDir).map((name) => ({ name, match: name.match(/^counterside-all-.+-(\d{8,14})\.pcapng$/i) }))
+  const matches = fs.readdirSync(captureDir).map((name) => ({ name, match: name.match(/^counterside-all-.+-(\d{8}-?\d{6})\.pcapng$/i) }))
     .filter((item) => item.match)
     .sort((a, b) => fs.statSync(path.join(captureDir, b.name)).mtimeMs - fs.statSync(path.join(captureDir, a.name)).mtimeMs);
   return matches[0] ? matches[0].match[1] : '';
 }
 
 async function candidateStreams(tshark, pcap) {
-  const result = await runChecked(tshark, [
+  const result = await run(tshark, [
     '-r', pcap, '-Y', 'tcp.len > 0', '-T', 'fields', '-E', 'separator=\t',
     '-e', 'tcp.stream', '-e', 'tcp.srcport', '-e', 'tcp.dstport', '-e', 'tcp.len',
-  ], { description: 'tshark stream scan' });
+  ], { description: 'tshark stream scan', logStdout: false });
+  if (result.code !== 0 && !result.stdout.trim()) {
+    throw new Error(`tshark stream scan failed: ${firstLine(result.stderr) || `exit code ${result.code}`}`);
+  }
   const streams = new Map();
   for (const line of result.stdout.replace(/\r/g, '').split('\n')) {
     const parts = line.split('\t');
@@ -1125,7 +1144,17 @@ function loadCrossSaveSources(captureDir) {
     if (Number(entry.packetId) !== 205 || !entry.payloadFile) continue;
     const payload = path.resolve(captureDir, entry.payloadFile);
     if (!isPathInside(captureDir, payload) || !fs.existsSync(payload)) continue;
-    result.push({ id: `server:${index}`, index, payloadFile: entry.payloadFile, frame: Number(entry.frame) || 0 });
+    result.push({
+      id: `server:${index}`,
+      index,
+      payloadFile: entry.payloadFile,
+      compressed: entry.compressed === true,
+      payloadSize: Number(entry.payloadSize) || fs.statSync(payload).size,
+      packetSha256: String(entry.sha256 || ''),
+      stream: Number(entry.stream) || 0,
+      frame: Number(entry.frame) || 0,
+      time: Number(entry.time) || 0,
+    });
   }
   return result.sort((a, b) => b.index - a.index);
 }
@@ -1144,9 +1173,11 @@ function extractJsonObject(text) {
 async function importCrossSaveSource(settings, captureDir, source, copyTo) {
   const tools = toolPaths();
   const script = requireFile(path.join('tools', 'import-official-join-lobby-profile.js'), 'Official profile importer');
+  const managed = normalizeManagedDir(settings.CounterSideSourceManagedDir || settings.CounterSideManagedDir);
+  if (!isManagedDir(managed)) throw new Error('Select or detect the official CounterSide client before importing the captured profile.');
   const args = [
     script, '--capture-dir', captureDir, '--user-db', path.join(root, 'server-data', 'users.json'),
-    '--managed-dir', settings.CounterSideManagedDir, '--gameplay-tables-dir', path.join(root, '.cache', 'gameplay-luac'),
+    '--managed-dir', managed,
     '--source-id', source.id,
   ];
   if (copyTo) args.push('--copy-to', copyTo);
@@ -1163,12 +1194,11 @@ async function importCrossSaveSource(settings, captureDir, source, copyTo) {
   return extractJsonObject(result.stdout);
 }
 
-async function extractCrossSave() {
+async function findLatestCrossSave() {
   const settings = loadSettings();
   ensureRuntimeLayout(settings);
   const tools = toolPaths();
-  if (!tools.tshark || !fs.existsSync(tools.tshark)) throw new Error('tshark.exe was not found. Install Wireshark with Npcap.');
-  await ensureGameplayCache(settings, false);
+  if (!tools.tshark || !fs.existsSync(tools.tshark)) throw new Error('Bundled tshark.exe was not found. Reinstall RevivalSide.');
   const captureDir = crossSaveCaptureDir(settings);
   const stamp = newestCaptureStamp(captureDir);
   if (!stamp) throw new Error('No Cross Save capture files were found.');
@@ -1180,7 +1210,14 @@ async function extractCrossSave() {
   const extractRoot = path.join(root, 'server-data', 'capture-extracts');
   for (const pcap of pcaps) {
     log(`Scanning ${path.basename(pcap)}...`);
-    for (const stream of await candidateStreams(tools.tshark, pcap)) {
+    let streams;
+    try {
+      streams = await candidateStreams(tools.tshark, pcap);
+    } catch (error) {
+      log(`Skipping unreadable capture: ${error.message}`, 'warn');
+      continue;
+    }
+    for (const stream of streams) {
       const destination = path.join(extractRoot, `${path.basename(pcap, '.pcapng')}-stream-${stream.id}`);
       await fsp.rm(destination, { recursive: true, force: true });
       await fsp.mkdir(destination, { recursive: true });
@@ -1190,13 +1227,43 @@ async function extractCrossSave() {
       if (extraction.code !== 0) continue;
       const sources = loadCrossSaveSources(destination);
       if (!sources.length) continue;
-      const copyTo = path.join(root, 'exports', `users-${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)}.json`);
-      const imported = await importCrossSaveSource(settings, destination, sources[0], copyTo);
-      await postJson(`http://127.0.0.1:${settings.HttpPort}/user-manager/api/reload`, {});
-      return { imported, copyPath: copyTo, source: sources[0], capture: pcap };
+      return { settings, captureDir: destination, source: sources[0], capture: pcap };
     }
   }
   throw new Error('No JOIN_LOBBY_ACK packet was found in the latest Cross Save capture.');
+}
+
+async function exportCrossSave() {
+  const found = await findLatestCrossSave();
+  const payload = fs.readFileSync(path.resolve(found.captureDir, found.source.payloadFile));
+  const packet = {
+    format: 'revivalside.join-lobby-ack.v1',
+    exportedAt: new Date().toISOString(),
+    packetId: 205,
+    compressed: found.source.compressed,
+    payloadSize: payload.length,
+    packetSha256: found.source.packetSha256,
+    payloadSha256: crypto.createHash('sha256').update(payload).digest('hex'),
+    stream: found.source.stream,
+    frame: found.source.frame,
+    payloadBase64: payload.toString('base64'),
+  };
+  const packetPath = path.join(root, 'exports', `JOIN_LOBBY_ACK-${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)}.json`);
+  fs.writeFileSync(packetPath, `${JSON.stringify(packet, null, 2)}\n`);
+  const { payloadBase64, ...summary } = packet;
+  return { packetPath, packet: summary, source: found.source, capture: found.capture };
+}
+
+async function extractCrossSave() {
+  const found = await findLatestCrossSave();
+  const copyTo = path.join(root, 'exports', `users-${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)}.json`);
+  const imported = await importCrossSaveSource(found.settings, found.captureDir, found.source, copyTo);
+  try {
+    await postJson(`http://127.0.0.1:${found.settings.HttpPort}/user-manager/api/reload`, {});
+  } catch (error) {
+    log(`User Manager reload skipped: ${error.message}`, 'warn');
+  }
+  return { imported, copyPath: copyTo, source: found.source, capture: found.capture };
 }
 
 async function readPayload() {
@@ -1246,6 +1313,7 @@ async function runAction(command, payload) {
       await postJson(`http://127.0.0.1:${settings.HttpPort}/launcher/api/server-time/clear`, {});
       return { cleared: true };
     }
+    case 'export-cross-save': return exportCrossSave();
     case 'extract-cross-save': return extractCrossSave();
     case 'refresh-wiki-cache': return { pngCount: await ensureWikiCache(loadSettings(), true) };
     case 'refresh-cutscene-cache': {

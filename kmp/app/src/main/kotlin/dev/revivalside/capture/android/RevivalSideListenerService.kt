@@ -415,14 +415,18 @@ private class NodeProcessRuntime(
             env["CS_CAPTURED_FLOW_DIR"] = File(dataDir, "captured-flows").absolutePath
             env["CS_CAPTURED_TCP_DIR"] = File(dataDir, "captured-tcp").absolutePath
             env["CS_CAPTURED_GAME_FLOW_DIR"] = File(dataDir, "captured-game-flow").absolutePath
-            env.remove("CS_GAMEPLAY_ASSET_SOURCE")
-            env.remove("CS_GAMEPLAY_TABLE_SOURCE")
+            env["CS_GAMEPLAY_ASSET_SOURCE"] = "installed"
+            env["CS_GAMEPLAY_TABLE_SOURCE"] = "installed"
             env.remove("CS_ANDROID_STANDALONE")
             env["CS_GAMEPLAY_TABLES_DIR"] = gameplayTablesDir.absolutePath
             env["CS_HTTP_MIRROR_BASE_URL"] = "http://127.0.0.1:${settings.httpPort}"
+            env["CS_EVENT_DATE"] = DEFAULT_EVENT_DATE
+            env["CS_EVENT_MANAGER"] = "auto"
             env["CS_USE_LOCAL_JOIN_LOBBY_ACK"] = settings.joinLobbyAckMode
             env["CS_USER_MANAGER_ALLOW_REMOTE"] = "0"
             env["CS_VERBOSE_CAPTURE"] = "0"
+            env["CS_REPLAY_CAPTURED_CONTENTS_VERSION"] = "0"
+            env["CS_REPLAY_CAPTURED_LOGIN_ACK"] = "1"
             env["CS_REPLAY_CAPTURED_GAME_FLOW"] = "0"
             env["CS_SKIP_TUTORIAL_TO_WIN"] = "0"
             env["CS_RESET_TUTORIAL_PROGRESS_ON_LOGIN"] = "0"
@@ -552,16 +556,20 @@ private class NodeProcessRuntime(
                 process.env.CS_CAPTURED_TCP_DIR = ${jsString(File(dataDir, "captured-tcp").absolutePath)};
                 process.env.CS_CAPTURED_GAME_FLOW_DIR = ${jsString(File(dataDir, "captured-game-flow").absolutePath)};
                 process.env.CS_GAMEPLAY_TABLES_DIR = ${jsString(gameplayTablesDirPath)};
-                delete process.env.CS_GAMEPLAY_ASSET_SOURCE;
-                delete process.env.CS_GAMEPLAY_TABLE_SOURCE;
+                process.env.CS_GAMEPLAY_ASSET_SOURCE = "installed";
+                process.env.CS_GAMEPLAY_TABLE_SOURCE = "installed";
                 delete process.env.CS_ANDROID_STANDALONE;
                 delete process.env.CS_DISABLE_COUNTERSIDE_MANAGED_DIR;
                 process.env.CS_COUNTERSIDE_MANAGED_DIR = ${jsString(combatManagedDirPath)};
                 process.env.COUNTERSIDE_MANAGED_DIR = ${jsString(combatManagedDirPath)};
                 process.env.CS_COUNTERSIDE_DIR = ${jsString(combatGameRootPath)};
+                process.env.CS_EVENT_DATE = ${jsString(DEFAULT_EVENT_DATE)};
+                process.env.CS_EVENT_MANAGER = "auto";
                 process.env.CS_USE_LOCAL_JOIN_LOBBY_ACK = ${jsString(settings.joinLobbyAckMode)};
                 process.env.CS_USER_MANAGER_ALLOW_REMOTE = "0";
                 process.env.CS_VERBOSE_CAPTURE = "0";
+                process.env.CS_REPLAY_CAPTURED_CONTENTS_VERSION = "0";
+                process.env.CS_REPLAY_CAPTURED_LOGIN_ACK = "1";
                 process.env.CS_REPLAY_CAPTURED_GAME_FLOW = "0";
                 process.env.CS_SKIP_TUTORIAL_TO_WIN = "0";
                 process.env.CS_RESET_TUTORIAL_PROGRESS_ON_LOGIN = "0";
@@ -1033,6 +1041,7 @@ private class NodeProcessRuntime(
         private const val GAMEPLAY_TABLES_MANIFEST_ASSET = "revivalside-gameplay-tables-manifest.json"
         private const val GAMEPLAY_TABLES_MARKER_NAME = ".revivalside-android-gameplay-tables.json"
         private const val ANDROID_MANAGED_HOST_TICK_INTERVAL_MS = "100"
+        private const val DEFAULT_EVENT_DATE = "2025-04-10"
     }
 }
 
