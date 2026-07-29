@@ -129,6 +129,18 @@ function Get-PreviousComponents($Manifest) {
   return $byId
 }
 
+function Test-GitHubRelease([string]$Tag, [string]$Repository) {
+  $previousPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    & gh release view $Tag --repo $Repository *> $null
+    return $LASTEXITCODE -eq 0
+  }
+  finally {
+    $ErrorActionPreference = $previousPreference
+  }
+}
+
 function Resolve-ComponentUrl($Component, $PreviousById, [string]$CurrentBaseUrl) {
   $previous = $PreviousById[$Component.id]
   if ($previous -and ([string]$previous.sha256).Equals($Component.sha256, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -309,13 +321,11 @@ if ($Upload) {
 **Installer:** [$setupUrl]($setupUrl)
 "@ | Set-Content -LiteralPath $notesPath -Encoding UTF8
 
-  & gh release view $ReleaseTag --repo $repository *> $null
-  if ($LASTEXITCODE -ne 0) {
+  if (-not (Test-GitHubRelease $ReleaseTag $repository)) {
     & gh release create $ReleaseTag --repo $repository --title "RevivalSide $ReleaseTag" --target $ReleaseTarget --draft --notes-file $notesPath
     if ($LASTEXITCODE -ne 0) { throw "Could not create release $ReleaseTag." }
   }
-  & gh release view $StableTag --repo $repository *> $null
-  if ($LASTEXITCODE -ne 0) {
+  if (-not (Test-GitHubRelease $StableTag $repository)) {
     & gh release create $StableTag --repo $repository --title "RevivalSide Windows Installer" --target $ReleaseTarget --prerelease --notes "Stable Windows setup bootstrap. The manifest and setup are updated only when their contents change."
     if ($LASTEXITCODE -ne 0) { throw "Could not create stable installer release $StableTag." }
   }
