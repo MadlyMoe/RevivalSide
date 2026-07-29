@@ -111,7 +111,14 @@ function New-ComponentArchive(
 
 function Get-PreviousManifest([string]$Url) {
   try {
-    $manifest = Invoke-RestMethod -Uri $Url -UseBasicParsing -TimeoutSec 30
+    $client = New-Object System.Net.WebClient
+    try {
+      $json = [System.Text.Encoding]::UTF8.GetString($client.DownloadData($Url)).TrimStart([char]0xFEFF)
+    }
+    finally {
+      $client.Dispose()
+    }
+    $manifest = $json | ConvertFrom-Json
     if ($manifest.schemaVersion -eq 2) { return $manifest }
   }
   catch {
