@@ -841,6 +841,7 @@ function normalizeMissionState(mission) {
     stMissionIDList: uniquePositiveInts(data.stMissionIDList),
     refreshToken: String(data.refreshToken || ""),
     refreshNonce: Math.max(0, Number(data.refreshNonce || 0) || 0),
+    officialImported: data.officialImported === true,
   };
 }
 
@@ -901,6 +902,10 @@ function refreshWorldMapMissionList(user, cityID, options = {}) {
 
 function refreshCityMissionList(user, city, options = {}) {
   const mission = normalizeMissionState(city.mission);
+  if (!options.force && mission.officialImported && mission.stMissionIDList.length > 0) {
+    city.mission = mission;
+    return city;
+  }
   const token = `${dayKeyFromTicks(ticksNow(options))}:${mission.refreshNonce}`;
   if (!options.force && mission.refreshToken === token && mission.stMissionIDList.length >= 4) {
     city.mission = mission;
@@ -910,6 +915,7 @@ function refreshCityMissionList(user, city, options = {}) {
   if (mission.currentMissionID > 0 && !ids.includes(mission.currentMissionID)) ids[0] = mission.currentMissionID;
   mission.stMissionIDList = uniquePositiveIntsInOrder(ids).slice(0, 4);
   mission.refreshToken = token;
+  mission.officialImported = false;
   city.mission = mission;
   return city;
 }

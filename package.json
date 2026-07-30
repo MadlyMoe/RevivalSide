@@ -1,14 +1,15 @@
 {
   "name": "revivalside",
-  "version": "0.3.1",
+  "version": "0.3.6",
   "private": true,
   "description": "Local CounterSide revival server research tooling.",
   "scripts": {
     "listen": "node cs-listener.js",
-    "check:listener": "node --check cs-listener.js && node --check server/listener.js && node --check server/packetHandlerLoader.js",
+    "check:listener": "node --check cs-listener.js && node --check server/listener.js && node --check server/userManager.js && node --check server/packetHandlerLoader.js && node --check modules/user-db-selection/index.js && node --check tools/import-official-join-lobby-profile.js && node tools/check-frozen-client-update.js && node tools/check-user-manager-lightweight.js && node tools/check-story-open-tags.js && node tools/check-frozen-content-compat.js && node tools/check-packet-handler-registry.js",
     "check:handlers": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Get-ChildItem packet-handlers,modules -Recurse -Filter *.js | Where-Object { $_.DirectoryName -match '[\\\\/]handlers$' } | ForEach-Object { node --check $_.FullName }\"",
     "build:combat-host": "dotnet build combat-host/CombatHost.csproj --nologo",
-    "build:launcher": "dotnet build tools/RevivalSideLauncherApp/RevivalSideLauncherApp.csproj --nologo",
+    "build:launcher": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-revivalside-launcher.ps1",
+    "check:launcher": "node --check tools/revivalside-launcher-backend.js && node tools/check-revivalside-launcher-backend.js && corepack pnpm --dir launcher build",
     "publish:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-revivalside-universal-installer.ps1",
     "publish:github-release": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-revivalside-github-release.ps1",
     "download-service:dev": "npm --prefix download-service run dev",
@@ -28,6 +29,7 @@
     "coverage:join-lobby-ack": "node tools/report-join-lobby-ack-coverage.js",
     "wiki:build": "node tools/build-revivalside-wiki.js",
     "wiki:assets": "node tools/copy-wiki-assets.js",
-    "wiki:serve": "node tools/serve-revivalside-wiki.js"
+    "wiki:serve": "node tools/serve-revivalside-wiki.js",
+    "check:wiki": "node --check wiki/app.js && node --check tools/build-revivalside-wiki.js && node --check tools/ensure-wiki-assets.js && node --check tools/serve-revivalside-wiki.js && node tools/check-revivalside-wiki.js"
   }
 }

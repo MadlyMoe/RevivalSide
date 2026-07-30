@@ -94,7 +94,6 @@ internal static class ManagedCombatBridge
         "m_BirthDayData",
         "m_JukeboxData"
     ];
-
     private static void CopyField(ManagedRuntime runtime, object source, object target, string fieldName)
     {
         runtime.SetField(target, fieldName, runtime.GetField(source, fieldName));

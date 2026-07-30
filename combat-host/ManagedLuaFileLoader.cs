@@ -156,8 +156,8 @@ public static class ManagedLuaFileLoader
             yield break;
         }
 
-        yield return Path.Combine(gameplayTablesDir, "StreamingAssets");
         yield return Path.Combine(gameplayTablesDir, "Assetbundles");
+        yield return Path.Combine(gameplayTablesDir, "StreamingAssets");
     }
 
     private static string BuildLuaTextFromJson(string json, string fileName)

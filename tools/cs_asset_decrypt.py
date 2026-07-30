@@ -63,8 +63,8 @@ def get_bundle_masks(path: Path) -> list[int]:
     ]
 
 
-def decrypt_bundle_header(path: Path) -> bytes:
-    data = bytearray(path.read_bytes())
+def transform_bundle_header(data: bytes, path: Path) -> bytes:
+    data = bytearray(data)
     masks = get_bundle_masks(path)
     mask_index = 0
     offset = 0
@@ -88,6 +88,10 @@ def decrypt_bundle_header(path: Path) -> bytes:
     return bytes(data)
 
 
+def decrypt_bundle_header(path: Path) -> bytes:
+    return transform_bundle_header(path.read_bytes(), path)
+
+
 def crypto2_decrypt(data: bytes) -> bytes:
     buffer = bytearray(data)
     mask_index = 0
@@ -108,6 +112,38 @@ def crypto2_decrypt(data: bytes) -> bytes:
             odd = value & ODD_MASK
             value = ((value & EVEN_MASK) >> 1) | ((odd << 1) & MASK64)
             value = (value ^ mask) & MASK64
+            buffer[offset : offset + 8] = value.to_bytes(8, "little")
+            offset += 8
+        else:
+            low_byte = mask & 0xFF
+            for index in range(offset, len(buffer)):
+                buffer[index] ^= low_byte
+            offset = len(buffer)
+
+        mask_index = (mask_index + 1) % len(CRYPTO2_MASKS)
+
+    return bytes(buffer)
+
+
+def crypto2_encrypt(data: bytes) -> bytes:
+    buffer = bytearray(data)
+    mask_index = 0
+    offset = 0
+
+    while offset < len(buffer):
+        mask = CRYPTO2_MASKS[mask_index]
+        remaining = len(buffer) - offset
+        if remaining >= 8:
+            value = int.from_bytes(buffer[offset : offset + 8], "little") ^ mask
+            odd = value & ODD_MASK
+            value = ((value & EVEN_MASK) >> 1) | ((odd << 1) & MASK64)
+            value = (
+                (value & 0xFFFFFFFF00000000)
+                | ((value & 0xFF000000) >> 8)
+                | ((value & 0x00FF0000) << 8)
+                | ((value & 0x0000FF00) >> 8)
+                | ((value & 0x000000FF) << 8)
+            )
             buffer[offset : offset + 8] = value.to_bytes(8, "little")
             offset += 8
         else:
@@ -427,6 +463,76 @@ def decrypt_header_files(args: argparse.Namespace) -> None:
     print(f"done count={count}")
 
 
+def patch_script_bundle(args: argparse.Namespace) -> None:
+    source = args.bundle.resolve()
+    replacements = args.replacement_dir.resolve()
+    output = args.out.resolve()
+    if output.name != source.name:
+        raise ValueError(f"output must keep the encrypted bundle name {source.name}: {output}")
+
+    replacement_files = {path.stem: path for path in replacements.glob("*.luac") if path.is_file()}
+    if not replacement_files:
+        raise ValueError(f"no .luac replacements found in {replacements}")
+
+    environment = load_bundle(source)
+    changed: dict[str, bytes] = {}
+    found: set[str] = set()
+    for obj in environment.objects:
+        if obj.type.name != "TextAsset":
+            continue
+        asset = obj.read()
+        plain_name = decrypted_lua_name(asset.m_Name).removesuffix("_c")
+        replacement = replacement_files.get(plain_name)
+        if replacement is None:
+            continue
+        found.add(plain_name)
+        replacement_data = replacement.read_bytes()
+        if crypto2_decrypt(text_asset_bytes(asset)) == replacement_data:
+            continue
+        asset.m_Script = crypto2_encrypt(replacement_data).decode("utf-8", "surrogateescape")
+        asset.save()
+        changed[plain_name] = replacement_data
+
+    if not found:
+        raise ValueError(f"none of the replacement scripts exist in {source}")
+
+    bundle = next((item for item in environment.files.values() if hasattr(item, "save")), None)
+    if bundle is None:
+        raise ValueError(f"Unity bundle was not found in {source}")
+    target_size = args.output_size or (source.stat().st_size if args.preserve_size else 0)
+    packed = bundle.save(packer="original")
+    packer = "original"
+    if target_size and len(packed) > target_size:
+        packed = bundle.save(packer="lzma")
+        packer = "lzma"
+    if target_size and len(packed) > target_size:
+        raise ValueError(f"patched bundle exceeds target size: {len(packed)} > {target_size}")
+
+    encrypted = transform_bundle_header(packed, output)
+    if target_size:
+        encrypted += b"\0" * (target_size - len(encrypted))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(encrypted)
+
+    verified = load_bundle(output)
+    remaining = dict(changed)
+    for obj in verified.objects:
+        if obj.type.name != "TextAsset":
+            continue
+        asset = obj.read()
+        plain_name = decrypted_lua_name(asset.m_Name).removesuffix("_c")
+        expected = remaining.get(plain_name)
+        if expected is not None and crypto2_decrypt(text_asset_bytes(asset)) == expected:
+            del remaining[plain_name]
+    if remaining:
+        raise ValueError(f"patched scripts failed verification: {', '.join(sorted(remaining))}")
+
+    print(
+        f"patched={len(changed)} matched={len(found)} packer={packer} "
+        f"bytes={output.stat().st_size} sha256={hashlib.sha256(output.read_bytes()).hexdigest()} out={output}"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -471,6 +577,13 @@ def main() -> int:
     dump_cmd.add_argument("--limit", type=int, default=0)
     dump_cmd.add_argument("--overwrite", action="store_true")
 
+    patch_cmd = sub.add_parser("patch-scripts", help="Replace Lua TextAssets in an encrypted script bundle")
+    patch_cmd.add_argument("--bundle", type=Path, required=True)
+    patch_cmd.add_argument("--replacement-dir", type=Path, required=True)
+    patch_cmd.add_argument("--out", type=Path, required=True)
+    patch_cmd.add_argument("--preserve-size", action="store_true")
+    patch_cmd.add_argument("--output-size", type=int, default=0)
+
     args = parser.parse_args()
 
     if args.cmd == "list":
@@ -509,6 +622,10 @@ def main() -> int:
 
     if args.cmd == "dump-scripts":
         dump_script_bundles(args)
+        return 0
+
+    if args.cmd == "patch-scripts":
+        patch_script_bundle(args)
         return 0
 
     return 1

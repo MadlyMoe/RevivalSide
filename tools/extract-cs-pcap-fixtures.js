@@ -1,12 +1,17 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { execFileSync } = require("child_process");
+const { spawnSync } = require("child_process");
 
 const HEAD_FENCE = 0xaabbccdd;
 const TAIL_FENCE = 0x11223344;
 const TSHARK_PATH = process.env.CS_TSHARK_PATH || "C:\\Program Files\\Wireshark\\tshark.exe";
 const KNOWN_GAME_SERVER_PORTS = new Set(["20001", "20002", "20003", "20004", "22000"]);
+
+if (process.argv[2] === "--self-test") {
+  selfTest();
+  process.exit(0);
+}
 
 function usage() {
   console.error(
@@ -23,13 +28,11 @@ const stream = Number(streamArg);
 if (!Number.isFinite(stream)) usage();
 
 const clientHost = clientHostArg || "";
-const rows = readStreamRows(pcap, stream);
-if (rows.length === 0) throw new Error(`no tcp payload rows for stream ${stream}`);
-
-let endpoints = inferEndpoints(rows, clientHost);
-let flow = buildPacketFlow(rows, endpoints);
+const followed = readFollowedStream(pcap, stream);
+let endpoints = inferEndpoints(followed, clientHost);
+let flow = buildPacketFlow(followed, endpoints);
 if (mode === "game") {
-  const reversed = buildPacketFlow(rows, { client: endpoints.server, server: endpoints.client });
+  const reversed = buildPacketFlow(followed, { client: endpoints.server, server: endpoints.client });
   if (shouldPreferFlow(reversed, flow)) {
     endpoints = { client: endpoints.server, server: endpoints.client };
     flow = reversed;
@@ -50,65 +53,57 @@ console.log(
   `[extract] mode=${mode} stream=${stream} client=${endpoints.client} server=${endpoints.server} clientPackets=${flow.clientPackets.length} serverPackets=${flow.serverPackets.length} out=${outDir}`
 );
 
-function readStreamRows(file, tcpStream) {
-  const output = execFileSync(
+function readFollowedStream(file, tcpStream) {
+  const result = spawnSync(
     TSHARK_PATH,
-    [
-      "-r",
-      file,
-      "-Y",
-      `tcp.stream == ${tcpStream} && tcp.len > 0`,
-      "-T",
-      "fields",
-      "-E",
-      "separator=\t",
-      "-e",
-      "frame.number",
-      "-e",
-      "frame.time_relative",
-      "-e",
-      "ip.src",
-      "-e",
-      "ipv6.src",
-      "-e",
-      "tcp.srcport",
-      "-e",
-      "ip.dst",
-      "-e",
-      "ipv6.dst",
-      "-e",
-      "tcp.dstport",
-      "-e",
-      "tcp.payload",
-    ],
-    { encoding: "utf8" }
+    ["-n", "-q", "-r", file, "-z", `follow,tcp,raw,${tcpStream}`],
+    { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 }
   );
-
-  return output
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => {
-      const [frame, time, ipSrc, ipv6Src, srcPort, ipDst, ipv6Dst, dstPort, payloadHex] = line.split("\t");
-      const src = ipSrc || ipv6Src || "";
-      const dst = ipDst || ipv6Dst || "";
-      return {
-        frame: Number(frame),
-        time: Number(time),
-        src: `${src}:${srcPort}`,
-        dst: `${dst}:${dstPort}`,
-        payload: Buffer.from((payloadHex || "").replace(/:/g, ""), "hex"),
-      };
-    })
-    .filter((row) => row.payload.length > 0)
-    .sort((a, b) => a.frame - b.frame);
+  if (result.error) throw result.error;
+  if (!String(result.stdout || "").trim()) {
+    throw new Error(String(result.stderr || `tshark could not read stream ${tcpStream}`).trim());
+  }
+  return parseFollowOutput(result.stdout, tcpStream);
 }
 
-function inferEndpoints(rows, preferredClientHost) {
-  const totals = new Map();
-  for (const row of rows) {
-    totals.set(row.src, (totals.get(row.src) || 0) + row.payload.length);
+function parseFollowOutput(output, tcpStream) {
+  const nodes = [{ endpoint: "", chunks: [] }, { endpoint: "", chunks: [] }];
+  for (const line of String(output || "").replace(/\r/g, "").split("\n")) {
+    const node = line.match(/^Node ([01]):\s+(.+)$/);
+    if (node) {
+      nodes[Number(node[1])].endpoint = node[2].trim();
+      continue;
+    }
+    const payload = line.match(/^(\t?)([0-9a-f]+)\s*$/i);
+    if (!payload || payload[2].length % 2 !== 0) continue;
+    nodes[payload[1] ? 1 : 0].chunks.push(Buffer.from(payload[2], "hex"));
   }
-  const endpoints = [...totals.keys()];
+  if (nodes.some((node) => !node.endpoint) || nodes.every((node) => node.chunks.length === 0)) {
+    throw new Error(`no followed tcp payload for stream ${tcpStream}`);
+  }
+  return nodes.map((node) => ({ endpoint: node.endpoint, payload: Buffer.concat(node.chunks) }));
+}
+
+function selfTest() {
+  const ack = "ddccbbaa1400000002cd01000601020344332211";
+  const followed = parseFollowOutput([
+    "Follow: tcp,raw",
+    "Node 0: 192.168.1.2:50000",
+    "Node 1: 203.0.113.10:20003",
+    `\t${ack.slice(0, 18)}`,
+    `\t${ack.slice(18)}`,
+  ].join("\n"), 1);
+  const endpoints = inferEndpoints(followed, "");
+  const flow = buildPacketFlow(followed, endpoints);
+  const packet = flow.serverPackets[0];
+  if (flow.serverPackets.length !== 1 || packet.packetId !== 205 || !packet.payload.equals(Buffer.from([1, 2, 3]))) {
+    throw new Error("followed TCP stream did not reconstruct JOIN_LOBBY_ACK");
+  }
+  console.log("cross-save extractor self-test passed");
+}
+
+function inferEndpoints(followed, preferredClientHost) {
+  const endpoints = followed.map((node) => node.endpoint);
   if (endpoints.length !== 2) throw new Error(`expected 2 endpoints, got ${endpoints.length}`);
 
   const preferred = endpoints.find((endpoint) => preferredClientHost && endpoint.startsWith(`${preferredClientHost}:`));
@@ -126,14 +121,11 @@ function inferEndpoints(rows, preferredClientHost) {
   return { client: sortedByPort[0], server: sortedByPort[1] };
 }
 
-function buildPacketFlow(rows, endpoints) {
-  const clientSegments = buildSegments(rows.filter((row) => row.src === endpoints.client));
-  const serverSegments = buildSegments(rows.filter((row) => row.src === endpoints.server));
-  const clientBytes = Buffer.concat(clientSegments.map((row) => row.payload));
-  const serverBytes = Buffer.concat(serverSegments.map((row) => row.payload));
+function buildPacketFlow(followed, endpoints) {
+  const payload = (endpoint) => followed.find((node) => node.endpoint === endpoint)?.payload || Buffer.alloc(0);
   return {
-    clientPackets: parsePackets(clientBytes, clientSegments),
-    serverPackets: parsePackets(serverBytes, serverSegments),
+    clientPackets: parsePackets(payload(endpoints.client)),
+    serverPackets: parsePackets(payload(endpoints.server)),
   };
 }
 
@@ -185,20 +177,7 @@ function isLocalHost(host) {
   return text.startsWith("fc") || text.startsWith("fd") || text.startsWith("fe80:");
 }
 
-function buildSegments(rows) {
-  let offset = 0;
-  return rows.map((row) => {
-    const segment = {
-      ...row,
-      startOffset: offset,
-      endOffset: offset + row.payload.length,
-    };
-    offset = segment.endOffset;
-    return segment;
-  });
-}
-
-function parsePackets(buffer, segments) {
+function parsePackets(buffer) {
   const packets = [];
   let offset = 0;
   while (offset + 12 <= buffer.length) {
@@ -216,17 +195,13 @@ function parsePackets(buffer, segments) {
       offset = fence + 1;
       continue;
     }
-    packets.push(parsePacket(raw, findSegment(segments, fence)));
+    packets.push(parsePacket(raw));
     offset = fence + totalLength;
   }
   return packets;
 }
 
-function findSegment(segments, offset) {
-  return segments.find((segment) => offset >= segment.startOffset && offset < segment.endOffset) || null;
-}
-
-function parsePacket(raw, segment) {
+function parsePacket(raw) {
   if (raw.readUInt32LE(0) !== HEAD_FENCE) throw new Error("invalid head fence");
   const totalLength = raw.readInt32LE(4);
   let offset = 8;
@@ -249,8 +224,8 @@ function parsePacket(raw, segment) {
     payloadSize: payloadSizeRaw.value,
     payload: raw.subarray(payloadStart, payloadEnd),
     tail: raw.readUInt32LE(totalLength - 4),
-    frame: segment ? segment.frame : 0,
-    time: segment ? segment.time : 0,
+    frame: 0,
+    time: 0,
   };
 }
 

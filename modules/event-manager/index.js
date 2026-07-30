@@ -2185,6 +2185,30 @@ function collectUsableTags(entries, fieldName) {
   );
 }
 
+function getActiveScheduledBannerIntervalTags(state) {
+  const tags = [];
+  for (const entry of Array.isArray(state && state.officialScheduleEntries) ? state.officialScheduleEntries : []) {
+    const intervalTags = (entry.intervalTags || []).filter(isUsableTag);
+    const scheduleType = String(entry.raw && entry.raw.scheduleType || "").toLowerCase();
+    if (scheduleType === "contract") {
+      const groups = [
+        intervalTags.filter((tag) => tag.includes("CLASSIFIED_CONTRACT")),
+        intervalTags.filter((tag) => /CONTRACT_(?:OPR|OPERATOR)/.test(tag)),
+        intervalTags.filter((tag) => tag.includes("PICKUP_CONTRACT")),
+        intervalTags.filter((tag) => tag.includes("CONTRACT")),
+      ];
+      const candidates = groups.find((group) => group.length) || intervalTags;
+      const selected = candidates.find((tag) => tag.includes("_GLOBAL_") && !/_PR(?:_|$)/.test(tag))
+        || candidates.find((tag) => !/_PR(?:_|$)/.test(tag))
+        || candidates[0];
+      if (selected) tags.push(selected);
+    } else if (/PRESTIGE (?:SERVICE|SEASON)/i.test(String(entry.label || ""))) {
+      tags.push(...intervalTags);
+    }
+  }
+  return uniqueStrings(tags);
+}
+
 function summarizeEntry(entry) {
   return {
     id: entry.id || "",
@@ -2323,6 +2347,7 @@ module.exports = {
   createEventManager,
   createEventTableReader,
   formatEventDiagnostics,
+  getActiveScheduledBannerIntervalTags,
   parseEventDateInput,
   readJsonTableFile,
   resolveEventManagerConfig,

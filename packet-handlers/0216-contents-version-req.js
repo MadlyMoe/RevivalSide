@@ -3,7 +3,9 @@ module.exports = {
   name: "CONTENTS_VERSION_REQ",
   handle(ctx, socket, packet) {
     const official = ctx.capturedTcpProfiles.contentsVersionAck;
-    const useOfficial = Boolean(ctx.config.REPLAY_CAPTURED_CONTENTS_VERSION && official);
+    const useOfficial = Boolean(
+      !ctx.config.LOCK_CONTENTS_VERSION && ctx.config.REPLAY_CAPTURED_CONTENTS_VERSION && official
+    );
     const requiredTags = ctx.getRequiredContentsTags
       ? ctx.getRequiredContentsTags()
       : ctx.config.REQUIRED_CONTENTS_TAGS || [];
@@ -16,7 +18,7 @@ module.exports = {
     ctx.setLastAckContents(contentsVersion, contentsTags);
     ctx.sendResponse(socket, packet.sequence, ctx.constants.CONTENTS_VERSION_ACK, () => {
       const captured = ctx.capturedTcpResponses.get(ctx.constants.CONTENTS_VERSION_ACK);
-      if (ctx.config.REPLAY_CAPTURED_CONTENTS_VERSION && captured) {
+      if (!ctx.config.LOCK_CONTENTS_VERSION && ctx.config.REPLAY_CAPTURED_CONTENTS_VERSION && captured) {
         if (
           official &&
           (!hasAllTags(official.contentsTag, requiredTags) || !hasSameTags(official.contentsTag, contentsTags))
