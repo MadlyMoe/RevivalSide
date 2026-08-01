@@ -12,6 +12,32 @@ module.exports = {
   handle(ctx, socket, packet) {
     ctx.logGameLoadReq(packet.payload);
     const req = ctx.decodeGameLoadReq(packet.payload);
+    
+    // Dimension Trimming Debug Logging - Start
+    const isTrimRequest = req && (req.dungeonID > 0) && !req.stageID && !req.diveStageID && !req.palaceID && !req.fierceBossId && !req.exploreID;
+    if (isTrimRequest) {
+      console.log(`[TRIM:GAME_LOAD_REQ] === DIMENSION TRIM DUNGEON LOAD ===`);
+      console.log(`[TRIM:GAME_LOAD_REQ] selectDeckIndex=${req.selectDeckIndex} dungeonID=${req.dungeonID}`);
+      const user = socket.session && socket.session.user;
+      if (user && user.army && user.army.decks && user.army.decks.normal) {
+        console.log(`[TRIM:GAME_LOAD_REQ] Available decks:`);
+        for (let i = 0; i < user.army.decks.normal.length; i++) {
+          const deck = user.army.decks.normal[i];
+          const unitUids = deck && Array.isArray(deck.unitUids) ? deck.unitUids : [];
+          const validUnits = unitUids.filter(uid => {
+            const bn = typeof uid === 'bigint' ? uid : (typeof uid === 'string' ? BigInt(uid || '0') : BigInt(uid || 0));
+            return bn > 0n;
+          });
+          console.log(`[TRIM:GAME_LOAD_REQ]   deck[${i}]: hasUnits=${validUnits.length > 0} unitCount=${validUnits.length}/${unitUids.length} leaderIndex=${deck ? deck.leaderIndex : 'N/A'} shipUid=${deck ? deck.shipUid : 'N/A'} operatorUid=${deck ? deck.operatorUid : 'N/A'}`);
+        }
+        if (user.miscStage && user.miscStage.trim && user.miscStage.trim.current) {
+          const trimState = user.miscStage.trim.current;
+          console.log(`[TRIM:GAME_LOAD_REQ] Current trim state: trimId=${trimState.trimId} trimLevel=${trimState.trimLevel} nextDungeonId=${trimState.nextDungeonId}`);
+        }
+      }
+    }
+    // Dimension Trimming Debug Logging - End
+    
     // Stage selection can arrive with a stale/captured dungeonID. Prefer the
     // selected stageID first so Act 2+ does not get pulled back into 1004.
     // Tutorial stages must come from tutorialStage.js, not the main-story catalog
@@ -59,6 +85,12 @@ module.exports = {
         getTutorialStageForRequest(req) ||
         (ctx.getGenericStageForRequest ? ctx.getGenericStageForRequest(req) : null);
     }
+    
+    // Dimension Trimming Debug Logging - Stage Resolution
+    if (isTrimRequest && stage) {
+      console.log(`[TRIM:GAME_LOAD_REQ] Stage resolved: stageId=${stage.stageId} dungeonID=${stage.dungeonID} gameType=${stage.gameType} miscMode=${stage.miscMode} eventDeckId=${stage.eventDeckId || 0} trimId=${stage.trimId || 0} trimLevel=${stage.trimLevel || 0} cutsceneOnly=${stage.cutsceneOnly}`);
+    }
+    
     if (requestedFierceBossId > 0) {
       if (stage) {
         console.log(
@@ -123,7 +155,43 @@ module.exports = {
             leaderIndex: eventDeckSelection && eventDeckSelection.leaderIndex,
           }) || buildPlayerIdentityForGameLoad(user);
       } else {
-        playerDeck = buildPlayerDeckForGameLoad(user, req) || buildPlayerIdentityForGameLoad(user);
+        // Check if this is a trim dungeon and use trim-specific deck
+        if (stage && stage.miscMode === "trim" && user && user.miscStages && user.miscStages.trim && user.miscStages.trim.current) {
+          const trimState = user.miscStages.trim.current;
+          const eventDeckList = trimState.eventDeckList || [];
+          const currentPhaseIndex = trimState.currentPhaseIndex || 0;
+          
+          if (eventDeckList.length > currentPhaseIndex) {
+            const eventDeck = eventDeckList[currentPhaseIndex];
+            const unitCount = eventDeck.units ? Object.keys(eventDeck.units).length : 0;
+            console.log(`[TRIM:GAME_LOAD_REQ] Using trim eventDeck phase ${currentPhaseIndex}/${eventDeckList.length}: units=${unitCount} shipUid=${eventDeck.shipUid} operatorUid=${eventDeck.operatorUid} leaderIndex=${eventDeck.leaderIndex}`);
+            
+            playerDeck = buildPlayerDeckForGameLoad(user, req, {
+              slotUnitUids: eventDeck.units,
+              shipUid: eventDeck.shipUid,
+              operatorUid: eventDeck.operatorUid,
+              leaderIndex: eventDeck.leaderIndex,
+            }) || buildPlayerIdentityForGameLoad(user);
+          } else {
+            console.log(`[TRIM:GAME_LOAD_REQ] WARNING: No eventDeck for phase ${currentPhaseIndex}/${eventDeckList.length}, falling back to normal deck`);
+            playerDeck = buildPlayerDeckForGameLoad(user, req) || buildPlayerIdentityForGameLoad(user);
+          }
+        } else {
+          playerDeck = buildPlayerDeckForGameLoad(user, req) || buildPlayerIdentityForGameLoad(user);
+        }
+        
+        // Dimension Trimming Debug Logging - Deck Building
+        if (isTrimRequest) {
+          if (playerDeck && playerDeck.units && playerDeck.units.length > 0) {
+            console.log(`[TRIM:GAME_LOAD_REQ] PlayerDeck built successfully: deckType=${playerDeck.deckType} deckIndex=${playerDeck.deckIndex} unitCount=${playerDeck.units.length}`);
+            console.log(`[TRIM:GAME_LOAD_REQ]   Units: ${playerDeck.units.map(u => `slot${u.slotIndex}:unitId${u.unitId}/uid${u.unitUid}`).join(', ')}`);
+            console.log(`[TRIM:GAME_LOAD_REQ]   Leader: slot${playerDeck.leaderIndex} uid${playerDeck.leaderUnitUid}`);
+            console.log(`[TRIM:GAME_LOAD_REQ]   Ship: id${playerDeck.shipUnitId}/uid${playerDeck.shipUid}`);
+            console.log(`[TRIM:GAME_LOAD_REQ]   Operator: id${playerDeck.operatorId}/uid${playerDeck.operatorUid}`);
+          } else {
+            console.log(`[TRIM:GAME_LOAD_REQ] PlayerDeck is empty or identity-only (no units)`);
+          }
+        }
       }
     }
     if (playerDeck && !stage.tutorial && playerDeck.units && playerDeck.units.length) {
@@ -153,17 +221,36 @@ module.exports = {
             playerDeck,
           }
         : stage;
+    
+    // Dimension Trimming Debug Logging - Active Stage
+    if (isTrimRequest && activeStage) {
+      console.log(`[TRIM:GAME_LOAD_REQ] ActiveStage created with playerDeck: hasPlayerDeck=${!!activeStage.playerDeck} playerDeckUnitCount=${activeStage.playerDeck && activeStage.playerDeck.units ? activeStage.playerDeck.units.length : 0}`);
+    }
+    
     if (ctx.config.REPLAY_CAPTURED_GAME_FLOW && ctx.capturedGameFlow) {
       ctx.logCapturedClientPacketMatch(packet, 10, "game-load");
     }
     if (!activeStage || activeStage.tutorial) ctx.maybeSendTutorialCutsceneClear(socket, packet.payload);
     if (ctx.config.DYNAMIC_BATTLE_MANAGER && activeStage && !activeStage.cutsceneOnly && ctx.sendDynamicGameLoadAck(socket, req, activeStage)) {
+      // Dimension Trimming Debug Logging - Dynamic Battle Path
+      if (isTrimRequest) {
+        console.log(`[TRIM:GAME_LOAD_REQ] Taking DYNAMIC_BATTLE_MANAGER path (managed combat)`);
+      }
       return true;
     }
     if (ctx.config.REPLAY_CAPTURED_GAME_FLOW && ctx.capturedGameFlow) {
+      // Dimension Trimming Debug Logging - Captured Flow Path
+      if (isTrimRequest) {
+        console.log(`[TRIM:GAME_LOAD_REQ] Taking REPLAY_CAPTURED_GAME_FLOW path (using captured data) - WARNING: This will NOT use player's selected deck!`);
+      }
       ctx.sendCapturedGameThroughPacketId(socket, ctx.constants.GAME_LOAD_ACK, "game-load");
       ctx.scheduleCapturedGameAutoAdvance(socket);
       return true;
+    }
+    
+    // Dimension Trimming Debug Logging - No Handler
+    if (isTrimRequest) {
+      console.log(`[TRIM:GAME_LOAD_REQ] WARNING: No handler processed GAME_LOAD_REQ! Returning false.`);
     }
     return false;
   },

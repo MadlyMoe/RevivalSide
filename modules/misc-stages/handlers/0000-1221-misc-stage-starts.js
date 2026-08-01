@@ -9,6 +9,7 @@ const { buildPlayerDeckForGameLoad } = require("../../unit");
 const SHADOW_PALACE_START_ACK = 1222;
 const PHASE_START_ACK = 1228;
 const TRIM_START_ACK = 1235;
+const TRIM_END_ACK = 1241;
 const FIERCE_DATA_ACK = 845;
 const FIERCE_PROFILE_ACK = 847;
 const FIERCE_RANK_REWARD_ACK = 849;
@@ -126,13 +127,34 @@ module.exports = [
     name: "TRIM_START_REQ",
     handle(ctx, socket, packet) {
       const req = decodeTrimStartReq(ctx, packet.payload);
+      console.log(`[TRIM_START_REQ] trimId=${req.trimId} trimLevel=${req.trimLevel} eventDeckCount=${req.eventDeckList ? req.eventDeckList.length : 0}`);
+      if (req.eventDeckList && req.eventDeckList.length > 0) {
+        req.eventDeckList.forEach((deck, idx) => {
+          const unitCount = deck.units ? Object.keys(deck.units).length : 0;
+          console.log(`[TRIM_START_REQ]   eventDeck[${idx}]: units=${unitCount} shipUid=${deck.shipUid} operatorUid=${deck.operatorUid} leaderIndex=${deck.leaderIndex}`);
+        });
+      }
+      const ackPayload = ctx.buildTrimStartAckPayload(req, socket.session && socket.session.user);
+      console.log(`[TRIM_START_ACK] sending response: payloadSize=${ackPayload.length}`);
       ctx.sendGameResponse(
         socket,
         packet,
         TRIM_START_ACK,
-        ctx.buildTrimStartAckPayload(req, socket.session && socket.session.user),
+        ackPayload,
         "trim-start"
       );
+      return true;
+    },
+  },
+  {
+    packetId: 1240,
+    name: "TRIM_END_REQ",
+    handle(ctx, socket, packet) {
+      const req = decodeSingleIntReq(ctx, packet.payload, "trimId");
+      const payload = ctx.buildTrimEndAckPayload(req, socket.session && socket.session.user);
+      console.log(`[TRIM_END_ACK] trimId=${req.trimId} payloadSize=${payload.length}`);
+      ctx.sendGameResponse(socket, packet, TRIM_END_ACK, payload, "trim-end");
+      ctx.sendServerGamePacket(socket, 1242, ctx.buildTrimIntervalInfoNotPayload(socket.session && socket.session.user), "trim-interval-info");
       return true;
     },
   },
@@ -207,11 +229,56 @@ function decodePhaseStartReq(ctx, payload) {
 function decodeTrimStartReq(ctx, payload) {
   try {
     const decrypted = ctx.decryptCopy(payload);
+    console.log(`[decodeTrimStartReq] decrypted payload length: ${decrypted.length} bytes: ${decrypted.slice(0, Math.min(50, decrypted.length)).toString('hex')}`);
+    
     const trimId = readSignedVarInt(decrypted, 0);
+    console.log(`[decodeTrimStartReq] trimId=${trimId.value} offset=${trimId.offset}`);
+    
     const trimLevel = readSignedVarInt(decrypted, trimId.offset);
-    return { trimId: trimId.value, trimLevel: trimLevel.value };
-  } catch (_) {
-    return { trimId: 0, trimLevel: 1 };
+    console.log(`[decodeTrimStartReq] trimLevel=${trimLevel.value} offset=${trimLevel.offset}`);
+    
+    // Decode eventDeckList using the ctx helper methods
+    let offset = trimLevel.offset;
+    console.log(`[decodeTrimStartReq] about to read eventDeckList count at offset=${offset}, remaining bytes=${decrypted.length - offset}`);
+    
+    if (offset >= decrypted.length) {
+      console.log(`[decodeTrimStartReq] offset beyond buffer length, no eventDeckList`);
+      return { trimId: trimId.value, trimLevel: trimLevel.value, eventDeckList: [] };
+    }
+    
+    const eventDeckListCount = ctx.readVarInt(decrypted, offset);
+    console.log(`[decodeTrimStartReq] eventDeckList count=${eventDeckListCount.value} offset=${eventDeckListCount.offset}`);
+    
+    offset = eventDeckListCount.offset;
+    const eventDeckList = [];
+    
+    for (let i = 0; i < eventDeckListCount.value; i++) {
+      // Read nullable object marker (0x00 = null, 0x01 = has value)
+      const hasValue = decrypted.readUInt8(offset) !== 0;
+      offset += 1;
+      console.log(`[decodeTrimStartReq] eventDeck[${i}] hasValue=${hasValue} at offset=${offset - 1}`);
+      
+      if (!hasValue) {
+        console.log(`[decodeTrimStartReq] eventDeck[${i}] is null, skipping`);
+        continue;
+      }
+      
+      const eventDeck = ctx.readNkmEventDeckData(decrypted, offset);
+      offset = eventDeck.offset;
+      eventDeckList.push(eventDeck.value);
+      console.log(`[decodeTrimStartReq] decoded eventDeck[${i}]: units=${Object.keys(eventDeck.value.units || {}).length}`);
+    }
+    
+    console.log(`[decodeTrimStartReq] successfully decoded ${eventDeckList.length} event decks`);
+    return { 
+      trimId: trimId.value, 
+      trimLevel: trimLevel.value,
+      eventDeckList 
+    };
+  } catch (err) {
+    console.log(`[decodeTrimStartReq] decode failed: ${err.message}`);
+    console.log(`[decodeTrimStartReq] stack: ${err.stack}`);
+    return { trimId: 0, trimLevel: 1, eventDeckList: [] };
   }
 }
 
