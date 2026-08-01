@@ -39,9 +39,28 @@ function startServer(port, attempts) {
 
 function handleRequest(req, res) {
   const parsed = url.parse(req.url || "/");
-  const pathname = decodeURIComponent(parsed.pathname || "/");
+  let pathname;
+  try {
+    pathname = decodeURIComponent(parsed.pathname || "/");
+  } catch (err) {
+    res.writeHead(400);
+    res.end("Bad request");
+    return;
+  }
+
   if (pathname.startsWith("/asset-png/")) {
     serveAssetPng(pathname.slice("/asset-png/".length), res);
+    return;
+  }
+
+  // Routing for the "serina_save_editor" dir
+  if (pathname.startsWith("/serina_save_editor/")) {
+    const SERINA_DIR = path.join(ROOT_DIR, "serina_save_editor");
+    let safePath = pathname.slice("/serina_save_editor/".length).replace(/^\/+/, "");
+    if (safePath === "") safePath = "shop.html"; 
+    
+    const target = path.resolve(SERINA_DIR, safePath);
+    serveFile(target, SERINA_DIR, res);
     return;
   }
 
@@ -50,7 +69,6 @@ function handleRequest(req, res) {
 
   serveFile(target, WIKI_DIR, res);
 }
-
 function serveAssetPng(relativePath, res) {
   const roots = getAssetRoots();
   for (const root of roots) {

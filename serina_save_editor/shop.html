@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Serina Crew's Shop</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    /* Buttons & Inputs */
+    .input-number { width: 60px; padding: 6px; text-align: center; background: var(--surface-2); border: 1px solid var(--line); color: var(--ink); border-radius: 4px; }
+    .btn-send { background: var(--teal); color: #fff; border: none; padding: 6px 12px; font-weight: bold; border-radius: 4px; cursor: pointer;}
+    .btn-send:hover { background: #146b68; }
+    .btn-delete { background: var(--red); color: #fff; border: none; padding: 6px 12px; font-weight: bold; border-radius: 4px; cursor: pointer;}
+    .btn-delete:hover { background: #b73535; }
+    .btn-secondary { background: var(--surface-2); color: var(--ink); border: 1px solid var(--line); padding: 6px 12px; font-weight: bold; border-radius: 4px; cursor: pointer;}
+    .btn-secondary:hover { background: var(--surface-3); }
+    
+    .user-select-container { display: flex; align-items: center; gap: 10px; background: transparent; padding: 0; margin: 0;}
+    #userSelect { background: var(--surface-2); border: 1px solid var(--line); color: var(--teal); padding: 6px 10px; border-radius: 6px; font-weight: bold; font-size: 14px; outline: none; cursor: pointer;}
+    .btn-icon { background: var(--surface-2); border: 1px solid var(--line); color: var(--ink); padding: 6px 10px; border-radius: 6px; cursor: pointer;}
+    .btn-icon:hover { background: var(--surface-3); }
+
+    /* Layout & Table */
+    .table-shell { display: flex; flex-direction: column; justify-content: flex-start; border-radius: 8px 8px 0 0; border-bottom: none; max-height: none; min-height: 0; overflow: visible; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { border-bottom: 1px solid var(--line); padding: 8px;}
+    
+    .info-col { white-space: normal !important; word-break: break-word; }
+    .action-col { overflow: visible !important; white-space: nowrap; }
+
+    tbody tr { min-height: 60px; } 
+    tbody tr:hover { background: var(--surface-2); }
+    
+    .item-img-wrapper { display: flex; justify-content: center; align-items: center; width: 45px; height: 45px; background: #0c0f13; border-radius: 6px; border: 1px solid var(--line); overflow: hidden; margin: 0 auto;}
+    .item-img { width: 100%; height: 100%; object-fit: contain; }
+    .no-img { display: flex; justify-content: center; align-items: center; width: 100%; height: 100%; font-size: 10px; color: var(--muted); font-weight: bold; text-align: center;}
+    
+    .item-meta { display: flex; flex-direction: column; gap: 4px; }
+    .item-name { font-weight: bold; font-size: 13px; color: var(--ink); line-height: 1.3;}
+    .item-strid { font-size: 11px; color: var(--muted); font-family: monospace; line-height: 1.3;}
+
+    /* Pagination */
+    .pagination { display: flex; justify-content: center; align-items: center; gap: 15px; padding: 10px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 0 0 8px 8px;}
+    .pagination button { padding: 6px 15px; font-weight: bold; border-radius: 4px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); cursor: pointer;}
+    .pagination button:hover:not(:disabled) { background: var(--teal); color: white; }
+    .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .page-info { font-weight: bold; color: var(--teal); font-size: 14px;}
+
+    /* Tabs */
+    .category-tabs { display: flex; gap: 8px; margin-bottom: 15px; border-bottom: 2px solid var(--line); padding-bottom: 10px; overflow-x: auto;}
+    .category-tabs button { background: var(--surface-2); border: 1px solid var(--line); color: var(--muted); padding: 8px 16px; border-radius: 6px; font-weight: bold; white-space: nowrap; cursor: pointer;}
+    .category-tabs button.active { background: var(--teal); color: #fff; border-color: var(--teal); }
+    .category-tabs button:hover:not(.active) { color: var(--ink); border-color: var(--teal);}
+
+    /* Action Toolbar */
+    .action-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 15px; background: var(--surface-2); padding: 10px; border-radius: 8px; border: 1px solid var(--line); flex-wrap: wrap;}
+    .search-box { flex: 1; display: flex; align-items: center; min-width: 200px;}
+    .search-box input { width: 100%; border: none; background: var(--surface); padding: 8px 12px; border-radius: 6px; color: var(--ink); outline: 1px solid var(--line);}
+    .search-box input:focus { outline: 1px solid var(--teal); }
+    .toolbar-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;}
+    .filter-select { background: var(--surface); color: var(--ink); border: 1px solid var(--line); padding: 7px; border-radius: 4px; outline: none; font-size: 13px;}
+
+    /* Pending Panel */
+    .pending-panel { margin-top: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 15px; }
+    .pending-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: 10px;}
+    .pending-header h3 { margin: 0; font-size: 16px; color: var(--amber); }
+    .pending-list { display: flex; flex-direction: column; gap: 5px; margin-bottom: 15px; } 
+    .pending-item { display: flex; justify-content: space-between; align-items: center; background: var(--surface-2); padding: 10px 12px; border-radius: 6px; font-size: 13px;}
+    .pending-item .badge { padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 11px; margin-right: 10px;}
+    .badge.add { background: rgba(99, 185, 177, 0.2); color: var(--teal); }
+    .badge.del { background: rgba(226, 105, 95, 0.2); color: var(--red); }
+    .badge.edit { background: rgba(223, 176, 91, 0.2); color: var(--amber); }
+    .btn-remove-pending { background: transparent; color: var(--muted); border: none; cursor: pointer; font-weight: bold; font-size: 16px;}
+    .btn-remove-pending:hover { color: var(--red); }
+    .pending-qty-input { width: 55px; padding: 3px 5px; text-align: center; background: var(--surface); border: 1px solid var(--line); color: var(--ink); border-radius: 4px; font-weight: bold; font-size: 13px;}
+    .pending-qty-input:focus { outline: 1px solid var(--teal); }
+
+    /* Toast Notification */
+    .toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 10000; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+    .toast { display: flex; align-items: center; gap: 15px; background: var(--surface-2); border: 1px solid var(--line); padding: 12px 18px; border-radius: 8px; box-shadow: var(--shadow); opacity: 0; transform: translateY(20px); transition: all 0.3s ease; }
+    .toast.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
+    .toast img { width: 50px; height: 50px; border-radius: 6px; object-fit: contain; background: transparent;}
+    .toast .message { font-size: 14px; font-weight: bold; color: var(--ink); line-height: 1.4;}
+    .toast .sub-message { font-size: 12px; color: var(--muted); font-weight: normal;}
+
+    /* Sidebar Serina Image */
+    .sidebar-image-box { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 15px; text-align: center; margin-top: 20px;}
+    .sidebar-image-box .img-title { text-align: center; font-weight: bold; color: var(--white); margin-bottom: 10px; font-size: 13px; letter-spacing: 1px;}
+    .sidebar-image-box img { width: 100%; max-width: 200px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface-2);}
+
+    /* Modals (Guide & Gear) */
+    .modal-overlay {
+        display: none; 
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+        background: rgba(0,0,0,0.8); z-index: 999999 !important;
+        justify-content: center; align-items: center;
+    }
+    .modal-content {
+        background: var(--surface); border: 1px solid var(--line); border-radius: 8px; 
+        padding: 25px; max-width: 600px; width: 90%; box-shadow: 0 10px 40px rgba(0,0,0,0.8);
+    }
+    .modal-content h2 { color: var(--teal); margin-top: 0; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;}
+    .modal-content p, .modal-content li { color: var(--ink); font-size: 14px; line-height: 1.6; margin-bottom: 10px;}
+    .modal-content ul { margin-top: 0; padding-left: 20px;}
+    .modal-close-btn { width: 100%; margin-top: 15px; font-size: 15px; padding: 10px;}
+
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">🏪</span>
+      <div>
+        <h1>Serina Crew's Shop</h1>
+        <p id="dataStamp">Initializing...</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="user-select-container">
+        <span style="font-weight: bold; color: var(--muted);">👤 Player:</span>
+        <select id="userSelect"><option value="">Loading...</option></select>
+        <button type="button" id="btnRefreshUsers" class="btn-icon" title="Refresh Server">🔄</button>
+        <button type="button" id="btnShowGuide" class="btn-icon" title="User Guide" style="color: var(--teal); font-weight: bold;">❓ Help</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <div class="filter-panel">
+        <div class="panel-heading"><h2>Mode</h2></div>
+        <nav class="section-tabs" id="sectionTabs">
+          <button type="button" class="active" id="tabLibrary">
+            <span>Shop (Add Item)</span>
+            <small>Game Database</small>
+          </button>
+          <button type="button" id="tabInventory">
+            <span>Refund (Inventory Remove)</span>
+            <small>Manage Account</small>
+          </button>
+        </nav>
+      </div>
+
+      <div class="sidebar-image-box">
+        <div class="img-title" style="margin-bottom:5px;"><h2>Serina Crew</h2></div>
+        <img src="data/images/Serina_crew.png" alt="Serina Crew" onerror="this.src='data:image/svg+xml;charset=UTF-8,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'100\' height=\'100\' style=\'background:%23252d35\'%3E%3Ctext fill=\'%239aa6b2\' x=\'50%25\' y=\'50%25\' dominant-baseline=\'middle\' text-anchor=\'middle\' font-family=\'sans-serif\' font-size=\'12\'%3ENo Image%3C/text%3E%3C/svg%3E';">
+      </div>
+    </aside>
+
+    <section class="content">
+      <div class="category-tabs" id="categoryTabs">
+        <button type="button" data-cat="idIndex">ID Index (All)</button>
+        <button type="button" data-cat="units" class="active">Units</button>
+        <button type="button" data-cat="ships">Ships</button>
+        <button type="button" data-cat="operators">Operators</button>
+        <button type="button" data-cat="trophies">Trophies</button>
+        <button type="button" data-cat="gears">Equipments</button>
+        <button type="button" data-cat="items">Inventory (Misc)</button>
+        <button type="button" data-cat="skins">Skins</button>
+      </div>
+
+      <div class="action-toolbar">
+        <div class="search-box">
+            <input id="searchInput" type="search" autocomplete="off" placeholder="🔍 Search by Name, ID, or String ID...">
+        </div>
+        <div class="toolbar-controls">
+            <span style="font-size: 13px; color: var(--muted); font-weight: bold;">Sort:</span>
+            <select id="sortSelect" class="filter-select">
+                <option value="id_asc">ID (Ascending)</option>
+                <option value="id_desc">ID (Descending)</option>
+                <option value="name_asc">Name (A-Z)</option>
+                <option value="name_desc">Name (Z-A)</option>
+                <option value="count_desc">Count/Level (High to Low)</option>
+            </select>
+            
+            <span style="font-size: 13px; color: var(--muted); font-weight: bold; margin-left: 5px;">Items/Page:</span>
+            <select id="perPageSelect" class="filter-select">
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+            </select>
+            <button type="button" id="btnSelectAll" class="btn-secondary">✔️ Select All (Page)</button>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <h2 id="sectionTitle" style="margin: 0; font-size: 16px;">Shop Library</h2>
+        <div id="resultCount" style="color: var(--muted); font-size: 13px;">0 items found</div>
+      </div>
+
+      <div class="table-shell">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 55px; text-align:center;">Image</th>
+              <th style="width: 80px;">ID</th>
+              <th style="width: 140px;">Information</th> 
+              <th style="width: auto; text-align: right;">Action</th> 
+            </tr>
+          </thead>
+          <tbody id="tableBody"></tbody>
+        </table>
+      </div>
+
+      <div class="pagination">
+        <button type="button" id="btnPrev">◀ Previous</button>
+        <span class="page-info" id="pageInfo">Page 1 / 1</span>
+        <button type="button" id="btnNext">Next ▶</button>
+      </div>
+
+      <div class="pending-panel">
+        <div class="pending-header">
+            <h3>🛒 Pending Changes (<span id="pendingCount">0</span>)</h3>
+            <div>
+                <button type="button" id="btnCommit" class="btn-send">✅ Accept Changes</button>
+                <button type="button" id="btnClearPending" class="btn-delete">🗑️ Clear</button>
+            </div>
+        </div>
+        <div class="pending-list" id="pendingList">
+            <div style="text-align: center; color: var(--muted); padding: 10px;">Queue is empty. Select items from above.</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- User Guide Modal -->
+  <div id="guideModal" class="modal-overlay">
+    <div class="modal-content">
+      <h2><img src="data/images/serina_ava.png" style="width:40px; height:40px; border-radius:50%; object-fit:cover;" onerror="this.style.display='none'"> Welcome to Serina Crew's Shop!</h2>
+      <p>Hello boss! This tool allows you to safely manage your game account in real-time.</p>
+      <ul>
+        <li><b>Shop (Add Item):</b> Send units, items, and gears directly to your in-game Mailbox. Mails expire in <b>3 minutes</b>.</li>
+        <li><b>Gear Tuning:</b> Clicking "Queue" on an Equipment allows you to customize its Set and Substats before sending! You can also Edit it in the pending queue.</li>
+        <li><b>Refund (Remove):</b> Delete unwanted items from your inventory. <i>Warning: Do not delete Units/Ships that are currently in a squad/deck!</i></li>
+        <li><b>Queue System:</b> Click "Queue" to add multiple actions, edit their quantities, then click <b>Accept Changes</b>.</li>
+      </ul>
+      <p style="color: var(--amber); font-size: 12px; margin-top: 15px;">* Pro Tip: After adding items, just open the Mailbox in-game. No need to restart the game!</p>
+      <button type="button" id="btnCloseGuide" class="btn-send modal-close-btn">Got it, let's go!</button>
+    </div>
+  </div>
+
+  <!-- Gear Configuration Modal -->
+  <div id="gearModal" class="modal-overlay">
+    <div class="modal-content" style="max-width: 450px;">
+      <h2 style="margin-bottom: 5px;">⚙️ Configure Equipment</h2>
+      <p style="color: var(--muted); font-size: 12px; margin-bottom: 15px;" id="gearModalItemName">Item Name</p>
+      
+      <div style="display: flex; flex-direction: column; gap: 12px;">
+          <label style="font-weight: bold; font-size: 13px; color: var(--teal);">Set Bonus
+              <select id="gearSetSelect" class="filter-select" style="width: 100%; margin-top: 5px;">
+                  <option value="0">Default (Native to item)</option>
+              </select>
+          </label>
+
+          <label style="font-weight: bold; font-size: 13px; color: var(--teal);">Substat 1 (Max Value)
+              <select id="gearSub1Select" class="filter-select" style="width: 100%; margin-top: 5px;">
+                  <option value="">Default (Native to item)</option>
+              </select>
+          </label>
+
+          <label style="font-weight: bold; font-size: 13px; color: var(--teal);">Substat 2 (Max Value)
+              <select id="gearSub2Select" class="filter-select" style="width: 100%; margin-top: 5px;">
+                  <option value="">Default (Native to item)</option>
+              </select>
+          </label>
+          
+          <label style="font-weight: bold; font-size: 13px; color: var(--teal); margin-top: 5px;">Quantity
+              <input type="number" id="gearModalQty" class="filter-select" style="width: 100%; margin-top: 5px; background: var(--surface-2);" value="1" min="1">
+          </label>
+
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--amber); margin-top: 10px; cursor: pointer;">
+              <input type="checkbox" id="gearForceOverride" checked style="width: 16px; height: 16px;">
+              Force Override (Allows any stat on this gear type)
+          </label>
+      </div>
+
+      <div style="display: flex; gap: 10px; margin-top: 20px;">
+          <button type="button" id="btnConfirmGear" class="btn-send" style="flex: 1;">Add to Queue</button>
+          <button type="button" id="btnCancelGear" class="btn-secondary" style="flex: 1;">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

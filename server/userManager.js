@@ -336,6 +336,15 @@ function replaceUser(userDb, currentUid, incoming) {
   if (nextUid !== currentUid && userDb.users[nextUid]) {
     throw httpError(409, `User UID ${nextUid} already exists.`);
   }
+
+  // In-place update directly to running memory
+  // Ensure the game's TCP socket receives data immediately from the Serina save editor
+  if (nextUid === currentUid) {
+    for (const key of Object.keys(existing)) delete existing[key];
+    Object.assign(existing, user);
+    return existing;
+  }
+
   delete userDb.users[currentUid];
   userDb.users[nextUid] = user;
   if (String(userDb.activeUserUid || "") === currentUid) userDb.activeUserUid = nextUid;
@@ -698,7 +707,7 @@ function sendHtml(res, html) {
 
 function sendJson(res, statusCode, value) {
   const headers = {
-    "Access-Control-Allow-Origin": "null",
+    "Access-Control-Allow-Origin": "*", //my stupid ass dont know how to bypass cors header check on browser
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Cache-Control": "no-store",
