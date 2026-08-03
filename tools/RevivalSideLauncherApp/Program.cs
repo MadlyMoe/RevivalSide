@@ -122,6 +122,7 @@ internal sealed class LauncherWindow : Window
     private readonly Button stopListenerButton = new() { Content = "Stop", MinWidth = 96, Height = 38, IsEnabled = false };
     private readonly Button openUserManagerButton = new() { Content = "User Manager", MinWidth = 158, Height = 38 };
     private readonly Button openWikiButton = new() { Content = "Wiki", MinWidth = 88, Height = 38 };
+    private readonly Button openSaveEditorButton = new() { Content = "Save Editor", MinWidth = 140, Height = 38 };  // Added new save editor button
     private readonly Button patchHostsButton = new() { Content = "Patch Hosts", MinWidth = 124, Height = 38 };
     private readonly Button unpatchHostsButton = new() { Content = "Unpatch", MinWidth = 108, Height = 38 };
     private readonly Button browseManagedButton = new() { Content = "Browse", MinWidth = 104, Height = 38 };
@@ -312,7 +313,7 @@ internal sealed class LauncherWindow : Window
         AddRow(leftLayout, Muted("Start server, open tools.", 32), 2);
         dashboardGameplayProgressPanel = GameplayProgressPanel(dashboardGameplayProgressBar, dashboardGameplayProgressText);
         AddRow(leftLayout, dashboardGameplayProgressPanel, 3);
-        AddRow(leftLayout, Row(stopListenerButton, openUserManagerButton, openWikiButton), 4);
+        AddRow(leftLayout, Row(stopListenerButton, openUserManagerButton, openWikiButton, openSaveEditorButton), 4); //add the new save editor button
         AddRow(leftLayout, Divider(), 5);
         AddRow(leftLayout, Eyebrow("Client Routing"), 6);
         AddRow(leftLayout, Row(patchHostsButton, unpatchHostsButton), 7);
@@ -524,6 +525,7 @@ internal sealed class LauncherWindow : Window
             stopListenerButton,
             openUserManagerButton,
             openWikiButton,
+            openSaveEditorButton, //add style for save editor button
             patchHostsButton,
             unpatchHostsButton,
             openLogsButton,
@@ -800,6 +802,7 @@ internal sealed class LauncherWindow : Window
             OpenUrl($"http://127.0.0.1:{settings.HttpPort}/user-manager");
         };
         openWikiButton.Click += async (_, _) => await RunUiAction(OpenWikiAsync);
+        openSaveEditorButton.Click += async (_, _) => await RunUiAction(OpenSaveEditorAsync); //add event for button click
         patchHostsButton.Click += (_, _) => RunHostsPatch(remove: false);
         unpatchHostsButton.Click += (_, _) => RunHostsPatch(remove: true);
         browseManagedButton.Click += async (_, _) => await RunUiAction(BrowseManagedAssemblyAsync);
@@ -1842,6 +1845,65 @@ internal sealed class LauncherWindow : Window
             await Task.Delay(600);
         }
         OpenUrl($"http://127.0.0.1:{settings.WikiPort}/");
+    }
+    
+    //Automatically run the Wiki in the bg if its not already and & the Editor
+    private async Task OpenSaveEditorAsync()
+    {
+        SaveSettingsFromUi();
+        await EnsureAssetBuildDependenciesAsync();
+        var wikiAssets = await EnsureWikiAssetCacheAsync(force: false);
+        AppendLog($"Wiki image cache ready: {wikiAssets.CachedPngCount:N0} PNGs at {wikiAssets.CacheRoot}");
+        
+        // If the Wiki server isn't running, it will automatically start in the background to handle the image decoding.
+        if (wikiProcess is not { HasExited: false })
+        {
+            var logWriter = OpenProcessLog("wiki", out var logPath);
+            var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = nodePath,
+                    WorkingDirectory = appRoot,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                },
+                EnableRaisingEvents = true,
+            };
+            process.StartInfo.ArgumentList.Add(Path.Combine(appRoot, "tools", "serve-revivalside-wiki.js"));
+            process.StartInfo.ArgumentList.Add("--port");
+            process.StartInfo.ArgumentList.Add(settings.WikiPort.ToString());
+            process.OutputDataReceived += (_, e) => { if (e.Data != null) AppendProcessLog(logWriter, e.Data); };
+            process.ErrorDataReceived += (_, e) => { if (e.Data != null) AppendProcessLog(logWriter, e.Data); };
+            process.Exited += (_, _) => Dispatcher.UIThread.Post(() =>
+            {
+                if (ReferenceEquals(wikiProcess, process))
+                {
+                    wikiProcess = null;
+                    process.Dispose();
+                }
+                UpdateButtons();
+                HandleBackgroundServiceStopped("Wiki");
+                AppendProcessLog(logWriter, "Wiki server stopped.");
+                CloseProcessLog(logWriter);
+            });
+            if (!process.Start())
+            {
+                CloseProcessLog(logWriter);
+                throw new InvalidOperationException("Could not start wiki server.");
+            }
+            wikiProcess = process;
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            AppendLog("Wiki server automatically started in background for Save Editor.");
+            AppendLog($"Wiki log: {logPath}");
+            await Task.Delay(600);
+        }
+        
+        // Open the save editor directly
+        OpenUrl($"http://127.0.0.1:{settings.WikiPort}/serina_save_editor/shop.html");
     }
 
     private void StopWiki()
