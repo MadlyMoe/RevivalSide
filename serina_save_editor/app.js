@@ -372,52 +372,72 @@ async function loadMyInventory() {
             state.myInventory[cat].push({ ...itemData, _searchStr: searchStr });
         };
 
+        // 1. Items
         if (user.inventory && user.inventory.misc) {
             Object.values(user.inventory.misc).forEach(item => {
-                const w = findWikiFast(state.dict.items, item.itemId);
+                const itemId = item.itemId || item.m_ItemMiscID || item.id;
+                const w = findWikiFast(state.dict.items, itemId) || { name: `Item (${itemId})` };
+                // Ignore mold items
                 if (!w || w.category === "Mold") return;
-                const count = parseInt(item.countFree || 0) + parseInt(item.countPaid || 0);
-                pushInv("items", { ...w, rType: "RT_MISC", uid: item.itemId, realId: item.itemId, countText: `x${count}`, count: count });
+                const count = parseInt(item.countFree || item.m_countFree || 0) + parseInt(item.countPaid || item.m_countPaid || 0);
+                pushInv("items", { ...w, rType: "RT_MISC", uid: itemId, realId: itemId, countText: `x${count}`, count: count });
             });
         }
 
+        // 2. Units
         if (user.army && user.army.units) {
             Object.values(user.army.units).forEach(unit => {
-                const wUnit = findWikiFast(state.dict.units, unit.unitId) || { name: `Unit (${unit.unitId})` };
-                pushInv("units", { ...wUnit, rType: "RT_UNIT", uid: unit.unitUid, realId: unit.unitId, countText: `Lv.${unit.level||1}`, count: unit.level||1 });
+                const uId = unit.unitId || unit.m_UnitID || unit.id;
+                const uUid = unit.unitUid || unit.m_UnitUID || unit.uid;
+                const level = unit.level || unit.m_Level || 1;
+                const wUnit = findWikiFast(state.dict.units, uId) || { name: `Unit (${uId})` };
+                pushInv("units", { ...wUnit, rType: "RT_UNIT", uid: uUid, realId: uId, countText: `Lv.${level}`, count: level });
             });
         }
 
+        // 3. Trophies
         if (user.army && user.army.trophies) {
             Object.values(user.army.trophies).forEach(trophy => {
-                const wTrophy = findWikiFast(state.dict.units, trophy.unitId) || { name: `Trophy (${trophy.unitId})` };
-                pushInv("trophies", { ...wTrophy, rType: "RT_UNIT", uid: trophy.unitUid, realId: trophy.unitId, countText: `Lv.${trophy.level||1}`, count: trophy.level||1 });
+                const tId = trophy.unitId || trophy.m_UnitID || trophy.id;
+                const tUid = trophy.unitUid || trophy.m_UnitUID || trophy.uid;
+                const level = trophy.level || trophy.m_Level || 1;
+                const wTrophy = findWikiFast(state.dict.units, tId) || { name: `Trophy (${tId})` };
+                pushInv("trophies", { ...wTrophy, rType: "RT_UNIT", uid: tUid, realId: tId, countText: `Lv.${level}`, count: level });
             });
         }
         
+        // 4. Ships
         if (user.army && user.army.ships) {
             Object.values(user.army.ships).forEach(ship => {
-                const wShip = findWikiFast(state.dict.units, ship.unitId) || { name: `Ship (${ship.unitId})` };
-                pushInv("ships", { ...wShip, rType: "RT_SHIP", uid: ship.unitUid, realId: ship.unitId, countText: `Lv.${ship.level||1}`, count: ship.level||1 });
+                const sId = ship.unitId || ship.m_UnitID || ship.id;
+                const sUid = ship.unitUid || ship.m_UnitUID || ship.uid;
+                const level = ship.level || ship.m_Level || 1;
+                const wShip = findWikiFast(state.dict.units, sId) || { name: `Ship (${sId})` };
+                pushInv("ships", { ...wShip, rType: "RT_SHIP", uid: sUid, realId: sId, countText: `Lv.${level}`, count: level });
             });
         }
         
+        // 5. Operators
         if (user.army && user.army.operators) {
             Object.values(user.army.operators).forEach(op => {
-                const opId = op.unitId || op.operatorId || op.id;
+                const opId = op.unitId || op.operatorId || op.id || op.m_UnitID;
+                const oUid = op.uid || op.operatorUid || op.m_ItemEquipUID;
+                const level = op.level || op.m_Level || 1;
                 const wOp = findWikiFast(state.dict.units, opId) || { name: `Operator (${opId})` };
-                pushInv("operators", { ...wOp, rType: "RT_OPERATOR", uid: op.uid, realId: opId, countText: `Lv.${op.level||1}`, count: op.level||1 });
+                pushInv("operators", { ...wOp, rType: "RT_OPERATOR", uid: oUid, realId: opId, countText: `Lv.${level}`, count: level });
             });
         }
 
+        // 6. Equipments
         if (user.inventory && user.inventory.equips) {
             const equipsArr = Object.entries(user.inventory.equips);
             equipsArr.forEach(([equipKey, eq]) => {
                 let eqId, eqUid, enchantLevel;
                 if (eq !== null && typeof eq === "object") {
-                    eqId = eq.equipId ?? eq.equipID ?? eq.itemId ?? eq.tid ?? eq.cfgId ?? eq.configId ?? eq.no ?? eq.id;
-                    eqUid = eq.equipUid ?? eq.uid ?? eq.equipUID ?? equipKey;
-                    enchantLevel = eq.enchantLevel ?? eq.enchant ?? eq.level ?? 0;
+                    // Detection uses the exact C# m_ItemEquipID structure of the original game
+                    eqId = eq.m_ItemEquipID ?? eq.m_ItemEquipId ?? eq.itemEquipId ?? eq.equipId ?? eq.equipID ?? eq.itemId ?? eq.tid ?? eq.cfgId ?? eq.configId ?? eq.no ?? eq.id;
+                    eqUid = eq.m_ItemEquipUID ?? eq.m_ItemEquipUid ?? eq.itemEquipUid ?? eq.equipUid ?? eq.uid ?? eq.equipUID ?? equipKey;
+                    enchantLevel = eq.m_EnchantLevel ?? eq.enchantLevel ?? eq.enchant ?? eq.level ?? 0;
                 } else {
                     eqId = eq;
                     eqUid = equipKey;
@@ -428,6 +448,7 @@ async function loadMyInventory() {
             });
         }
 
+        // 7. Skins
         if (user.inventory && user.inventory.skins) {
             user.inventory.skins.forEach(skinId => {
                 const wSkin = findWikiFast(state.dict.skins, skinId) || { name: `Skin (${skinId})` };
