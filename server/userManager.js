@@ -329,7 +329,8 @@ function replaceUser(userDb, currentUid, incoming) {
   if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
     throw httpError(400, "User profile must be a JSON object.");
   }
-  getRequiredUser(userDb, currentUid);
+  
+  const existing = getRequiredUser(userDb, currentUid);
   const user = deepClone(incoming);
   const nextUid = nonEmpty(user.userUid) || currentUid;
   user.userUid = nextUid;

@@ -1,4 +1,4 @@
-// RevivalSide/modmenu/app.js
+// RevivalSide/serina_save_editor/app.js
 
 const SERVER_API = "http://127.0.0.1:8088/user-manager/api";
 const WIKI_DATA_PATH = "../data";  
@@ -898,8 +898,11 @@ if (els.btnCommit) {
 
         try {
             debugLog("Committing changes to server...");
-            const res = await fetch(`${SERVER_API}/users/${state.selectedUid}`);
-            const user = (await res.json()).user;
+            
+            const getRes = await fetch(`${SERVER_API}/users/${state.selectedUid}`);
+            if (!getRes.ok) throw new Error("Could not fetch user data. Server might be down.");
+            const data = await getRes.json();
+            const user = data.user;
             let changed = false;
 
             if (adds.length > 0) {
@@ -922,7 +925,7 @@ if (els.btnCommit) {
                 user.admin.posts.push({
                     postId: 0, postIndex: Date.now().toString(),
                     title: "📦 Serina Crew Delivery",
-                    contents: `You received ${rewards.length} items. Claim quickly, this mail expires in 3 minutes!`,
+                    contents: `You received ${rewards.length} items. Claim quickly, this mail expires in any minutes!`,
                     sendDate: sendDateBinary, expirationDate: expirationDateBinary,
                     rewards: rewards, received: false
                 });
@@ -934,15 +937,25 @@ if (els.btnCommit) {
                     const rType = p.item.rType;
                     const uid = p.item.uid;
                     
-                    if (rType === "RT_MISC" && user.inventory.misc[uid]) delete user.inventory.misc[uid];
+                    if (rType === "RT_MISC" && user.inventory.misc && user.inventory.misc[uid]) {
+                        delete user.inventory.misc[uid];
+                    }
                     else if (rType === "RT_UNIT") {
                         if (user.army.units && user.army.units[uid]) delete user.army.units[uid];
                         if (user.army.trophies && user.army.trophies[uid]) delete user.army.trophies[uid];
                     }
-                    else if (rType === "RT_SHIP" && user.army.ships[uid]) delete user.army.ships[uid];
-                    else if (rType === "RT_OPERATOR" && user.army.operators[uid]) delete user.army.operators[uid];
-                    else if (rType === "RT_EQUIP" && user.inventory.equips[uid]) delete user.inventory.equips[uid];
-                    else if (rType === "RT_SKIN" && user.inventory.skins) user.inventory.skins = user.inventory.skins.filter(s => Number(s) !== Number(uid));
+                    else if (rType === "RT_SHIP" && user.army.ships && user.army.ships[uid]) {
+                        delete user.army.ships[uid];
+                    }
+                    else if (rType === "RT_OPERATOR" && user.army.operators && user.army.operators[uid]) {
+                        delete user.army.operators[uid];
+                    }
+                    else if (rType === "RT_EQUIP" && user.inventory.equips && user.inventory.equips[uid]) {
+                        delete user.inventory.equips[uid];
+                    }
+                    else if (rType === "RT_SKIN" && user.inventory.skins) {
+                        user.inventory.skins = user.inventory.skins.filter(s => Number(s) !== Number(uid));
+                    }
                 });
                 changed = true;
             }
@@ -960,12 +973,23 @@ if (els.btnCommit) {
             }
 
             if (changed) {
-                await fetch(`${SERVER_API}/users/${state.selectedUid}`, {
-                    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(user)
+                const putRes = await fetch(`${SERVER_API}/users/${state.selectedUid}`, {
+                    method: "PUT", 
+                    headers: { "Content-Type": "application/json" }, 
+                    body: JSON.stringify({ user: user })
                 });
 
+                if (!putRes.ok) {
+                    let errMsg = `HTTP Error ${putRes.status}`;
+                    try {
+                        const errData = await putRes.json();
+                        errMsg = errData.error || errMsg;
+                    } catch(e) {}
+                    throw new Error(errMsg);
+                }
+
                 if (adds.length > 0 && dels.length === 0 && edits.length === 0) showToast("Delivery Sent!", "Open Mailbox in-game to claim.", "add_ok");
-                else if (dels.length > 0 && adds.length === 0 && edits.length === 0) showToast("Items Refunded!", "Refresh your inventory.", "del_ok");
+                else if (dels.length > 0 && adds.length === 0 && edits.length === 0) showToast("Items Refunded!", "Required to restart client!", "del_ok");
                 else if (edits.length > 0 && adds.length === 0 && dels.length === 0) showToast("Quantity Updated!", "Item quantities updated successfully.", "add_ok");
                 else showToast("Success!", "Shop transactions completed.", "add_ok");
 
@@ -994,7 +1018,8 @@ if (els.btnCommit) {
                 if (state.mode === "INVENTORY") renderTable();
             }
         } catch (err) {
-            showToast("Transaction Error", err.message, "error");
+            showToast("Server Rejected Request", err.message, "error");
+            console.error("PUT Request Error: ", err);
         }
     });
 }
