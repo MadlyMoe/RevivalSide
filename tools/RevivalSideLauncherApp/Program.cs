@@ -2595,6 +2595,10 @@ internal sealed class LauncherWindow : Window
     {
         var required = new[]
         {
+            "mod-runtime-loader=True",
+            "mod-string-loader=True",
+            "mod-asset-bundle-loader=True",
+            "mod-episode-ui=True",
             "steam-local-login=True",
             "steam-standalone=True",
             "steam-runtime-isolated=True",
@@ -3557,6 +3561,19 @@ internal sealed class LauncherWindow : Window
         foreach (var key in new[] { "SteamAppId", "SteamGameId", "SteamClientLaunch", "SteamEnv", "SteamPath" })
         {
             startInfo.Environment.Remove(key);
+        }
+        var modRuntimeDir = Path.Combine(appRoot, "mods", ".runtime", "current");
+        if (File.Exists(Path.Combine(modRuntimeDir, "mod-set.json")))
+        {
+            startInfo.Environment["CS_MOD_TABLES_DIR"] = modRuntimeDir;
+            startInfo.Environment["CS_MOD_STRINGS_DIR"] = Path.Combine(modRuntimeDir, "Strings");
+            startInfo.Environment["CS_MOD_ASSET_BUNDLES_DIR"] = Path.Combine(modRuntimeDir, "ClientAssetBundles");
+        }
+        else
+        {
+            startInfo.Environment.Remove("CS_MOD_TABLES_DIR");
+            startInfo.Environment.Remove("CS_MOD_STRINGS_DIR");
+            startInfo.Environment.Remove("CS_MOD_ASSET_BUNDLES_DIR");
         }
         Process.Start(startInfo);
         AppendLog($"Launched Steam-isolated frozen CounterSide: {executable} ({isolatedSteamFiles} native files newly quarantined)");

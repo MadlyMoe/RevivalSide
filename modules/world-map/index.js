@@ -2680,7 +2680,7 @@ function sendRaidSnapshotData(ctx, socket, user, options = {}) {
     sent.push(2211);
   }
 
-  if (sent.length && ctx.config && ctx.config.USE_LOCAL_USER_DB && typeof ctx.saveUserDb === "function") ctx.saveUserDb();
+  if (options.persist !== false && sent.length && ctx.config && ctx.config.USE_LOCAL_USER_DB && typeof ctx.saveUserDb === "function") ctx.saveUserDb();
   return sent.length > 0;
 }
 

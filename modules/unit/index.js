@@ -567,10 +567,15 @@ function setDeckUnit(user, deckIndex, slotIndex, unitUid) {
   const slot = normalizeSlot(slotIndex, deck.unitUids.length);
   const normalizedUidBig = toBigInt(unitUid);
   const normalizedUid = String(normalizedUidBig);
-  const old =
-    normalizedUidBig > 0n
-      ? findDeckUnit(army, normalizedUid, { deckType: deck.deckType })
-      : { deckIndex: { deckType: 0, index: 0 }, slotIndex: -1 };
+  let old = { deckIndex: { deckType: 0, index: 0 }, slotIndex: -1 };
+  if (normalizedUidBig > 0n) {
+    if (deck.deckType === DECK_TYPE_DIVE) {
+      old = findDeckUnit(army, normalizedUid, { deckType: deck.deckType });
+    } else {
+      const oldSlotIndex = deck.unitUids.findIndex((uid) => String(toBigInt(uid)) === normalizedUid);
+      if (oldSlotIndex >= 0) old = { deckIndex: { deckType: deck.deckType, index: deck.index }, slotIndex: oldSlotIndex };
+    }
+  }
   deck = ensureDeck(user, deckIndex);
   let oldLeaderSlotIndex = -1;
   let movedLeaderFromSameDeck = false;
@@ -588,6 +593,7 @@ function setDeckUnit(user, deckIndex, slotIndex, unitUid) {
       oldDeck.unitUids[old.slotIndex] = 0;
       oldLeaderSlotIndex = wasOldLeader ? firstFilledUnitSlot(oldDeck) : oldDeck.leaderIndex;
       oldDeck.leaderIndex = oldLeaderSlotIndex;
+      if (!sameDeck) deck = ensureDeck(user, deckIndex);
     }
   }
 
@@ -619,8 +625,11 @@ function setDeckShip(user, deckIndex, shipUid) {
   const army = ensureArmy(user);
   const normalizedUid = String(toBigInt(shipUid));
   let deck = ensureDeck(user, deckIndex);
-  const oldDeckIndex = findDeckShip(army, normalizedUid, { deckType: deck.deckType });
-  if (toBigInt(normalizedUid) > 0n) clearShipFromDecks(army, normalizedUid, { deckType: deck.deckType });
+  const isDiveTransfer = deck.deckType === DECK_TYPE_DIVE && toBigInt(normalizedUid) > 0n;
+  const oldDeckIndex = isDiveTransfer
+    ? findDeckShip(army, normalizedUid, { deckType: deck.deckType })
+    : { deckType: 0, index: 0 };
+  if (isDiveTransfer) clearShipFromDecks(army, normalizedUid, { deckType: deck.deckType });
   deck = ensureDeck(user, deckIndex);
   deck.shipUid = toBigInt(normalizedUid) > 0n ? normalizedUid : 0;
   rememberCombatDeck(user, deck);
@@ -631,8 +640,11 @@ function setDeckOperator(user, deckIndex, operatorUid) {
   const army = ensureArmy(user);
   const normalizedUid = String(toBigInt(operatorUid));
   let deck = ensureDeck(user, deckIndex);
-  const oldDeckIndex = findDeckOperator(army, normalizedUid, { deckType: deck.deckType });
-  if (toBigInt(normalizedUid) > 0n) clearOperatorFromDecks(army, normalizedUid, { deckType: deck.deckType });
+  const isDiveTransfer = deck.deckType === DECK_TYPE_DIVE && toBigInt(normalizedUid) > 0n;
+  const oldDeckIndex = isDiveTransfer
+    ? findDeckOperator(army, normalizedUid, { deckType: deck.deckType })
+    : { deckType: 0, index: 0 };
+  if (isDiveTransfer) clearOperatorFromDecks(army, normalizedUid, { deckType: deck.deckType });
   deck = ensureDeck(user, deckIndex);
   deck.operatorUid = toBigInt(normalizedUid) > 0n ? normalizedUid : 0;
   rememberCombatDeck(user, deck);
@@ -703,12 +715,18 @@ function enhanceUnitStats(user, unitUid, consumeUnitUids = []) {
 function limitBreakUnit(user, unitUid, options = {}) {
   const unit = getArmyUnitByUid(user, unitUid);
   if (!unit) return null;
-  const cap = Math.max(1, Number(options.maxLimitBreakLevel || getMaxLimitBreakRank({ maxLevel: UNIT_LIMIT_BREAK_MAX_LEVEL })));
-  unit.limitBreakLevel = clampInt(Number(unit.limitBreakLevel || 0) + 1, 0, cap);
+  unit.limitBreakLevel = getNextUnitLimitBreakRank(unit, options);
   unit.level = Math.min(Number(unit.level || 1), getUnitMaxLevel(unit));
   unit.lastGrowthAt = new Date().toISOString();
   persistNormalizedUnit(user, unit);
   return unit;
+}
+
+function getNextUnitLimitBreakRank(unit, options = {}) {
+  const currentRank = Math.max(0, Number(unit && unit.limitBreakLevel) || 0);
+  const cap = Math.max(1, Number(options.maxLimitBreakLevel || getMaxLimitBreakRank({ maxLevel: UNIT_LIMIT_BREAK_MAX_LEVEL })));
+  const nextRank = options.maxLimitBreakLevel == null && Number(unit && unit.level) >= 100 && currentRank < 3 ? 4 : currentRank + 1;
+  return clampInt(nextRank, 0, cap);
 }
 
 function upgradeUnitSkill(user, unitUid, skillId, options = {}) {
@@ -914,9 +932,10 @@ function persistNormalizedUnit(user, unit) {
 
 function getUnitMaxLevel(unit, options = {}) {
   if (options.maxLevel != null) return Math.max(1, Number(options.maxLevel) || 1);
+  const storedLevel = Math.max(1, Number(unit && unit.level) || 1);
   const templet = getUnitTemplet(unit && unit.unitId);
   if (templet && String(templet.m_NKM_UNIT_TYPE || "") === "NUT_SHIP") {
-    return getShipMaxLevel(unit);
+    return Math.max(storedLevel, getShipMaxLevel(unit));
   }
   const limitBreakLevel = Math.max(0, Number(unit && unit.limitBreakLevel) || 0);
   const reactorLevel = Math.max(0, Number(unit && unit.reactorLevel) || 0);
@@ -925,9 +944,10 @@ function getUnitMaxLevel(unit, options = {}) {
   const resolvedMaxLevel = Math.min(UNIT_LIMIT_BREAK_MAX_LEVEL, tableMaxLevel + reactorLevel);
   const override = Number(unit && unit.maxLevelOverride || 0) || 0;
   if (override > 0 && !isStaleAwakenedMaxLevelOverride(unit, override, resolvedMaxLevel)) {
-    return Math.max(1, override);
+    return Math.max(storedLevel, override);
   }
-  return resolvedMaxLevel;
+  // Persisted/imported progress is authoritative. Missing lookup tables must never lower it.
+  return Math.max(storedLevel, resolvedMaxLevel);
 }
 
 function isStaleAwakenedMaxLevelOverride(unit, override, resolvedMaxLevel) {
@@ -951,10 +971,7 @@ function normalizeUnitExpShape(unit, options = {}) {
   const maxLevel = getUnitMaxLevel(unit, options);
   unit.level = clampInt(unit.level || 1, 1, maxLevel);
   unit.exp = Math.max(0, Math.trunc(Number(unit.exp || 0) || 0));
-  if (unit.level >= maxLevel) {
-    unit.exp = 0;
-    return unit;
-  }
+  if (unit.level >= maxLevel) return unit;
   const required = getUnitRequiredExpForLevel(unit.level);
   if (required > 0 && unit.exp >= required) {
     const next = splitUnitTotalExp(unit.exp, maxLevel);
@@ -1423,6 +1440,7 @@ module.exports = {
   addUnitExp,
   setUnitLevel,
   enhanceUnitStats,
+  getNextUnitLimitBreakRank,
   limitBreakUnit,
   upgradeUnitSkill,
   tacticUpdateUnit,

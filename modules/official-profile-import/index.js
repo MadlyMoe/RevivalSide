@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 
 const JOIN_LOBBY_ACK_PACKET_ID = 205;
-const OFFICIAL_LOCAL_STATE_SCHEMA_VERSION = 3;
+const OFFICIAL_LOCAL_STATE_SCHEMA_VERSION = 4;
 const DEFAULT_NEXT_USER_UID = "1000000001";
 const DEFAULT_NEXT_FRIEND_CODE = "10000001";
 const CRYPTO_MASKS = Object.freeze([
@@ -380,6 +380,14 @@ function applyOfficialSnapshotToLocalProfile(profile, options = {}) {
   officialImport.rawSnapshotSchemaVersion = Number(readAny(snapshot, ["schemaVersion", "SchemaVersion"]) || 1) || 1;
   officialImport.rawSnapshotCapturedAt = nonEmpty(readAny(snapshot, ["capturedAt", "CapturedAt"])) || officialImport.capturedAt || "";
 
+  const officialLevel = finiteInt(readAny(userData, ["m_UserLevel", "userLevel", "level"]), 0);
+  if (officialLevel > 0) {
+    profile.level = officialLevel;
+    profile.exp = String(Math.max(0, finiteInt(readAny(userData, ["m_lUserLevelEXP", "userLevelExp", "exp"]), 0)));
+    profile.totalExp = "0";
+    importedSystems.accountProgress = true;
+  }
+
   const birthDayData = normalizeImportedBirthDayData(systems.birthDayData);
   if (birthDayData) {
     profile.birthDayData = birthDayData;
@@ -547,7 +555,7 @@ function applyOfficialSnapshotToLocalProfile(profile, options = {}) {
         if (mission && mission.source === "official-join-lobby") delete profile.completedMissions[key];
       }
       for (const mission of missionSnapshots) {
-        const key = `${mission.missionID}:${mission.groupId}`;
+        const key = mission.missionID === mission.groupId ? String(mission.missionID) : `${mission.missionID}:${mission.groupId}`;
         profile.completedMissions[key] = {
           ...(profile.completedMissions[key] || {}),
           ...mission,

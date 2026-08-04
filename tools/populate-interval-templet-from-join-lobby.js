@@ -7,7 +7,7 @@ const { getDefaultGameplayTablesDir } = require("../modules/gameplay-jsons");
 const ROOT_DIR = path.resolve(__dirname, "..");
 const DEFAULT_PAYLOAD = path.join(ROOT_DIR, "server-data", "captured-game-flow", "server_008_205.payload.bin");
 const INTERVAL_TABLE_RELATIVE = path.join("ab_script", "luac", "LUA_INTERVAL_TEMPLET.json");
-const COUNTRY_SUFFIXES = ["", "_UTC", "_KOR", "_CHN", "_TWN", "_SEA", "_JPN", "_NAEU", "_GLOBAL"];
+const COUNTRY_SUFFIXES = [""];
 
 function main() {
   loadDotEnv(path.join(ROOT_DIR, ".env"));
@@ -42,11 +42,15 @@ function main() {
     packetId: 205,
     payloadBase64: fs.readFileSync(payloadPath).toString("base64"),
   });
-  if (!response.ok) throw new Error(response.error || "failed to extract JOIN_LOBBY_ACK intervals");
-  const intervals = Array.isArray(response.intervals) ? response.intervals : [];
+  const userDbPath = path.resolve(args["user-db"] || path.join(ROOT_DIR, "server-data", "users.json"));
+  const intervals = response.ok
+    ? (Array.isArray(response.intervals) ? response.intervals : [])
+    : readOfficialSnapshotIntervals(userDbPath);
+  if (!response.ok && !intervals.length) throw new Error(response.error || "failed to extract JOIN_LOBBY_ACK intervals");
   if (!intervals.length) throw new Error("JOIN_LOBBY_ACK did not contain intervalData rows");
 
-  const table = buildIntervalTable(intervals, path.relative(ROOT_DIR, payloadPath));
+  const sourcePath = response.ok ? payloadPath : userDbPath;
+  const table = buildIntervalTable(intervals, path.relative(ROOT_DIR, sourcePath));
   const outputPaths = intervalOutputPaths();
   for (const outputPath of outputPaths) {
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
@@ -55,6 +59,15 @@ function main() {
 
   console.log(`[interval-templet] wrote ${table.recordCount} official captured interval row(s)`);
   for (const outputPath of outputPaths) console.log(`- ${path.relative(ROOT_DIR, outputPath)}`);
+}
+
+function readOfficialSnapshotIntervals(userDbPath) {
+  if (!fs.existsSync(userDbPath)) return [];
+  const db = JSON.parse(fs.readFileSync(userDbPath, "utf8"));
+  return Object.values(db.users || {})
+    .map((user) => user && user.officialSnapshot && user.officialSnapshot.intervalData)
+    .filter(Array.isArray)
+    .sort((left, right) => right.length - left.length)[0] || [];
 }
 
 function buildIntervalTable(intervals, sourceLabel) {

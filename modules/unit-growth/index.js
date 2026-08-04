@@ -24,6 +24,7 @@ const {
   getArmyOperatorByUid,
   addUnitExp,
   enhanceUnitStats,
+  getNextUnitLimitBreakRank,
   limitBreakUnit,
   upgradeUnitSkill,
   tacticUpdateUnit,
@@ -42,7 +43,6 @@ const {
   removeOperatorUids,
 } = require("../unit");
 const {
-  getMaxLimitBreakRank,
   getPlayableShipIds,
   getShipLevelUpCosts,
   getShipMaxLevel,
@@ -763,10 +763,11 @@ function spendShipLevelUpCosts(user, costs) {
 }
 
 function spendLimitBreakCosts(user, unit) {
+  if (!unit) return [];
   const currentRank = Math.max(0, Number(unit && unit.limitBreakLevel) || 0);
-  const cap = getMaxLimitBreakRank({ maxLevel: 120 });
-  if (!unit || currentRank >= cap) return [];
-  const costs = getUnitLimitBreakCosts(unit.unitId, currentRank + 1);
+  const targetRank = getNextUnitLimitBreakRank(unit);
+  if (targetRank <= currentRank) return [];
+  const costs = getUnitLimitBreakCosts(unit.unitId, targetRank);
   const updatedByItem = new Map();
   for (const cost of costs) {
     const item = spendMiscItem(user, cost.itemId, cost.count);

@@ -7,10 +7,18 @@ const path = require('path');
 const {
   FROZEN_CLIENT_PATCH_REQUIREMENTS,
   createListenerReadinessGate,
+  estimateModSideRequiredBytes,
   normalizeExistingManagedDir,
+  progressFromLine,
   verifyGameplayCacheSource,
 } = require('./revivalside-launcher-backend');
 const { findCounterSideScriptBundleRoots } = require('../modules/counterside-install');
+const { ensureGameplayLuaCache, LUA_CACHE_MANIFEST_NAME } = require('../modules/gameplay-jsons');
+const {
+  applyLoginBackgroundTag,
+  getLoginBackgroundCatalog,
+  resolveLoginBackgroundItem,
+} = require('../modules/login-background');
 
 function checkGameRootAssetbundlesDiscovery() {
   const gameRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'revivalside-launcher-'));
@@ -84,12 +92,71 @@ function checkFrozenGameplayCacheSource() {
   }
 }
 
+function checkGameplayCacheRelocation() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'revivalside-cache-relocation-'));
+  try {
+    const sourceRoot = path.join(root, 'source');
+    const frozenRoot = path.join(root, 'frozen');
+    const cacheRoot = path.join(root, 'cache');
+    const timestamp = new Date('2026-01-01T00:00:00Z');
+    for (const gameRoot of [sourceRoot, frozenRoot]) {
+      const managedDir = path.join(gameRoot, 'Data', 'Managed');
+      const bundleRoot = path.join(gameRoot, 'Assetbundles');
+      fs.mkdirSync(managedDir, { recursive: true });
+      fs.mkdirSync(bundleRoot, { recursive: true });
+      fs.writeFileSync(path.join(managedDir, 'Assembly-CSharp.dll'), 'fixture');
+      const bundle = path.join(bundleRoot, 'ab_script');
+      fs.writeFileSync(bundle, 'same bundle');
+      fs.utimesSync(bundle, timestamp, timestamp);
+    }
+    const requiredLua = path.join(cacheRoot, 'Assetbundles', 'ab_script', 'luac', 'LUA_STAGE_TEMPLET.luac');
+    fs.mkdirSync(path.dirname(requiredLua), { recursive: true });
+    fs.writeFileSync(requiredLua, 'cached');
+    const sourceBundle = path.join(sourceRoot, 'Assetbundles', 'ab_script');
+    const stat = fs.statSync(sourceBundle);
+    fs.writeFileSync(path.join(cacheRoot, LUA_CACHE_MANIFEST_NAME), JSON.stringify({
+      version: 2,
+      generatedAt: 'fixture',
+      managedDir: path.join(sourceRoot, 'Data', 'Managed'),
+      scriptRoots: [{ label: 'Assetbundles', root: path.join(sourceRoot, 'Assetbundles'), files: [{ name: 'ab_script', size: stat.size, mtimeMs: Math.trunc(stat.mtimeMs) }] }],
+      luacCount: 1,
+    }));
+
+    const frozenManaged = path.join(frozenRoot, 'Data', 'Managed');
+    assert.strictEqual(ensureGameplayLuaCache({ rootDir: root, managedDir: frozenManaged, cacheRoot, quiet: true }), cacheRoot);
+    const migrated = JSON.parse(fs.readFileSync(path.join(cacheRoot, LUA_CACHE_MANIFEST_NAME), 'utf8'));
+    assert.strictEqual(path.resolve(migrated.managedDir), path.resolve(frozenManaged));
+    assert.strictEqual(path.resolve(migrated.scriptRoots[0].root), path.resolve(path.join(frozenRoot, 'Assetbundles')));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 async function main() {
+  const backgrounds = getLoginBackgroundCatalog({ rootDir: path.join(__dirname, '..') });
+  assert.strictEqual(resolveLoginBackgroundItem(backgrounds, {
+    seedEntries: [{ source: { category: 'profile' }, intervalTags: ['DATE_GLOBAL_CLASSIFIED_CONTRACT_BORDER_HORSE'] }],
+  }).id, 91, 'automatic login background should follow the active event interval');
+  const selected = resolveLoginBackgroundItem(backgrounds, {}, '126');
+  assert.strictEqual(selected.id, 126, 'launcher override should select the requested login background');
+  assert.deepStrictEqual(
+    applyLoginBackgroundTag(['GLOBAL', 'LOGIN_DEFAULT', 'LOGIN_OLD'], selected),
+    ['GLOBAL', 'LOGIN_CLB004'],
+    'only the selected pre-login background tag should remain'
+  );
+  assert.strictEqual(estimateModSideRequiredBytes(7 * 1024 ** 3), 32 * 1024 ** 3);
+  assert.strictEqual(estimateModSideRequiredBytes(10 * 1024 ** 3), 45 * 1024 ** 3);
+  assert.strictEqual(progressFromLine('[50/100] bundle', 5, 95), 53);
+  assert.strictEqual(progressFromLine('not progress', 5, 95), null);
   checkGameRootAssetbundlesDiscovery();
   checkMissingClientMigration();
   checkFrozenGameplayCacheSource();
+  checkGameplayCacheRelocation();
   assert(FROZEN_CLIENT_PATCH_REQUIREMENTS.includes('frozen-contents-version-isolation=False'));
   assert(FROZEN_CLIENT_PATCH_REQUIREMENTS.includes('frozen-login-contents-reconciliation=False'));
+  assert(FROZEN_CLIENT_PATCH_REQUIREMENTS.includes('mod-string-loader=True'));
+  assert(FROZEN_CLIENT_PATCH_REQUIREMENTS.includes('mod-asset-bundle-loader=True'));
+  assert(FROZEN_CLIENT_PATCH_REQUIREMENTS.includes('mod-episode-ui=True'));
   const settings = { GamePort: 22000, HttpPort: 8088 };
   const gate = createListenerReadinessGate(settings, 1000);
   let resolved = false;
@@ -109,7 +176,19 @@ async function main() {
   timeoutGate.observe('[+] Listening on port 22000');
   await assert.rejects(timeoutGate.ready, /Missing: captured HTTP mirror, captured fixture directory, User Manager/);
 
-  console.log('[launcher-backend] PASS clean client-table audit, game-root bundles, missing-client handling, and four-service readiness');
+  const backendSource = fs.readFileSync(require.resolve('./revivalside-launcher-backend'), 'utf8');
+  assert.match(backendSource, /function snapshot\(\) \{[\s\S]*?ensureRuntimeLayout\(settings\)/);
+  const listenerService = backendSource.match(/async function startListenerService\(\)[\s\S]+?(?=async function startWikiService)/)[0];
+  const modSideService = backendSource.match(/async function startModSideService\(\)[\s\S]+?(?=async function startCaptureService)/)[0];
+  assert.doesNotMatch(listenerService, /combat-simulator|combatSide/);
+  assert.match(listenerService, /waitForChildren\(\[child\]\)/);
+  assert.match(modSideService, /combat-simulator[^\r\n]+server\.js/);
+  assert.match(modSideService, /waitForChildren\(\[child, combatSide\]\)/);
+  assert.match(backendSource, /serve-modside\.js/);
+  assert.match(backendSource, /emitService\('modside', 'running'/);
+  assert.match(backendSource, /launcher\/api\/warmup/);
+  assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', 'server', 'listener.js'), 'utf8'), /createAssetViewer|assetViewer\.handle/);
+  console.log('[launcher-backend] PASS login backgrounds, clean client-table audit, game-root bundles, missing-client handling, independent Mod:Side, Combat:Side lifecycle, and four-service readiness');
 }
 
 main().catch((error) => {

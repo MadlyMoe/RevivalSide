@@ -357,7 +357,7 @@ internal static class ManagedCombatBridge
 
         try
         {
-            runtime.InitializeClientTables();
+            runtime.InitializeClientTables(options.ContentsTags);
             return true;
         }
         catch (Exception ex)
@@ -394,6 +394,36 @@ internal static class ManagedCombatBridge
                 Ok = true,
                 TableJson = runtime.ExportLuaTableJson(data)
             };
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.ToString();
+            return false;
+        }
+    }
+
+    public static bool TryValidateUnitTemplets(
+        HostOptions options,
+        UnitTempletValidationData data,
+        out HostResponse? response,
+        out string? error)
+    {
+        response = null;
+        error = null;
+        var runtime = ManagedRuntime.TryLoad(options.ManagedDir, options.GameplayTablesDir, out error);
+        if (runtime == null) return false;
+        try
+        {
+            runtime.InitializeClientTables(options.ContentsTags);
+            var unitIds = (data.UnitIds ?? []).Where(id => id > 0).Distinct().OrderBy(id => id).ToArray();
+            var missing = runtime.FindMissingUnitTemplets(unitIds);
+            if (missing.Count > 0)
+            {
+                error = $"combat host did not load usable mod unit battle templates: {string.Join(",", missing)}";
+                return false;
+            }
+            response = new HostResponse { Ok = true, Summary = $"recognized unit IDs: {string.Join(",", unitIds)}" };
             return true;
         }
         catch (Exception ex)
@@ -466,7 +496,7 @@ internal static class ManagedCombatBridge
 
         try
         {
-            runtime.InitializeClientTables();
+            runtime.InitializeClientTables(options.ContentsTags);
             var payload = Convert.FromBase64String(data.PayloadBase64 ?? "");
             var packet = runtime.DeserializePacket(data.PacketId == 0 ? GameLoadAck : data.PacketId, payload);
             response = new HostResponse
@@ -508,7 +538,7 @@ internal static class ManagedCombatBridge
 
         try
         {
-            runtime.InitializeClientTables();
+            runtime.InitializeClientTables(options.ContentsTags);
             var payload = Convert.FromBase64String(data.PayloadBase64 ?? "");
             var packet = runtime.DeserializePacket(data.PacketId == 0 ? GameSync : data.PacketId, payload);
             response = new HostResponse
@@ -550,7 +580,7 @@ internal static class ManagedCombatBridge
 
         try
         {
-            runtime.InitializeClientTables();
+            runtime.InitializeClientTables(options.ContentsTags);
             var payload = Convert.FromBase64String(data.PayloadBase64 ?? "");
             var packet = runtime.DeserializePacket(data.PacketId == 0 ? GameLoadCompleteAck : data.PacketId, payload);
             response = new HostResponse
@@ -957,7 +987,7 @@ internal static class ManagedCombatBridge
 
         try
         {
-            runtime.InitializeClientTables();
+            runtime.InitializeClientTables(options.ContentsTags);
             object? gameData = null;
             if (!string.IsNullOrWhiteSpace(data.GameLoadAckPayloadBase64))
             {
@@ -1362,6 +1392,57 @@ internal static class ManagedCombatBridge
         }
     }
 
+    public static bool TryBuildTimeline(
+        TimelineCommandData data,
+        out HostResponse? response,
+        out string? error)
+    {
+        response = null;
+        if (!TryGetSession(data.DynamicGame, out var session, out error))
+        {
+            return false;
+        }
+
+        try
+        {
+            session.RememberBattleState(data.BattleState);
+            session.ApplyRuntimeControls(data.DynamicGame);
+            session.EnsureStarted();
+            var delta = (float)Math.Clamp(data.Delta ?? ManagedFrameDelta, 1.0 / 120.0, 0.1);
+            var frameCount = Math.Clamp(data.MaxFrames, 1, 600);
+            var frames = new List<CombatFrameSnapshot>(frameCount);
+            for (var index = 0; index < frameCount; index += 1)
+            {
+                session.UpdateAndDrain(delta, 1);
+                var frame = session.CaptureCombatFrame(data.StartIndex + index);
+                frames.Add(frame);
+                if (frame.Finished) break;
+            }
+
+            var last = frames[^1];
+            response = new HostResponse
+            {
+                Ok = true,
+                BattleState = data.BattleState,
+                Timeline = new CombatTimelineChunk
+                {
+                    Delta = delta,
+                    Finished = last.Finished,
+                    WinTeam = last.WinTeam,
+                    Frames = frames,
+                    Records = last.Finished ? session.CaptureBattleRecords() : []
+                }
+            };
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.ToString();
+            response = new HostResponse { Ok = false, Error = error };
+            return false;
+        }
+    }
+
     private static string? LastPayload(IEnumerable<HostPacket> packets, int packetId)
     {
         return packets.LastOrDefault(packet => packet.PacketId == packetId)?.PayloadBase64;
@@ -1404,6 +1485,9 @@ internal static class ManagedCombatBridge
         private float latestGameEndBattlePlayTime = -1f;
         private int latestGameEndFiercePoint = -1;
         private int latestGameEndFiercePenaltyPoint = -1;
+        private readonly Dictionary<int, VisualEffectClock> visualEffectClocks = [];
+        private readonly List<ActiveClientEffect> activeClientEffects = [];
+        private int nextClientEffectUid = -1;
 
         public ManagedCombatSession(string sessionId, ManagedRuntime runtime, object server, List<HostPacket> setupPackets, DynamicGameState? dynamicGame)
         {
@@ -1715,6 +1799,325 @@ internal static class ManagedCombatBridge
                 return $"snapshotError={ex.GetType().Name}";
             }
         }
+
+        public CombatFrameSnapshot CaptureCombatFrame(int index)
+        {
+            var runtimeData = runtime.Invoke(server, "GetGameRuntimeData");
+            if (runtimeData == null) throw new InvalidOperationException("managed combat runtime is unavailable");
+            var gameData = runtime.Invoke(server, "GetGameData");
+            var state = Convert.ToString(runtime.GetField(runtimeData, "m_NKM_GAME_STATE"), CultureInfo.InvariantCulture) ?? "";
+            var teamA = runtime.GetField(runtimeData, "m_NKMGameRuntimeTeamDataA");
+            var teamB = runtime.GetField(runtimeData, "m_NKMGameRuntimeTeamDataB");
+            var frame = new CombatFrameSnapshot
+            {
+                Index = index,
+                GameState = state,
+                GameTime = ReadFloat(runtime.GetField(runtimeData, "m_GameTime"), 0f),
+                PlayTime = ReadFloat(runtime.Invoke(runtimeData, "GetGamePlayTime"), 0f),
+                RemainGameTime = ReadFloat(runtime.GetField(runtimeData, "m_fRemainGameTime"), 0f),
+                WaveId = ReadInt(runtime.GetField(runtimeData, "m_WaveID"), 0),
+                WinTeam = ReadInt(runtime.GetField(runtimeData, "m_WinTeam"), 0),
+                Finished = string.Equals(state, "NGS_FINISH", StringComparison.Ordinal) ||
+                    string.Equals(state, "NGS_END", StringComparison.Ordinal) ||
+                    ReadBool(runtime.GetField(runtimeData, "m_bGameEnded"), false),
+                RespawnCostA = ReadFloat(runtime.GetField(teamA!, "m_fRespawnCost"), 0f),
+                RespawnCostB = ReadFloat(runtime.GetField(teamB!, "m_fRespawnCost"), 0f),
+                AutoUltimateEnabled = string.Equals(
+                    Convert.ToString(runtime.GetField(teamA!, "m_NKM_GAME_AUTO_SKILL_TYPE"), CultureInfo.InvariantCulture),
+                    "NGST_AUTO",
+                    StringComparison.Ordinal),
+                MainUnitUidA = ReadMainUnitUid(gameData, "m_NKMGameTeamDataA"),
+                MainUnitUidB = ReadMainUnitUid(gameData, "m_NKMGameTeamDataB"),
+                Units = CaptureCombatUnits(),
+                Effects = []
+            };
+            frame.Effects.AddRange(CaptureCombatEffects());
+            frame.Effects.AddRange(CaptureClientEventEffects((float)frame.GameTime));
+            return frame;
+        }
+
+        private int ReadMainUnitUid(object? gameData, string teamField)
+        {
+            var team = gameData == null ? null : runtime.GetField(gameData, teamField);
+            var mainUnit = team == null ? null : runtime.GetField(team, "m_MainShip");
+            if (mainUnit == null || runtime.GetField(mainUnit, "m_listGameUnitUID") is not IEnumerable gameUnitUids) return 0;
+            return gameUnitUids.Cast<object?>().Select(value => ReadInt(value, 0)).FirstOrDefault(value => value > 0);
+        }
+
+        public List<BattleUnitRecord> CaptureBattleRecords()
+        {
+            if (latestGameEndBattleRecords is { Count: > 0 } records)
+            {
+                return records.Select(CopyBattleRecord).ToList();
+            }
+
+            var gameRecord = runtime.GetField(server, "m_GameRecord");
+            gameRecord = BuildManagedGameRecordFromManagedState(gameRecord) ?? gameRecord;
+            return ExportManagedGameRecordRecords(gameRecord);
+        }
+
+        private List<CombatUnitSnapshot> CaptureCombatUnits()
+        {
+            var output = new List<CombatUnitSnapshot>();
+            if (runtime.GetField(server, "m_dicNKMUnit") is not IDictionary units) return output;
+            foreach (DictionaryEntry entry in units)
+            {
+                try
+                {
+                    if (entry.Value == null) continue;
+                    var unit = entry.Value;
+                    var unitData = runtime.Invoke(unit, "GetUnitData");
+                    var unitDataGame = runtime.Invoke(unit, "GetUnitDataGame");
+                    var sync = runtime.Invoke(unit, "GetUnitSyncData");
+                    var state = runtime.Invoke(unit, "GetUnitStateNow");
+                    var frame = runtime.Invoke(unit, "GetUnitFrameData");
+                    var templet = runtime.Invoke(unit, "GetUnitTemplet");
+                    var templetBase = runtime.Invoke(unit, "GetUnitTempletBase");
+                    var team = runtime.Invoke(unit, "GetTeam");
+                    var skillData = runtime.Invoke(unit, "GetFastestCoolTimeSkillData");
+                    var hyperData = runtime.Invoke(unit, "GetFastestCoolTimeHyperSkillData");
+                    var skillStateName = Convert.ToString(skillData == null ? null : runtime.GetField(skillData, "m_StateName"), CultureInfo.InvariantCulture) ?? "";
+                    var hyperStateName = Convert.ToString(hyperData == null ? null : runtime.GetField(hyperData, "m_StateName"), CultureInfo.InvariantCulture) ?? "";
+                    var hyperState = hyperStateName.Length == 0 ? null : runtime.Invoke(unit, "GetUnitState", hyperStateName, true);
+                    var hasHyperSkill = hyperState != null && unitData != null && ReadBool(runtime.Invoke(
+                        unitData,
+                        "IsUnitSkillUnlockedByType",
+                        runtime.GetField(hyperState, "m_NKM_SKILL_TYPE")), false);
+                    var hyperSkillCooldown = hyperStateName.Length == 0 ? 0f : ReadFloat(runtime.Invoke(unit, "GetStateCoolTime", hyperStateName), 0f);
+                    var hyperSkillCooldownMax = hyperStateName.Length == 0 ? 0f : ReadFloat(runtime.Invoke(unit, "GetStateMaxCoolTime", hyperStateName), 0f);
+                    output.Add(new CombatUnitSnapshot
+                    {
+                        GameUnitUid = ReadInt(runtime.Invoke(unit, "GetUnitGameUID"), ReadInt(entry.Key, 0)),
+                        UnitUid = Convert.ToString(runtime.GetField(unitData!, "m_UnitUID"), CultureInfo.InvariantCulture) ?? "0",
+                        UnitId = ReadInt(runtime.GetField(unitData!, "m_UnitID"), 0),
+                        SkinId = ReadInt(runtime.GetField(unitData!, "m_SkinID"), 0),
+                        Level = ReadInt(runtime.GetField(unitData!, "m_UnitLevel"), 1),
+                        Team = ReadInt(team, 0),
+                        TeamName = Convert.ToString(team, CultureInfo.InvariantCulture) ?? "",
+                        Hp = ReadFloat(runtime.Invoke(unit, "GetHP"), 0f),
+                        MaxHp = ReadFloat(runtime.Invoke(unit, "GetMaxHP"), 0f),
+                        X = ReadFloat(runtime.GetField(sync!, "m_PosX"), 0f),
+                        Z = ReadFloat(runtime.GetField(sync!, "m_PosZ"), 0f),
+                        JumpY = ReadFloat(runtime.GetField(sync!, "m_JumpYPos"), 0f),
+                        Right = ReadBool(runtime.GetField(sync!, "m_bRight"), false),
+                        PlayState = Convert.ToString(runtime.GetField(sync!, "m_NKM_UNIT_PLAY_STATE"), CultureInfo.InvariantCulture) ?? "",
+                        TargetUid = ReadInt(runtime.GetField(sync!, "m_TargetUID"), 0),
+                        SubTargetUid = ReadInt(runtime.GetField(sync!, "m_SubTargetUID"), 0),
+                        StateId = ReadInt(runtime.GetField(sync!, "m_StateID"), 0),
+                        StateChangeCount = ReadInt(runtime.GetField(sync!, "m_StateChangeCount"), 0),
+                        StateName = Convert.ToString(runtime.GetField(state!, "m_StateName"), CultureInfo.InvariantCulture) ?? "",
+                        StateType = Convert.ToString(runtime.GetField(state!, "m_NKM_UNIT_STATE_TYPE"), CultureInfo.InvariantCulture) ?? "",
+                        SkillType = Convert.ToString(runtime.GetField(state!, "m_NKM_SKILL_TYPE"), CultureInfo.InvariantCulture) ?? "",
+                        Animation = Convert.ToString(runtime.GetField(state!, "m_AnimName"), CultureInfo.InvariantCulture) ?? "",
+                        StateTime = ReadFloat(runtime.GetField(frame!, "m_fStateTime"), 0f),
+                        AnimationTime = ReadFloat(runtime.GetField(frame!, "m_fAnimTime"), 0f),
+                        AnimationTimeMax = ReadFloat(runtime.GetField(frame!, "m_fAnimTimeMax"), 0f),
+                        AnimationLoop = ReadBool(runtime.GetField(state!, "m_bAnimLoop"), false),
+                        SkillCooldown = skillStateName.Length == 0 ? 0f : ReadFloat(runtime.Invoke(unit, "GetStateCoolTime", skillStateName), 0f),
+                        HyperSkillCooldown = hyperSkillCooldown,
+                        HyperSkillCooldownMax = hyperSkillCooldownMax,
+                        HasHyperSkill = hasHyperSkill,
+                        HyperSkillReady = hasHyperSkill && hyperSkillCooldown <= 0.0001f,
+                        SpriteScale = Math.Max(0.01f, ReadFloat(runtime.GetField(templet!, "m_SpriteScale"), 1f)),
+                        SpriteOffsetX = ReadFloat(runtime.GetField(templet!, "m_SpriteOffsetX"), 0f),
+                        SpriteOffsetY = ReadFloat(runtime.GetField(templet!, "m_SpriteOffsetY"), 0f),
+                        UnitSizeX = ReadFloat(runtime.GetField(templet!, "m_UnitSizeX"), 0f),
+                        UnitSizeY = ReadFloat(runtime.GetField(templet!, "m_UnitSizeY"), 0f),
+                        GaugeOffsetX = ReadFloat(runtime.GetField(templet!, "m_fGageOffsetX"), 0f),
+                        GaugeOffsetY = ReadFloat(runtime.GetField(templet!, "m_fGageOffsetY"), 0f),
+                        IsSummon = ReadBool(unitDataGame == null ? null : runtime.GetField(unitDataGame, "m_bSummonUnit"), false),
+                        UnitType = Convert.ToString(runtime.GetField(templetBase!, "m_NKM_UNIT_TYPE"), CultureInfo.InvariantCulture) ?? "",
+                        SpriteBundleName = Convert.ToString(runtime.GetField(templetBase!, "m_SpriteBundleName"), CultureInfo.InvariantCulture) ?? "",
+                        SpriteName = Convert.ToString(runtime.GetField(templetBase!, "m_SpriteName"), CultureInfo.InvariantCulture) ?? ""
+                    });
+                }
+                catch
+                {
+                    // A single malformed summon must not invalidate the frame.
+                }
+            }
+            return output.OrderBy(unit => unit.GameUnitUid).ToList();
+        }
+
+        private List<CombatEffectSnapshot> CaptureCombatEffects()
+        {
+            var output = new List<CombatEffectSnapshot>();
+            try
+            {
+                var manager = runtime.Invoke(server, "GetDEManager");
+                if (manager == null || runtime.GetField(manager, "m_dicNKMDamageEffect") is not IDictionary effects) return output;
+                foreach (DictionaryEntry entry in effects)
+                {
+                    try
+                    {
+                        if (entry.Value == null) continue;
+                        var effect = entry.Value;
+                        var data = runtime.Invoke(effect, "GetDEData");
+                        var templet = runtime.Invoke(effect, "GetTemplet");
+                        var state = runtime.GetField(effect, "m_EffectStateNow");
+                        var effectName = Convert.ToString(runtime.Invoke(templet!, "GetMainEffectName", ReadInt(runtime.Invoke(data!, "GetMasterSkinID"), 0)), CultureInfo.InvariantCulture)
+                            ?? Convert.ToString(runtime.GetField(templet!, "m_MainEffectName"), CultureInfo.InvariantCulture)
+                            ?? "";
+                        output.Add(new CombatEffectSnapshot
+                        {
+                            EffectUid = ReadInt(runtime.Invoke(effect, "GetDEUID"), ReadInt(entry.Key, 0)),
+                            EffectId = 0,
+                            EffectStrId = Convert.ToString(runtime.GetField(templet!, "m_DamageEffectID"), CultureInfo.InvariantCulture) ?? "",
+                            MasterUnitUid = ReadInt(runtime.GetField(data!, "m_MasterGameUnitUID"), 0),
+                            TargetUnitUid = ReadInt(runtime.GetField(data!, "m_TargetGameUnitUID"), 0),
+                            Team = ReadInt(runtime.GetField(data!, "m_NKM_TEAM_TYPE"), 0),
+                            X = ReadFloat(runtime.GetField(data!, "m_PosX"), 0f),
+                            Z = ReadFloat(runtime.GetField(data!, "m_PosZ"), 0f),
+                            JumpY = ReadFloat(runtime.GetField(data!, "m_JumpYPos"), 0f),
+                            Right = ReadBool(runtime.GetField(data!, "m_bRight"), false),
+                            StateName = Convert.ToString(runtime.GetField(state!, "m_StateName"), CultureInfo.InvariantCulture) ?? "",
+                            Animation = Convert.ToString(runtime.GetField(state!, "m_AnimName"), CultureInfo.InvariantCulture) ?? "",
+                            AnimationTime = ReadFloat(runtime.GetField(data!, "m_fAnimTime"), 0f),
+                            AnimationTimeMax = ReadFloat(runtime.GetField(data!, "m_fAnimTimeMax"), 0f),
+                            AnimationLoop = ReadBool(runtime.GetField(state!, "m_bAnimLoop"), false),
+                            ScaleFactor = ReadFloat(runtime.GetField(templet!, "m_fScaleFactor"), 1f),
+                            UseZScale = ReadBool(runtime.GetField(data!, "m_bUseZScale"), false),
+                            Rotation = ReadFloat(runtime.GetField(data!, "m_fAddRotate"), 0f),
+                            EffectBundleName = effectName,
+                            MainEffectName = effectName
+                        });
+                    }
+                    catch
+                    {
+                        // Effects are optional render metadata; keep the combat frame.
+                    }
+                }
+            }
+            catch
+            {
+                // Older managed clients may not expose the damage-effect manager.
+            }
+            return output.OrderBy(effect => effect.EffectUid).ToList();
+        }
+
+        private List<CombatEffectSnapshot> CaptureClientEventEffects(float gameTime)
+        {
+            var stateChanges = new Dictionary<int, int>();
+            if (runtime.GetField(server, "m_dicNKMUnit") is IDictionary units)
+            {
+                foreach (DictionaryEntry entry in units)
+                {
+                    try
+                    {
+                        if (entry.Value == null) continue;
+                        var unit = entry.Value;
+                        var unitUid = ReadInt(runtime.Invoke(unit, "GetUnitGameUID"), ReadInt(entry.Key, 0));
+                        var unitData = runtime.Invoke(unit, "GetUnitData");
+                        var sync = runtime.Invoke(unit, "GetUnitSyncData");
+                        var state = runtime.Invoke(unit, "GetUnitStateNow");
+                        var frame = runtime.Invoke(unit, "GetUnitFrameData");
+                        var stateChange = ReadInt(runtime.GetField(sync!, "m_StateChangeCount"), 0);
+                        var stateTime = ReadFloat(runtime.GetField(frame!, "m_fStateTime"), 0f);
+                        var animationTime = ReadFloat(runtime.GetField(frame!, "m_fAnimTime"), 0f);
+                        stateChanges[unitUid] = stateChange;
+                        var previous = visualEffectClocks.GetValueOrDefault(unitUid);
+                        var sameState = previous != null && previous.StateChange == stateChange;
+                        if (runtime.GetField(state!, "m_listNKMEventEffect") is IEnumerable events)
+                        {
+                            foreach (var eventEffect in events.Cast<object>())
+                            {
+                                var useAnimationTime = ReadBool(runtime.GetField(eventEffect, "m_bAnimTime"), false);
+                                var now = useAnimationTime ? animationTime : stateTime;
+                                var before = sameState ? (useAnimationTime ? previous!.AnimationTime : previous!.StateTime) : -0.001f;
+                                if (now < before) before = -0.001f;
+                                var eventTime = ReadFloat(runtime.GetField(eventEffect, "m_fEventTime"), 0f);
+                                if (eventTime <= before + 0.0001f || eventTime > now + 0.0001f) continue;
+                                var effectName = Convert.ToString(runtime.Invoke(eventEffect, "GetEffectName", unitData!), CultureInfo.InvariantCulture)
+                                    ?? Convert.ToString(runtime.GetField(eventEffect, "m_EffectName"), CultureInfo.InvariantCulture)
+                                    ?? "";
+                                if (effectName.Length == 0) continue;
+                                var right = ReadBool(runtime.GetField(sync!, "m_bRight"), false);
+                                var forceRight = ReadBool(runtime.GetField(eventEffect, "m_bForceRight"), false);
+                                if (forceRight) right = true;
+                                var fixedPosition = ReadBool(runtime.GetField(eventEffect, "m_bFixedPos"), false);
+                                var offsetX = ReadFloat(runtime.GetField(eventEffect, "m_OffsetX"), 0f);
+                                var offsetY = ReadFloat(runtime.GetField(eventEffect, "m_OffsetY"), 0f);
+                                var offsetZ = ReadFloat(runtime.GetField(eventEffect, "m_OffsetZ"), 0f);
+                                var useOffsetZtoY = ReadBool(runtime.GetField(eventEffect, "m_bUseOffsetZtoY"), false);
+                                var unitX = ReadFloat(runtime.GetField(sync!, "m_PosX"), 0f);
+                                var unitZ = ReadFloat(runtime.GetField(sync!, "m_PosZ"), 0f);
+                                var jumpY = ReadFloat(runtime.GetField(sync!, "m_JumpYPos"), 0f);
+                                var hold = ReadBool(runtime.GetField(eventEffect, "m_bHold"), false);
+                                var stopOnStateChange = hold || ReadBool(runtime.GetField(eventEffect, "m_bStateEndStop"), false);
+                                var startTime = gameTime + Math.Max(0f, ReadFloat(runtime.GetField(eventEffect, "m_fReserveTime"), 0f));
+                                var snapshot = new CombatEffectSnapshot
+                                {
+                                    EffectUid = nextClientEffectUid--,
+                                    EffectStrId = effectName,
+                                    MasterUnitUid = unitUid,
+                                    TargetUnitUid = ReadInt(runtime.GetField(sync!, "m_TargetUID"), 0),
+                                    Team = ReadInt(runtime.Invoke(unit, "GetTeam"), 0),
+                                    X = fixedPosition ? offsetX : unitX + (right ? offsetX : -offsetX),
+                                    Z = fixedPosition ? offsetZ : unitZ + (useOffsetZtoY ? 0f : offsetZ),
+                                    JumpY = fixedPosition ? offsetY - offsetZ : jumpY + offsetY + (useOffsetZtoY ? offsetZ : 0f),
+                                    Right = right,
+                                    StateName = Convert.ToString(runtime.GetField(state!, "m_StateName"), CultureInfo.InvariantCulture) ?? "",
+                                    Animation = Convert.ToString(runtime.GetField(eventEffect, "m_AnimName"), CultureInfo.InvariantCulture) ?? "",
+                                    AnimationTimeMax = stopOnStateChange ? 10f : 1.5f,
+                                    ScaleFactor = Math.Max(0.01f, ReadFloat(runtime.GetField(eventEffect, "m_fScaleFactor"), 1f)),
+                                    UseZScale = ReadBool(runtime.GetField(eventEffect, "m_bUseZScale"), false),
+                                    Rotation = ReadFloat(runtime.GetField(eventEffect, "m_fAddRotate"), 0f),
+                                    OffsetX = offsetX,
+                                    OffsetY = offsetY,
+                                    OffsetZ = offsetZ,
+                                    UseOffsetZtoY = useOffsetZtoY,
+                                    FixedPosition = fixedPosition,
+                                    FollowMaster = !fixedPosition && stopOnStateChange,
+                                    ForceRight = forceRight,
+                                    LandConnect = ReadBool(runtime.GetField(eventEffect, "m_bLandConnect"), false),
+                                    UseBoneRotate = ReadBool(runtime.GetField(eventEffect, "m_bUseBoneRotate"), false),
+                                    ClientEvent = true,
+                                    ParentType = Convert.ToString(runtime.GetField(eventEffect, "m_ParentType"), CultureInfo.InvariantCulture) ?? "",
+                                    BoneName = Convert.ToString(runtime.GetField(eventEffect, "m_BoneName"), CultureInfo.InvariantCulture) ?? "",
+                                    EffectBundleName = effectName,
+                                    MainEffectName = effectName
+                                };
+                                activeClientEffects.Add(new ActiveClientEffect(snapshot, startTime, startTime + snapshot.AnimationTimeMax, unitUid, stateChange, stopOnStateChange));
+                            }
+                        }
+                        visualEffectClocks[unitUid] = new VisualEffectClock(stateChange, stateTime, animationTime);
+                    }
+                    catch
+                    {
+                        // Client-only visuals must not interrupt the authoritative simulation.
+                    }
+                }
+            }
+
+            activeClientEffects.RemoveAll(active => gameTime > active.EndTime ||
+                active.StopOnStateChange && stateChanges.GetValueOrDefault(active.OwnerUid, -1) != active.OwnerStateChange);
+            return activeClientEffects
+                .Where(active => gameTime >= active.StartTime)
+                .Select(active => CopyEffect(active.Effect, gameTime - active.StartTime))
+                .ToList();
+        }
+
+        private static CombatEffectSnapshot CopyEffect(CombatEffectSnapshot source, float animationTime)
+        {
+            return new CombatEffectSnapshot
+            {
+                EffectUid = source.EffectUid, EffectId = source.EffectId, EffectStrId = source.EffectStrId,
+                MasterUnitUid = source.MasterUnitUid, TargetUnitUid = source.TargetUnitUid, Team = source.Team,
+                X = source.X, Z = source.Z, JumpY = source.JumpY, Right = source.Right,
+                StateName = source.StateName, Animation = source.Animation, AnimationTime = animationTime,
+                AnimationTimeMax = source.AnimationTimeMax, AnimationLoop = source.AnimationLoop,
+                ScaleFactor = source.ScaleFactor, UseZScale = source.UseZScale, Rotation = source.Rotation,
+                OffsetX = source.OffsetX, OffsetY = source.OffsetY, OffsetZ = source.OffsetZ,
+                UseOffsetZtoY = source.UseOffsetZtoY, FixedPosition = source.FixedPosition,
+                FollowMaster = source.FollowMaster, ForceRight = source.ForceRight,
+                LandConnect = source.LandConnect, UseBoneRotate = source.UseBoneRotate,
+                ClientEvent = source.ClientEvent, ParentType = source.ParentType, BoneName = source.BoneName,
+                EffectBundleName = source.EffectBundleName, MainEffectName = source.MainEffectName
+            };
+        }
+
+        private sealed record VisualEffectClock(int StateChange, float StateTime, float AnimationTime);
+        private sealed record ActiveClientEffect(CombatEffectSnapshot Effect, float StartTime, double EndTime, int OwnerUid, int OwnerStateChange, bool StopOnStateChange);
 
         private string DescribeUnitDictionary(object? dictionary)
         {
@@ -3123,6 +3526,22 @@ internal static class ManagedCombatBridge
             }
         }
 
+        public List<int> FindMissingUnitTemplets(IEnumerable<int> unitIds)
+        {
+            var manager = GetType("NKM.NKMUnitManager");
+            var getBase = manager.GetMethod("GetUnitTempletBase", BindingFlags.Public | BindingFlags.Static, null, [typeof(int)], null)
+                ?? throw new MissingMethodException(manager.FullName, "GetUnitTempletBase(int)");
+            var getBattle = manager.GetMethod("GetUnitTemplet", BindingFlags.Public | BindingFlags.Static, null, [typeof(int)], null)
+                ?? throw new MissingMethodException(manager.FullName, "GetUnitTemplet(int)");
+            return unitIds.Where(id =>
+            {
+                var battle = getBattle.Invoke(null, [id]);
+                return getBase.Invoke(null, [id]) == null
+                    || battle == null
+                    || CountCollection(GetField(battle, "m_dicNKMUnitState")) == 0;
+            }).ToList();
+        }
+
         private static Dictionary<string, object?> BuildExportedLuaGlobals(object luaServer, IDictionary globals, HashSet<string> beforeKeys)
         {
             var exported = new Dictionary<string, object?>(StringComparer.Ordinal);
@@ -3135,9 +3554,18 @@ internal static class ManagedCombatBridge
             return exported;
         }
 
-        public void InitializeClientTables()
+        public void InitializeClientTables(IReadOnlyList<string>? contentsTags)
         {
             if (clientTablesInitialized) return;
+            var tags = (contentsTags ?? [])
+                .Select(tag => (tag ?? "").Trim())
+                .Where(tag => tag.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(tag => tag, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            GetType("NKC.NKCContentsVersionManager")
+                .GetMethod("SetTagList", BindingFlags.Public | BindingFlags.Static, null, [typeof(IReadOnlyList<string>)], null)!
+                .Invoke(null, [tags]);
             var nkcMainType = GetType("NKC.NKCMain");
             nkcMainType.GetMethod("NKCInit", BindingFlags.Public | BindingFlags.Static)!.Invoke(null, null);
             LoadOptionalStaticTable("NKM.NKMBattleConditionManager", "LoadFromLua");

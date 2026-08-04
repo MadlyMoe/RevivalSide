@@ -20,6 +20,8 @@ function createCombatHandler(options = {}) {
     timeoutMs: config.CSHARP_COMBAT_HOST_TIMEOUT_MS,
     managedDir: config.COUNTERSIDE_MANAGED_DIR,
     gameplayTablesDir: config.GAMEPLAY_TABLES_DIR,
+    modTablesDir: config.MOD_TABLES_DIR,
+    contentsTags: config.CONTENTS_TAGS,
     dotnetPath: config.CSHARP_COMBAT_HOST_DOTNET,
     responseBufferBytes: config.CSHARP_COMBAT_HOST_RESPONSE_BUFFER_BYTES,
     syncIntervalSeconds: Number(config.MANAGED_HOST_TICK_INTERVAL_MS || 33) / 1000,
@@ -33,13 +35,22 @@ function createCombatHandler(options = {}) {
     defaultDeployedUnitHp: options.defaultDeployedUnitHp,
   });
   let csharpWarningPrinted = false;
+  const modUnitIds = String(process.env.CS_MOD_UNIT_IDS || "").split(",").map(Number).filter((id) => Number.isSafeInteger(id) && id > 0);
   if (csharpHost.enabled) {
     const warmup = csharpHost.request("warmup", {});
     if (warmup.ok) {
       console.log(`[combat-host] warmup ok host=${csharpHost.hostPath}`);
+      if (modUnitIds.length) {
+        const validation = csharpHost.request("validateUnitTemplets", { unitIds: modUnitIds });
+        if (!validation.ok) throw new Error(`[combat-host] ${validation.error || "active mod units were not loaded"}`);
+        console.log(`[combat-host] ${validation.summary}`);
+      }
     } else {
+      if (modUnitIds.length) throw new Error(`[combat-host] active unit mods require a working managed host: ${warmup.error || "warmup failed"}`);
       warnCsharpFallback(warmup.error);
     }
+  } else if (modUnitIds.length) {
+    throw new Error("[combat-host] active unit mods require the managed combat host");
   }
   const tickEngine = createTickEngine({
     combatStateId: options.combatStateId,

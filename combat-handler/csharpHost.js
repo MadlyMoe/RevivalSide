@@ -18,6 +18,8 @@ function createCsharpCombatHost(options = {}) {
   const timeoutMs = Number(options.timeoutMs || 5000);
   const managedDir = options.managedDir || "";
   const gameplayTablesDir = options.gameplayTablesDir || "";
+  const modTablesDir = String(options.modTablesDir || process.env.CS_MOD_TABLES_DIR || "").split(path.delimiter).find(Boolean) || "";
+  const contentsTags = Array.isArray(options.contentsTags) ? options.contentsTags.map(String).filter(Boolean) : [];
   const dotnetPath = options.dotnetPath || findPreferredDotnetRuntime(managedDir);
   const buildDotnetPath = options.buildDotnetPath || process.env.CS_DOTNET_BUILD_PATH || "dotnet";
   const responseBufferBytes = Number(options.responseBufferBytes || 16 * 1024 * 1024);
@@ -25,17 +27,14 @@ function createCsharpCombatHost(options = {}) {
   let lastError = "";
   let worker = null;
   let workerDllPath = "";
+  let workerRuntimeHash = "";
+  let validatedRuntimeHash = "";
 
   function ensureReady() {
     if (!enabled) return false;
     const dllPath = resolveHostDllPath();
     if (ready && worker && workerDllPath === dllPath && fs.existsSync(dllPath)) return true;
-    if (worker && workerDllPath !== dllPath) {
-      worker.terminate();
-      worker = null;
-      ready = false;
-      workerDllPath = "";
-    }
+    if (worker && workerDllPath !== dllPath) stopWorker();
     if (needsHostPublish(dllPath)) {
       const outDir = path.dirname(dllPath);
       fs.mkdirSync(outDir, { recursive: true });
@@ -67,25 +66,50 @@ function createCsharpCombatHost(options = {}) {
     if (!ready) lastError = `missing combat host dll: ${dllPath}`;
     if (ready && !worker) {
       const runDirectly = /\.exe$/i.test(dllPath);
-      worker = new Worker(path.join(__dirname, "csharpHostWorker.js"), {
-        workerData: { hostPath: dllPath, dotnetPath, runDirectly },
+      const hostWorker = new Worker(path.join(__dirname, "csharpHostWorker.js"), {
+        workerData: { hostPath: dllPath, dotnetPath, runDirectly, modTablesDir },
       });
+      worker = hostWorker;
       workerDllPath = dllPath;
-      if (typeof worker.unref === "function") worker.unref();
-      worker.on("error", (err) => {
+      workerRuntimeHash = readModRuntime().hash;
+      if (typeof hostWorker.unref === "function") hostWorker.unref();
+      hostWorker.on("error", (err) => {
+        if (worker !== hostWorker) return;
         lastError = err.stack || err.message;
         ready = false;
         worker = null;
         workerDllPath = "";
+        workerRuntimeHash = "";
+        validatedRuntimeHash = "";
       });
-      worker.on("exit", (code) => {
+      hostWorker.on("exit", (code) => {
+        if (worker !== hostWorker) return;
         if (code !== 0) lastError = `C# combat host worker exited ${code}`;
         ready = false;
         worker = null;
         workerDllPath = "";
+        workerRuntimeHash = "";
+        validatedRuntimeHash = "";
       });
     }
     return ready;
+  }
+
+  function stopWorker() {
+    const current = worker;
+    worker = null;
+    ready = false;
+    workerDllPath = "";
+    workerRuntimeHash = "";
+    validatedRuntimeHash = "";
+    if (!current) return Promise.resolve();
+    const sharedBuffer = new SharedArrayBuffer(4);
+    const header = new Int32Array(sharedBuffer);
+    try {
+      current.postMessage({ shutdown: true, sharedBuffer });
+      Atomics.wait(header, 0, 0, Math.min(timeoutMs, 2000));
+    } catch (_) {}
+    return current.terminate();
   }
 
   function resolveHostDllPath() {
@@ -102,9 +126,23 @@ function createCsharpCombatHost(options = {}) {
   }
 
   function request(command, data, requestOptions = {}) {
+    const runtime = readModRuntime();
+    const needsCurrentRuntime = command === "startBattle" || command === "validateUnitTemplets";
+    if (needsCurrentRuntime && worker && runtime.hash !== workerRuntimeHash) stopWorker();
     if (!ensureReady()) {
       return { ok: false, error: lastError || "C# combat host disabled" };
     }
+    if (command === "startBattle" && runtime.hash && validatedRuntimeHash !== runtime.hash && runtime.unitIds.length) {
+      const validation = sendRequest("validateUnitTemplets", { unitIds: runtime.unitIds });
+      if (!validation.ok) return { ok: false, error: `active mod units were not loaded: ${validation.error || "validation failed"}` };
+      validatedRuntimeHash = runtime.hash;
+    }
+    const response = sendRequest(command, data, requestOptions);
+    if (command === "validateUnitTemplets" && response.ok && runtime.hash) validatedRuntimeHash = runtime.hash;
+    return response;
+  }
+
+  function sendRequest(command, data, requestOptions = {}) {
     const input = buildHostInput(command, data, requestOptions);
     const sharedBuffer = new SharedArrayBuffer(8 + responseBufferBytes);
     const header = new Int32Array(sharedBuffer, 0, 2);
@@ -119,6 +157,19 @@ function createCsharpCombatHost(options = {}) {
     return parseHostResponse(stdout);
   }
 
+  function readModRuntime() {
+    if (!modTablesDir) return { hash: "", unitIds: [] };
+    try {
+      const manifest = JSON.parse(fs.readFileSync(path.join(path.resolve(modTablesDir), "mod-set.json"), "utf8"));
+      return {
+        hash: [manifest.hash, manifest.builtAt].filter(Boolean).join(":"),
+        unitIds: Array.isArray(manifest.unitIds) ? manifest.unitIds.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0) : [],
+      };
+    } catch {
+      return { hash: "", unitIds: [] };
+    }
+  }
+
   function buildHostInput(command, data, requestOptions = {}) {
     return JSON.stringify(
       {
@@ -126,6 +177,7 @@ function createCsharpCombatHost(options = {}) {
         options: {
           managedDir,
           gameplayTablesDir,
+          contentsTags,
           syncIntervalSeconds: Number(options.syncIntervalSeconds || 0.25),
           defaultUnitDamage: Number(options.defaultUnitDamage || 10),
           defaultUnitAttackRange: Number(options.defaultUnitAttackRange || 130),
@@ -159,6 +211,7 @@ function createCsharpCombatHost(options = {}) {
     enabled,
     ensureReady,
     request,
+    close: stopWorker,
     get hostPath() {
       return resolveHostDllPath();
     },

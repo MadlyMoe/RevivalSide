@@ -4,9 +4,12 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { URL } = require("url");
+const ROOT_DIR = path.resolve(__dirname, "..");
+loadDotEnv(path.join(ROOT_DIR, ".env"));
+const { activateInstalledModRuntime } = require("../modules/mod-loader");
+const modRuntime = activateInstalledModRuntime({ rootDir: ROOT_DIR, env: process.env });
 const { loadPacketHandlers } = require("./packetHandlerLoader");
 const { createUserManager } = require("./userManager");
-const ROOT_DIR = path.resolve(__dirname, "..");
 const { findCounterSideManagedDir } = require("../modules/counterside-install");
 const {
   applyActiveUserSelection,
@@ -33,6 +36,8 @@ const {
   isTutorialStageId,
   mapIdForStageDungeon: tutorialMapIdForStageDungeon,
   stageIdForDungeonId: tutorialStageIdForDungeonId,
+  hasTutorialCompletionMission,
+  TUTORIAL_COMPLETION_MISSION_IDS,
   TUTORIAL_STAGE_CHAIN,
 } = require("../stages/tutorialStage");
 const {
@@ -110,7 +115,6 @@ const {
   grantRewardRecord,
 } = require("../modules/reward");
 
-loadDotEnv(path.join(ROOT_DIR, ".env"));
 const {
   buildAttendanceData: buildSerializedAttendanceData,
   buildAttendanceIntervalDataList: buildSerializedAttendanceIntervalDataList,
@@ -120,6 +124,7 @@ const {
   loadShopCatalog,
   buildSerializedRandomShopData,
   getActiveEventShopState,
+  filterEventClockShopOpenTags,
   ensureActiveEventShopCurrencies,
 } = require("../modules/shop");
 const { getShopPurchaseHistories, getShopTotalPaidAmount } = require("../modules/resource");
@@ -140,6 +145,7 @@ const {
 } = require("../modules/contract");
 const { buildMyOfficeStateData: buildSerializedMyOfficeStateData } = require("../modules/office");
 const lobbyCustomization = require("../modules/lobby");
+const loginBackground = require("../modules/login-background");
 const simulation = require("../modules/simulation");
 const stamina = require("../modules/stamina");
 const collection = require("../modules/collection");
@@ -153,7 +159,9 @@ const {
   buildSupportUnitData: buildPersistedSupportUnitData,
   ensureSupportUnit,
 } = require("../modules/combat-roster");
-const { createEventManager, getActiveScheduledBannerIntervalTags } = require("../modules/event-manager");
+const {
+  createEventManager,
+} = require("../modules/event-manager");
 const { createServerTime } = require("../modules/server-time");
 const {
   getCapturedContentsTags,
@@ -454,7 +462,6 @@ const STATIC_COMBAT_STATS = Object.freeze({
   moveSpeed: 0,
   attackCooldown: Number(process.env.CS_STATIC_UNIT_ATTACK_COOLDOWN || 1.6),
 });
-const TUTORIAL_SKIP_WIN_MISSION_IDS = Object.freeze([999, 100]);
 const POST_TUTORIAL_GUIDE_MISSION_IDS = Object.freeze([340, 341, 345, 610]);
 const POST_TUTORIAL_GUIDE_REQUIREMENT_STAGE_IDS = Object.freeze({
   340: 11665, // Daily / Simulation guide after NKM_MAIN_BATTLE_EP1_2_4_ACT_BOSS_A
@@ -512,6 +519,8 @@ const serverTime = createServerTime({
   logger: (message) => console.log(message),
 });
 const runtimeEventManager = createRuntimeEventManager(eventManager);
+const LOGIN_BACKGROUND_MODE = String(process.env.CS_LOGIN_BACKGROUND || loginBackground.AUTO).trim();
+const LOGIN_BACKGROUND_CATALOG = loginBackground.getLoginBackgroundCatalog({ rootDir: ROOT_DIR, env: process.env });
 const EVENT_MANAGER_DIAGNOSTICS = envFlag("CS_EVENT_DIAGNOSTICS");
 const EVENT_CONTENTS_TAGS_ENABLED = envFlag("CS_EVENT_EMIT_CONTENTS_TAGS", "CS_EVENT_CONTENTS_TAGS");
 const EVENT_COUNTER_PASS_CONTENTS_TAGS_ENABLED = envFlagDefault(
@@ -604,6 +613,8 @@ const combatHandler = createCombatHandler({
     CSHARP_COMBAT_HOST_DOTNET,
     COUNTERSIDE_MANAGED_DIR,
     GAMEPLAY_TABLES_DIR,
+    MOD_TABLES_DIR: modRuntime.currentRoot,
+    CONTENTS_TAGS: getEffectiveContentsTags(CONTENTS_TAGS),
   },
   combatStateId: COMBAT_STATE_ID,
   defaultCombatStats: DEFAULT_COMBAT_STATS,
@@ -727,6 +738,12 @@ function logRuntimeConfig() {
   console.log(`[cfg] contentsTags=${CONTENTS_TAGS.length}`);
   const eventSummary = runtimeEventManager.getSummary();
   const serverTimeSummary = serverTime.getSummary();
+  const selectedLoginBackground = getActiveLoginBackground();
+  console.log(
+    `[cfg] loginBackground=${LOGIN_BACKGROUND_MODE || "auto"} resolved=${
+      selectedLoginBackground ? `${selectedLoginBackground.id}:${selectedLoginBackground.contentTag}` : "none"
+    } catalog=${LOGIN_BACKGROUND_CATALOG.length}`
+  );
   console.log(
     `[cfg] eventManager=${eventSummary.enabled ? "on" : "off"} clockDate=${
       eventSummary.dateIso || serverTimeSummary.eventDateKey || "(unset)"
@@ -1054,7 +1071,7 @@ function importLatestOfficialProfile(options = {}) {
 }
 
 function getJoinLobbyWarmupUsers() {
-  const maxUsers = clampInt(process.env.CS_LAUNCHER_WARMUP_JOIN_LOBBY_USERS, 1, 16, 4);
+  const maxUsers = clampInt(process.env.CS_LAUNCHER_WARMUP_JOIN_LOBBY_USERS, 1, 16, 1);
   const selected = [];
   const seen = new Set();
   const addUser = (user) => {
@@ -1202,7 +1219,8 @@ function takePrewarmedJoinLobbyAckPayload(user, options = {}) {
   const entry = prewarmedJoinLobbyAckPayloads.get(cacheKey);
   if (!entry || !Buffer.isBuffer(entry.payload)) return null;
   const ttlMs = clampInt(process.env.CS_PREWARMED_JOIN_LOBBY_ACK_TTL_MS, 1000, 600000, 300000);
-  if (Date.now() - Number(entry.preparedAtMs || 0) > ttlMs) {
+  const stateKey = getLobbyPreparationStateKey(getServerNowDate(), getMissionClockOptions());
+  if (entry.stateKey !== stateKey || Date.now() - Number(entry.preparedAtMs || 0) > ttlMs) {
     prewarmedJoinLobbyAckPayloads.delete(cacheKey);
     return null;
   }
@@ -3775,7 +3793,7 @@ function recordMainStoryDungeonClear(socket, dungeonId, battleState = null) {
     state.missionResults = { ...missionResults };
   }
   const saved = recordMainStoryDungeonClearForUser(user, resolvedDungeonId, resolvedStageId, state, {
-    save: USE_LOCAL_USER_DB ? saveUserDb : null,
+    save: null,
     forceMissionSuccess: false,
   });
   if (saved) {
@@ -4021,7 +4039,7 @@ function buildDungeonSkipAckPayload(socket, req = {}) {
       },
       battleState,
     };
-    const loot = grantStageClearLoot(user, dungeonId, stageId, { replay: fakeReplay });
+    const loot = grantStageClearLoot(user, dungeonId, stageId, { replay: fakeReplay, save: false });
     grantStageClearExp(user, stageId, dungeonId, loot.userExp > 0 ? { exp: loot.userExp } : undefined);
     if (isMainStoryDungeonId(dungeonId) && !isTutorialDungeonId(dungeonId)) {
       recordMainStoryDungeonClearForUser(user, dungeonId, stageId, battleState, {
@@ -4174,7 +4192,7 @@ function buildDynamicGameEndNotPayload(replay, override = {}) {
   const raidBattleResult = isRaidGame ? maybeRecordRaidBattleResultForReplay(replay, { ...override, battleState }, win) : null;
   const isDiveGame = !isRaidGame && (Number(dynamicGame.diveStageID || 0) > 0 || Number(dynamicGame.gameType || 0) === NGT_DIVE);
   const diveBattleResult = isDiveGame ? worldMap.completeDiveBattle(override.user, dynamicGame, battleState, { win, now: dateTimeBinaryNow() }) : null;
-  const stageLoot = !isRaidGame && !isDiveGame && win ? getOrGrantStageClearLoot(replay, override.user, dungeonId, stageId) : null;
+  const stageLoot = !isRaidGame && !isDiveGame && win ? getOrGrantStageClearLoot(replay, override.user, dungeonId, stageId, { save: false }) : null;
   const costItems = isRaidGame
     ? (raidBattleResult && raidBattleResult.costItems) || []
     : isDiveGame
@@ -5962,7 +5980,7 @@ function getDungeonUserExpReward(dungeonId) {
   return Math.max(0, Number(entry && entry.m_RewardUserEXP) || 0);
 }
 
-function getOrGrantStageClearLoot(replay, user, dungeonId, stageId) {
+function getOrGrantStageClearLoot(replay, user, dungeonId, stageId, options = {}) {
   const userUid = user && user.userUid ? String(toBigInt(user.userUid || 0)) : "";
   if (
     replay &&
@@ -5973,7 +5991,7 @@ function getOrGrantStageClearLoot(replay, user, dungeonId, stageId) {
     return replay.stageClearLoot;
   }
 
-  const result = grantStageClearLoot(user, dungeonId, stageId, { replay });
+  const result = grantStageClearLoot(user, dungeonId, stageId, { ...options, replay });
   if (replay && typeof replay === "object") replay.stageClearLoot = result;
   return result;
 }
@@ -5983,7 +6001,7 @@ function maybeGrantBattleStageClearLoot(replay, user, dungeonId, stageId, battle
   if (Number(replay.dynamicGame.dungeonID || 0) !== Number(dungeonId || 0)) return null;
   const state = battleState || replay.battleState || {};
   if (!isBattleWin(state)) return null;
-  return getOrGrantStageClearLoot(replay, user, dungeonId, stageId);
+  return getOrGrantStageClearLoot(replay, user, dungeonId, stageId, { save: false });
 }
 
 function grantStageClearLoot(user, dungeonId, stageId, options = {}) {
@@ -6045,7 +6063,7 @@ function grantStageClearLoot(user, dungeonId, stageId, options = {}) {
   if (unitExpDataList.length) reward.unitExpDataList = unitExpDataList;
   result.operatorExpApplied = combatExpResult.operatorExpApplied;
   result.changed = hasRewardPayload(reward) || combatExpResult.operatorExpApplied;
-  if (result.changed && USE_LOCAL_USER_DB) saveUserDb();
+  if (result.changed && USE_LOCAL_USER_DB && options.save !== false) saveUserDb();
   console.log(
     `[stage-loot] dungeonID=${dungeonId} stageID=${stageId} credits=${creditAmount} main=${
       mainReward.summary || "-"
@@ -6905,6 +6923,7 @@ function hasPersistedTutorialCompletion(user) {
   const tutorial = user.tutorial && typeof user.tutorial === "object" ? user.tutorial : null;
   if (user.loginFlow === "post-tutorial" || (tutorial && tutorial.loginMode === "post-tutorial")) return true;
   if (tutorial && tutorial.completed === true) return true;
+  if (hasTutorialCompletionMission(user)) return true;
 
   const phases = tutorial && tutorial.phases && typeof tutorial.phases === "object" ? tutorial.phases : null;
   if (
@@ -6999,9 +7018,9 @@ function resetTutorialProgressForUser(user, options = {}) {
     changed = true;
   }
   if (user.completedMissions && typeof user.completedMissions === "object") {
-    for (const missionId of TUTORIAL_SKIP_WIN_MISSION_IDS) {
-      if (Object.prototype.hasOwnProperty.call(user.completedMissions, String(missionId))) {
-        delete user.completedMissions[String(missionId)];
+    for (const [key, mission] of Object.entries(user.completedMissions)) {
+      if (TUTORIAL_COMPLETION_MISSION_IDS.includes(Number((mission && mission.missionID) || key))) {
+        delete user.completedMissions[key];
         changed = true;
       }
     }
@@ -9018,8 +9037,15 @@ function getActiveEventState() {
   return runtimeEventManager.getActiveEventState();
 }
 
-function getEventContentsTagsForContentsVersion() {
-  const state = getActiveEventState();
+function getActiveLoginBackground(state = getActiveEventState()) {
+  return loginBackground.resolveLoginBackgroundItem(
+    LOGIN_BACKGROUND_CATALOG,
+    state,
+    LOGIN_BACKGROUND_MODE
+  );
+}
+
+function getEventContentsTagsForContentsVersion(state = getActiveEventState()) {
   const fierceTags = getCurrentFierceSeasonTags();
   return filterCapturedContentsVersionTags(
     mergeTags(
@@ -9032,11 +9058,11 @@ function getEventContentsTagsForContentsVersion() {
 }
 
 function getEffectiveContentsTags(baseTags) {
-  if (FROZEN_SOURCE_CONTENTS_VERSION) {
-    return getFrozenContentsTags(capturedTcpProfiles, CONTENTS_VERSION, CONTENTS_TAGS, REQUIRED_CONTENTS_TAGS);
-  }
-  const eventTags = getEventContentsTagsForContentsVersion();
-  return mergeTags(getCapturedContentsVersionTags(), baseTags, REQUIRED_CONTENTS_TAGS, eventTags);
+  const state = getActiveEventState();
+  const tags = FROZEN_SOURCE_CONTENTS_VERSION
+    ? getFrozenContentsTags(capturedTcpProfiles, CONTENTS_VERSION, CONTENTS_TAGS, REQUIRED_CONTENTS_TAGS)
+    : mergeTags(getCapturedContentsVersionTags(), baseTags, REQUIRED_CONTENTS_TAGS, getEventContentsTagsForContentsVersion(state));
+  return loginBackground.applyLoginBackgroundTag(tags, getActiveLoginBackground(state));
 }
 
 function getCapturedContentsVersionTags() {
@@ -9057,21 +9083,9 @@ function filterCapturedContentsVersionTags(tags) {
   return (Array.isArray(tags) ? tags : []).filter((tag) => allowed.has(String(tag || "").toUpperCase()));
 }
 
-function stripInactiveEventContentsTags(baseTags, activeEventTags) {
-  if (!eventManager || !eventManager.config || !eventManager.config.enabled) return Array.isArray(baseTags) ? baseTags : [];
-  if (!eventManager.getKnownContentsTags) return Array.isArray(baseTags) ? baseTags : [];
-  const knownTags = new Set(eventManager.getKnownContentsTags().map((tag) => String(tag || "").toUpperCase()));
-  if (!knownTags.size) return Array.isArray(baseTags) ? baseTags : [];
-  const activeTags = new Set((Array.isArray(activeEventTags) ? activeEventTags : []).map((tag) => String(tag || "").toUpperCase()));
-  return (Array.isArray(baseTags) ? baseTags : []).filter((tag) => {
-    const key = String(tag || "").toUpperCase();
-    return !knownTags.has(key) || activeTags.has(key);
-  });
-}
-
 function getEffectiveOpenTags(baseTags) {
   const activeEventState = getActiveEventState();
-  return filterInactiveCustomOperatorOpenTags(
+  const openTags = filterInactiveCustomOperatorOpenTags(
     filterSuppressedOpenTags(
       mergeTags(
         baseTags,
@@ -9085,6 +9099,9 @@ function getEffectiveOpenTags(baseTags) {
     ),
     activeEventState.openTags
   );
+  return EVENT_SHOP_OPEN_TAGS_ENABLED
+    ? filterEventClockShopOpenTags(openTags, runtimeEventManager)
+    : openTags;
 }
 
 function filterSuppressedOpenTags(tags) {
@@ -9395,11 +9412,15 @@ function buildJoinLobbyAckPayload(user) {
   const fierceIntervalStrKeys = getFierceSeasonIntervalStrKeys();
   const eventShopMergeIntervalStrKeys =
     process.env.CS_JOIN_LOBBY_MERGE_EVENT_SHOP_INTERVALS !== "0" ? eventShopIntervalStrKeys : [];
+  const activeEventState = getActiveEventState();
+  const activeEventIntervalStrKeys = (activeEventState.intervalData || [])
+    .map((interval) => String(interval && interval.strKey || ""))
+    .filter(Boolean);
   const explicitMergeIntervalStrKeys = mergeTags(
     eventShopMergeIntervalStrKeys,
     fierceIntervalStrKeys,
     activeEventMissionIntervalStrKeys,
-    getActiveScheduledBannerIntervalTags(getActiveEventState())
+    activeEventIntervalStrKeys
   );
   const mergeExplicitIntervalsIntoOfficial = preserveOfficialContractData && explicitMergeIntervalStrKeys.length > 0;
   const inactiveEventIntervalStrKeys = getInactiveEventIntervalStrKeys(localIntervalData);
@@ -10427,7 +10448,9 @@ function dateTimeBinaryForDate(date) {
 function loadUserDb(filePath) {
   try {
     if (!fs.existsSync(filePath)) {
-      return normalizeUserDb({});
+      const starterPath = path.join(path.dirname(filePath), "starter-users.json");
+      if (!fs.existsSync(starterPath)) return normalizeUserDb({});
+      fs.copyFileSync(starterPath, filePath);
     }
     return normalizeUserDb(JSON.parse(fs.readFileSync(filePath, "utf8")));
   } catch (err) {

@@ -1,9 +1,9 @@
+const { randomInt } = require("crypto");
 const { grantMiscItem, grantSkin, grantEmoticon, toBigInt } = require("../inventory");
 const {
   getMiscItemTemplet,
   getRandomBoxRewards,
   getCustomPackageRewards,
-  getAcqPackageRewards,
   getUnitTemplet,
   getMaxLimitBreakRank,
 } = require("../game-data");
@@ -140,10 +140,6 @@ function expandMiscItemReward(ctx, user, itemId, count = 1, options = {}) {
 
   if (type === "IMT_PACKAGE" && groupId > 0) {
     for (let index = 0; index < Math.max(1, count); index += 1) {
-      const packageRows = getAcqPackageRewards(itemId);
-      if (packageRows.length) {
-        for (const record of packageRows) mergeReward(total, grantAcqPackageRecord(ctx, user, record, { ...options, depth: depth + 1, regDate }));
-      }
       const records = getRandomBoxRewards(groupId);
       for (const record of records) {
         mergeReward(total, grantRewardRecord(ctx, user, record, { ...options, depth: depth + 1, regDate, sourceItem: item }));
@@ -153,9 +149,21 @@ function expandMiscItemReward(ctx, user, itemId, count = 1, options = {}) {
   }
 
   if (type === "IMT_RANDOMBOX" && groupId > 0) {
+    if (options.openRandomBoxes !== true || depth > 0) return null;
     for (let index = 0; index < Math.max(1, count); index += 1) {
-      const selected = pickWeightedRecord(getRandomBoxRewards(groupId), user, groupId);
-      if (selected) mergeReward(total, grantRewardRecord(ctx, user, selected, { ...options, depth: depth + 1, regDate, sourceItem: item }));
+      const selected = pickWeightedRecord(getRandomBoxRewards(groupId), options.randomInt);
+      if (selected) {
+        mergeReward(
+          total,
+          grantRewardRecord(ctx, user, selected, {
+            ...options,
+            depth: depth + 1,
+            regDate,
+            rollRewardRanges: true,
+            sourceItem: item,
+          })
+        );
+      }
     }
     return total;
   }
@@ -266,59 +274,61 @@ function compareChoiceRecords(left, right) {
 
 function grantRewardRecord(ctx, user, record, options = {}) {
   if (!record) return createEmptyReward();
+  const amounts = options.rollRewardRanges ? rollRewardAmounts(record, options.randomInt) : null;
   return grantRewardByType(
     ctx,
     user,
     record.m_RewardType,
     record.m_RewardID,
-    record.m_RewardValue != null ? record.m_RewardValue : record.m_Quantity_Min || record.m_FreeQuantity_Min || 1,
-    record.m_FreeValue != null ? record.m_FreeValue : record.m_FreeQuantity_Min,
-    record.m_PaidValue != null ? record.m_PaidValue : record.m_PaidQuantity_Min || 0,
-    { ...options, rewardRecord: record }
+    amounts ? amounts.total : record.m_RewardValue != null ? record.m_RewardValue : record.m_Quantity_Min || record.m_FreeQuantity_Min || 1,
+    amounts ? amounts.free : record.m_FreeValue != null ? record.m_FreeValue : record.m_FreeQuantity_Min,
+    amounts ? amounts.paid : record.m_PaidValue != null ? record.m_PaidValue : record.m_PaidQuantity_Min || 0,
+    {
+      ...options,
+      enchantExp: options.rollRewardRanges ? rollRecordRange(record, "m_EquipExp", 0, options.randomInt) : options.enchantExp,
+      rewardRecord: record,
+    }
   );
 }
 
-function grantAcqPackageRecord(ctx, user, record, options = {}) {
-  const reward = createEmptyReward();
-  for (let index = 1; index <= 8; index += 1) {
-    const type = record[`m_RewardType_${index}`];
-    const id = record[`m_RewardID_${index}`];
-    if (!type || !id) continue;
-    mergeReward(
-      reward,
-      grantRewardByType(
-        ctx,
-        user,
-        type,
-        id,
-        record[`m_RewardValue_${index}`] || 1,
-        record[`m_FreeValue_${index}`],
-        record[`m_PaidValue_${index}`] || 0,
-        { ...options, rewardRecord: record }
-      )
-    );
-  }
-  return reward;
-}
-
-function pickWeightedRecord(records, user, groupId) {
+function pickWeightedRecord(records, random = randomInt) {
   const list = Array.isArray(records) ? records.filter(Boolean) : [];
   if (!list.length) return null;
-  const totalWeight = list.reduce((sum, record) => sum + Math.max(0, Number(record.m_Ratio || 1)), 0);
+  const totalWeight = list.reduce((sum, record) => sum + Math.max(0, Math.trunc(Number(record.m_Ratio) || 0)), 0);
   if (totalWeight <= 0) return list[0];
 
-  const cursorRoot = user || {};
-  cursorRoot.localRewardCursors =
-    cursorRoot.localRewardCursors && typeof cursorRoot.localRewardCursors === "object" ? cursorRoot.localRewardCursors : {};
-  const key = String(groupId || "default");
-  const cursor = Number(cursorRoot.localRewardCursors[key] || 0);
-  cursorRoot.localRewardCursors[key] = cursor + 1;
-  let target = cursor % totalWeight;
+  let target = random(totalWeight);
   for (const record of list) {
-    target -= Math.max(0, Number(record.m_Ratio || 1));
+    target -= Math.max(0, Math.trunc(Number(record.m_Ratio) || 0));
     if (target < 0) return record;
   }
   return list[0];
+}
+
+function rollRewardAmounts(record, random) {
+  const total = rollRecordRange(record, "m_Quantity", 1, random);
+  const paid = rollRecordRange(record, "m_PaidQuantity", 0, random);
+  const free = hasRecordRange(record, "m_FreeQuantity")
+    ? sameRecordRange(record, "m_Quantity", "m_FreeQuantity")
+      ? total
+      : rollRecordRange(record, "m_FreeQuantity", Math.max(0, total - paid), random)
+    : Math.max(0, total - paid);
+  return { total, free, paid };
+}
+
+function rollRecordRange(record, prefix, fallback, random = randomInt) {
+  if (!hasRecordRange(record, prefix)) return fallback;
+  const min = Math.max(0, Math.trunc(Number(record[`${prefix}_Min`]) || 0));
+  const max = Math.max(min, Math.trunc(Number(record[`${prefix}_Max`]) || min));
+  return min === max ? min : min + random(max - min + 1);
+}
+
+function hasRecordRange(record, prefix) {
+  return record[`${prefix}_Min`] != null || record[`${prefix}_Max`] != null;
+}
+
+function sameRecordRange(record, left, right) {
+  return Number(record[`${left}_Min`]) === Number(record[`${right}_Min`]) && Number(record[`${left}_Max`]) === Number(record[`${right}_Max`]);
 }
 
 function normalizeNumberList(value) {

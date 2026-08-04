@@ -1350,12 +1350,12 @@ function hydrateEntriesWithIntervals(registry) {
       const interval = registry.intervalsByStrKey.get(tag);
       if (!interval) continue;
       entry.resolvedIntervalTag = interval.strKey || tag;
-      entry.resolvedStartDate = entry.resolvedStartDate || interval.startDate || null;
-      entry.resolvedEndDate = entry.resolvedEndDate || interval.endDate || null;
-      entry.resolvedRepeatStartDate = entry.resolvedRepeatStartDate || interval.repeatStartDate || null;
-      entry.resolvedRepeatEndDate = entry.resolvedRepeatEndDate || interval.repeatEndDate || null;
-      entry.resolvedRepeatStartDay = entry.resolvedRepeatStartDay || interval.repeatStartDay || 0;
-      entry.resolvedRepeatEndDay = entry.resolvedRepeatEndDay || interval.repeatEndDay || 0;
+      entry.resolvedStartDate = interval.startDate || entry.resolvedStartDate || null;
+      entry.resolvedEndDate = interval.endDate || entry.resolvedEndDate || null;
+      entry.resolvedRepeatStartDate = interval.repeatStartDate || entry.resolvedRepeatStartDate || null;
+      entry.resolvedRepeatEndDate = interval.repeatEndDate || entry.resolvedRepeatEndDate || null;
+      entry.resolvedRepeatStartDay = interval.repeatStartDay || entry.resolvedRepeatStartDay || 0;
+      entry.resolvedRepeatEndDay = interval.repeatEndDay || entry.resolvedRepeatEndDay || 0;
       break;
     }
   }
@@ -1676,8 +1676,8 @@ function inheritEntryWindow(entry, sourceEntry) {
   if (!sourceWindow.startDate && !sourceWindow.endDate) return entry;
   return {
     ...entry,
-    resolvedStartDate: sourceWindow.startDate || entry.resolvedStartDate || entry.startDate || null,
-    resolvedEndDate: sourceWindow.endDate || entry.resolvedEndDate || entry.endDate || null,
+    resolvedStartDate: entry.resolvedStartDate || entry.startDate || sourceWindow.startDate || null,
+    resolvedEndDate: entry.resolvedEndDate || entry.endDate || sourceWindow.endDate || null,
     inheritedWindowSource: sourceEntry.source
       ? {
           tableName: sourceEntry.source.tableName || "",
@@ -1800,6 +1800,11 @@ function resolveEntryWindow(entry, targetDate, config = {}) {
 function isEntryCompatibleWithTargetDate(entry, targetDate, config = {}) {
   if (!entry || !(targetDate instanceof Date) || Number.isNaN(targetDate.getTime())) return false;
   if (isEntryActiveAt(entry, targetDate)) return true;
+  if (
+    entry.resolvedStartDate || entry.startDate || entry.resolvedEndDate || entry.endDate ||
+    entry.resolvedRepeatStartDate || entry.repeatStartDate || entry.resolvedRepeatEndDate || entry.repeatEndDate ||
+    entry.resolvedRepeatStartDay || entry.repeatStartDay || entry.resolvedRepeatEndDay || entry.repeatEndDay
+  ) return false;
   const text = searchableEntryText(entry);
   if (!hasSeasonalDateToken(text)) return true;
   return isDateWithinWindow(targetDate, inferWindowFromEntryTokens(entry, targetDate, config));
@@ -2069,7 +2074,7 @@ function parseTableDate(value) {
   const text = String(value || "").trim();
   if (!text || text === "0") return null;
   const match = text.match(
-    /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?(?:\.(\d{1,3}))?(?:\s*(Z|[+-]\d{2}:?\d{2}))?$/
+    /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?(?:\.(\d{1,7}))?(?:\s*(Z|[+-]\d{2}:?\d{2}))?$/
   );
   if (match) {
     const year = Number(match[1]);
@@ -2078,7 +2083,7 @@ function parseTableDate(value) {
     const hour = Number(match[4] || 0);
     const minute = Number(match[5] || 0);
     const second = Number(match[6] || 0);
-    const millisecond = Number((match[7] || "").padEnd(3, "0") || 0);
+    const millisecond = Number((match[7] || "").slice(0, 3).padEnd(3, "0") || 0);
     const offset = match[8] || "";
     if (offset && offset !== "Z") {
       const normalizedOffset = offset.includes(":") ? offset : `${offset.slice(0, 3)}:${offset.slice(3)}`;
@@ -2183,30 +2188,6 @@ function collectUsableTags(entries, fieldName) {
   return uniqueStrings(
     entries.flatMap((entry) => (Array.isArray(entry[fieldName]) ? entry[fieldName] : [])).filter(isUsableTag)
   );
-}
-
-function getActiveScheduledBannerIntervalTags(state) {
-  const tags = [];
-  for (const entry of Array.isArray(state && state.officialScheduleEntries) ? state.officialScheduleEntries : []) {
-    const intervalTags = (entry.intervalTags || []).filter(isUsableTag);
-    const scheduleType = String(entry.raw && entry.raw.scheduleType || "").toLowerCase();
-    if (scheduleType === "contract") {
-      const groups = [
-        intervalTags.filter((tag) => tag.includes("CLASSIFIED_CONTRACT")),
-        intervalTags.filter((tag) => /CONTRACT_(?:OPR|OPERATOR)/.test(tag)),
-        intervalTags.filter((tag) => tag.includes("PICKUP_CONTRACT")),
-        intervalTags.filter((tag) => tag.includes("CONTRACT")),
-      ];
-      const candidates = groups.find((group) => group.length) || intervalTags;
-      const selected = candidates.find((tag) => tag.includes("_GLOBAL_") && !/_PR(?:_|$)/.test(tag))
-        || candidates.find((tag) => !/_PR(?:_|$)/.test(tag))
-        || candidates[0];
-      if (selected) tags.push(selected);
-    } else if (/PRESTIGE (?:SERVICE|SEASON)/i.test(String(entry.label || ""))) {
-      tags.push(...intervalTags);
-    }
-  }
-  return uniqueStrings(tags);
 }
 
 function summarizeEntry(entry) {
@@ -2347,7 +2328,6 @@ module.exports = {
   createEventManager,
   createEventTableReader,
   formatEventDiagnostics,
-  getActiveScheduledBannerIntervalTags,
   parseEventDateInput,
   readJsonTableFile,
   resolveEventManagerConfig,

@@ -1,4 +1,5 @@
 const assert = require("assert");
+const { spawnSync } = require("child_process");
 const fs = require("fs");
 const http = require("http");
 const os = require("os");
@@ -10,6 +11,7 @@ const { readActiveUserUid } = require("../modules/user-db-selection");
 
 async function main() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "revivalside-user-manager-"));
+  checkStarterUserSeed(tempDir);
   const userDbPath = path.join(tempDir, "users.json");
   const activeUserPath = path.join(tempDir, "active-user.json");
   const largeMarker = "profile-payload-marker-" + "x".repeat(2 * 1024 * 1024);
@@ -111,6 +113,42 @@ async function main() {
     await close(server);
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+}
+
+function checkStarterUserSeed(tempDir) {
+  const seedDir = path.join(tempDir, "starter-seed");
+  const starterPath = path.join(seedDir, "starter-users.json");
+  const userDbPath = path.join(seedDir, "users.json");
+  const dumpPath = path.join(seedDir, "join.bin");
+  fs.mkdirSync(seedDir);
+  fs.writeFileSync(starterPath, JSON.stringify({
+    schemaVersion: 1,
+    nextUserUid: "1000000002",
+    nextFriendCode: "10000002",
+    activeUserUid: "1000000001",
+    users: {
+      "1000000001": {
+        userUid: "1000000001",
+        friendCode: "10000001",
+        nickname: "Admin_3114263075",
+      },
+    },
+  }), "utf8");
+  const result = spawnSync(process.execPath, [path.join(__dirname, "..", "server", "listener.js")], {
+    cwd: path.join(__dirname, ".."),
+    env: {
+      ...process.env,
+      CS_USER_DB_PATH: userDbPath,
+      CS_ACTIVE_USER_PATH: path.join(seedDir, "active-user.json"),
+      CS_DUMP_JOIN_LOBBY_ACK_PAYLOAD: dumpPath,
+    },
+    encoding: "utf8",
+    timeout: 60_000,
+    windowsHide: true,
+  });
+  assert.strictEqual(result.status, 0, result.stderr || result.stdout || result.error);
+  const seededDb = JSON.parse(fs.readFileSync(userDbPath, "utf8"));
+  assert.strictEqual(seededDb.users[seededDb.activeUserUid].nickname, "Admin_3114263075");
 }
 
 function listen(server) {

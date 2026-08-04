@@ -65,6 +65,7 @@ function buildRandomItemBoxOpenAck(ctx, user, request) {
   const costItem = itemId > 0 ? spendMiscItem(user, itemId, count, { regDate: now(ctx) }) : null;
   const reward = grantRewardByType(ctx, user, "RT_MISC", itemId, count, count, 0, {
     expandPackages: true,
+    openRandomBoxes: true,
     regDate: now(ctx),
   });
   return {

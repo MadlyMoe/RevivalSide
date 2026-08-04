@@ -10,6 +10,14 @@ startChild();
 
 parentPort.on("message", (message) => {
   if (!message || !message.sharedBuffer) return;
+  if (message.shutdown) {
+    stopChild();
+    const header = new Int32Array(message.sharedBuffer);
+    Atomics.store(header, 0, 1);
+    Atomics.notify(header, 0, 1);
+    parentPort.close();
+    return;
+  }
   if (!child || child.killed || !child.stdin.writable) {
     complete(message.sharedBuffer, JSON.stringify({ ok: false, error: "C# combat host process is not running" }));
     return;
@@ -17,6 +25,8 @@ parentPort.on("message", (message) => {
   pending.push(message.sharedBuffer);
   child.stdin.write(`${message.input}\n`);
 });
+parentPort.on("close", stopChild);
+process.on("exit", stopChild);
 
 function startChild() {
   const runDirectly = Boolean(workerData.runDirectly);
@@ -25,6 +35,7 @@ function startChild() {
   child = spawn(fileName, args, {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
+    env: workerData.modTablesDir ? { ...process.env, CS_MOD_TABLES_DIR: workerData.modTablesDir } : process.env,
   });
 
   child.stdout.on("data", (chunk) => {
@@ -63,4 +74,9 @@ function complete(sharedBuffer, text) {
   }
   Atomics.store(header, 0, 1);
   Atomics.notify(header, 0, 1);
+}
+
+function stopChild() {
+  if (child && !child.killed) child.kill();
+  child = null;
 }

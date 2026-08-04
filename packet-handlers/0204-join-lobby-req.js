@@ -15,7 +15,9 @@ module.exports = {
     const joinReq = ctx.decodeJoinLobbyReq(packet.payload);
     const user = ctx.findUserByAccessToken(joinReq.accessToken) || socket.session.user || ctx.createEphemeralUser();
     socket.session.user = user;
-    if (ctx.config.USE_LOCAL_USER_DB && user.userUid) {
+    if (ctx.config.USE_LOCAL_USER_DB && user.userUid && typeof ctx.prepareUserLobbySession === "function") {
+      ctx.prepareUserLobbySession(user, { source: "join-lobby" });
+    } else if (ctx.config.USE_LOCAL_USER_DB && user.userUid) {
       const missionClock = ctx.getMissionClockOptions
         ? ctx.getMissionClockOptions()
         : { now: ctx.dateTimeBinaryNow ? ctx.dateTimeBinaryNow() : undefined };
@@ -44,8 +46,7 @@ module.exports = {
 
     if (ctx.config.REPLAY_CAPTURED_GAME_FLOW && ctx.capturedGameFlow) {
       if (ctx.shouldUseLocalJoinLobbyAck(user)) {
-        const joinLobbyPayload = ctx.buildJoinLobbyAckPayload(user);
-        if (ctx.config.USE_LOCAL_USER_DB && user.userUid) ctx.saveUserDb();
+        const joinLobbyPayload = takeOrBuildJoinLobbyPayload(ctx, user);
         if (shouldUseOfficialTutorialLobbyOrder(user)) {
           sendOfficialTutorialJoinLobby(ctx, socket, replay, joinLobbyPayload, user);
           return true;
@@ -107,8 +108,7 @@ module.exports = {
       return true;
     }
 
-    const joinLobbyPayload = ctx.buildJoinLobbyAckPayload(user);
-    if (ctx.config.USE_LOCAL_USER_DB && user.userUid) ctx.saveUserDb();
+    const joinLobbyPayload = takeOrBuildJoinLobbyPayload(ctx, user);
     if (shouldUseOfficialTutorialLobbyOrder(user)) {
       sendOfficialTutorialJoinLobby(ctx, socket, replay, joinLobbyPayload, user);
       return true;
@@ -152,6 +152,11 @@ module.exports = {
 function shouldUseOfficialTutorialLobbyOrder(user) {
   const tutorial = user && user.tutorial && typeof user.tutorial === "object" ? user.tutorial : null;
   return Boolean(tutorial && tutorial.enabled !== false && tutorial.completed !== true && tutorial.loginMode !== "post-tutorial");
+}
+
+function takeOrBuildJoinLobbyPayload(ctx, user) {
+  return (typeof ctx.takePrewarmedJoinLobbyAckPayload === "function" && ctx.takePrewarmedJoinLobbyAckPayload(user))
+    || ctx.buildJoinLobbyAckPayload(user);
 }
 
 function sendOfficialTutorialJoinLobby(ctx, socket, replay, joinLobbyPayload, user) {
@@ -198,6 +203,7 @@ function sendJoinLobbyRaidBootstrap(ctx, socket, user) {
       resultLabel: "join-lobby-raid-result-list",
       eventCancelLabel: "join-lobby-raid-event-clear",
       includeEmpty: true,
+      persist: false,
     });
   } catch (error) {
     console.log(`[join-lobby-raid] skipped bootstrap: ${error && error.message ? error.message : error}`);
