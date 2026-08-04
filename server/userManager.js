@@ -1,9 +1,15 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const {
+  applyActiveUserSelection,
+  resolveActiveUserPath,
+  writeActiveUserSelection,
+} = require("../modules/user-db-selection");
 
 const DEFAULT_MAX_BODY_BYTES = 50 * 1024 * 1024;
 const DEFAULT_MAX_BACKUPS = 25;
+const ARCHIVED_PROFILE_FIELDS = ["officialSnapshot", "officialJoinLobbySnapshot", "officialPacketSnapshot"];
 
 function createUserManager(options) {
   const config = {
@@ -13,6 +19,7 @@ function createUserManager(options) {
     maxBackups: Number(options.maxBackups || DEFAULT_MAX_BACKUPS),
     userDb: options.userDb,
     userDbPath: options.userDbPath,
+    activeUserPath: resolveActiveUserPath(options.userDbPath, options.activeUserPath || ""),
     saveUserDb: options.saveUserDb,
     ensureUserDefaults: options.ensureUserDefaults || ((user) => user),
     makeAccessToken: options.makeAccessToken || (() => crypto.randomBytes(16).toString("hex")),
@@ -77,7 +84,7 @@ async function routeRequest(config, html, req, res, requestUrl) {
       const body = await readJsonBody(req, config.maxBodyBytes, { allowEmpty: true });
       const user = createUser(config, body || {});
       persist(config, "create");
-      sendJson(res, 201, { user, users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
+      sendJson(res, 201, { user: buildUserSummary(config.userDb, user), users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
       return;
     }
   }
@@ -101,7 +108,7 @@ async function routeRequest(config, html, req, res, requestUrl) {
     rebuildUserDbIndexes(config.userDb);
     persist(config, "import-json-profile");
     sendJson(res, 201, {
-      user: imported.user,
+      user: buildUserSummary(config.userDb, imported.user),
       sourceUserUid: imported.sourceUserUid,
       users: buildUserSummaries(config.userDb),
       meta: buildDbMeta(config.userDb, config.userDbPath),
@@ -119,14 +126,14 @@ async function routeRequest(config, html, req, res, requestUrl) {
       replaceUserDb(config.userDb, nextDb);
       rebuildUserDbIndexes(config.userDb);
       persist(config, "replace-db");
-      sendJson(res, 200, { db: config.userDb, users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
+      sendJson(res, 200, { users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
       return;
     }
   }
 
   if (req.method === "POST" && pathname === `${apiPath}/reload`) {
     reloadUserDb(config);
-    sendJson(res, 200, { db: config.userDb, users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
+    sendJson(res, 200, { users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
     return;
   }
 
@@ -142,15 +149,20 @@ async function routeRequest(config, html, req, res, requestUrl) {
   if (!action) {
     if (req.method === "GET") {
       const user = getRequiredUser(config.userDb, uid);
-      sendJson(res, 200, { user, meta: buildDbMeta(config.userDb, config.userDbPath) });
+      const editorView = requestUrl.searchParams.get("view") === "editor";
+      const projected = editorView ? buildEditableUser(user) : { user, omittedFields: [] };
+      sendJson(res, 200, { ...projected, meta: buildDbMeta(config.userDb, config.userDbPath) });
       return;
     }
     if (req.method === "PUT") {
       const body = await readJsonBody(req, config.maxBodyBytes);
-      const user = replaceUser(config.userDb, uid, body && body.user && typeof body.user === "object" ? body.user : body);
+      const wrappedUser = body && body.user && typeof body.user === "object" ? body.user : body;
+      const user = replaceUser(config.userDb, uid, wrappedUser, {
+        preserveArchivedFields: Boolean(body && body.preserveArchivedFields),
+      });
       rebuildUserDbIndexes(config.userDb);
       persist(config, "save-user");
-      sendJson(res, 200, { user, users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
+      sendJson(res, 200, { user: buildUserSummary(config.userDb, user), users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
       return;
     }
     if (req.method === "DELETE") {
@@ -172,15 +184,14 @@ async function routeRequest(config, html, req, res, requestUrl) {
     const user = cloneUser(config, uid, body || {});
     rebuildUserDbIndexes(config.userDb);
     persist(config, "clone-user");
-    sendJson(res, 201, { user, users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
+    sendJson(res, 201, { user: buildUserSummary(config.userDb, user), users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
     return;
   }
 
   if (req.method === "POST" && action === "switch") {
     const user = switchActiveUser(config.userDb, uid);
-    rebuildUserDbIndexes(config.userDb);
-    persist(config, "switch-user");
-    sendJson(res, 200, { user, users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
+    persistActiveSelection(config, "switch-user");
+    sendJson(res, 200, { user: buildUserSummary(config.userDb, user), users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
     return;
   }
 
@@ -191,7 +202,7 @@ async function routeRequest(config, html, req, res, requestUrl) {
     user.lastTokenIssuedAt = new Date().toISOString();
     rebuildUserDbIndexes(config.userDb);
     persist(config, "tokens");
-    sendJson(res, 200, { user, users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
+    sendJson(res, 200, { user: buildUserSummary(config.userDb, user), users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
     return;
   }
 
@@ -200,7 +211,7 @@ async function routeRequest(config, html, req, res, requestUrl) {
     config.ensureUserDefaults(user);
     rebuildUserDbIndexes(config.userDb);
     persist(config, "repair-user");
-    sendJson(res, 200, { user, users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
+    sendJson(res, 200, { user: buildUserSummary(config.userDb, user), users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
     return;
   }
 
@@ -325,21 +336,28 @@ function chooseImportSourceUserUid(incomingDb) {
   throw httpError(400, "Imported users.json has multiple profiles and no activeUserUid; switch to the profile you want before copying it.");
 }
 
-function replaceUser(userDb, currentUid, incoming) {
+function replaceUser(userDb, currentUid, incoming, options = {}) {
   if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
     throw httpError(400, "User profile must be a JSON object.");
   }
   
   const existing = getRequiredUser(userDb, currentUid);
   const user = deepClone(incoming);
+  if (options.preserveArchivedFields) {
+    for (const field of ARCHIVED_PROFILE_FIELDS) {
+      if (!Object.prototype.hasOwnProperty.call(user, field) && Object.prototype.hasOwnProperty.call(existing, field)) {
+        user[field] = existing[field];
+      }
+    }
+  }
+  
   const nextUid = nonEmpty(user.userUid) || currentUid;
   user.userUid = nextUid;
   if (nextUid !== currentUid && userDb.users[nextUid]) {
     throw httpError(409, `User UID ${nextUid} already exists.`);
   }
 
-  // In-place update directly to running memory
-  // Ensure the game's TCP socket receives data immediately from the Serina save editor
+  // In-place update if the UID is unchanged
   if (nextUid === currentUid) {
     for (const key of Object.keys(existing)) delete existing[key];
     Object.assign(existing, user);
@@ -410,6 +428,19 @@ function buildSingleUserExport(userDb, uid) {
   };
 }
 
+function buildEditableUser(user) {
+  const projected = {};
+  const omittedFields = [];
+  for (const [key, value] of Object.entries(user || {})) {
+    if (ARCHIVED_PROFILE_FIELDS.includes(key)) {
+      omittedFields.push(key);
+      continue;
+    }
+    projected[key] = value;
+  }
+  return { user: projected, omittedFields };
+}
+
 function replaceUserDb(target, incoming) {
   if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
     throw httpError(400, "User database must be a JSON object.");
@@ -445,6 +476,7 @@ function reloadUserDb(config) {
   if (config.userDbPath && fs.existsSync(config.userDbPath)) {
     parsed = JSON.parse(fs.readFileSync(config.userDbPath, "utf8"));
   }
+  applyActiveUserSelection(parsed, config.activeUserPath);
   replaceUserDb(config.userDb, parsed);
   rebuildUserDbIndexes(config.userDb);
 }
@@ -480,35 +512,39 @@ function rebuildUserDbIndexes(userDb) {
 function buildUserSummaries(userDb) {
   return Object.values((userDb && userDb.users) || {})
     .filter((user) => user && typeof user === "object")
-    .map((user) => ({
-      userUid: String(user.userUid || ""),
-      isActive: String(user.userUid || "") === String(userDb && userDb.activeUserUid || ""),
-      friendCode: String(user.friendCode || ""),
-      nickname: String(user.nickname || ""),
-      level: Number(user.level || 0),
-      authLevel: Number(user.authLevel || 0),
-      createdAt: String(user.createdAt || ""),
-      lastLoginAt: String(user.lastLoginAt || ""),
-      lastJoinAt: String(user.lastJoinAt || ""),
-      steamStableId: String(user.steamStableId || ""),
-      deviceUid: String(user.deviceUid || ""),
-      importedOfficialProfile: Boolean(user.importedOfficialProfile || user.officialImport),
-      officialUserUid: String(user.officialImport && user.officialImport.officialUserUid || ""),
-      accessTokenPreview: previewSecret(user.accessToken),
-      reconnectKeyPreview: previewSecret(user.reconnectKey),
-      units: countObject(user.army && user.army.units),
-      ships: countObject(user.army && user.army.ships),
-      operators: countObject(user.army && user.army.operators),
-      equips: countObject(user.inventory && user.inventory.equips),
-      miscItems: countObject(user.inventory && user.inventory.misc),
-      stages: countObject(user.stagePlayData),
-      missions: countObject(user.completedMissions),
-    }))
+    .map((user) => buildUserSummary(userDb, user))
     .sort((a, b) => {
       const newest = Date.parse(b.lastLoginAt || b.lastJoinAt || b.createdAt || "") - Date.parse(a.lastLoginAt || a.lastJoinAt || a.createdAt || "");
       if (newest) return newest;
       return a.userUid.localeCompare(b.userUid, undefined, { numeric: true });
     });
+}
+
+function buildUserSummary(userDb, user) {
+  return {
+    userUid: String(user && user.userUid || ""),
+    isActive: String(user && user.userUid || "") === String(userDb && userDb.activeUserUid || ""),
+    friendCode: String(user && user.friendCode || ""),
+    nickname: String(user && user.nickname || ""),
+    level: Number(user && user.level || 0),
+    authLevel: Number(user && user.authLevel || 0),
+    createdAt: String(user && user.createdAt || ""),
+    lastLoginAt: String(user && user.lastLoginAt || ""),
+    lastJoinAt: String(user && user.lastJoinAt || ""),
+    steamStableId: String(user && user.steamStableId || ""),
+    deviceUid: String(user && user.deviceUid || ""),
+    importedOfficialProfile: Boolean(user && (user.importedOfficialProfile || user.officialImport)),
+    officialUserUid: String(user && user.officialImport && user.officialImport.officialUserUid || ""),
+    accessTokenPreview: previewSecret(user && user.accessToken),
+    reconnectKeyPreview: previewSecret(user && user.reconnectKey),
+    units: countObject(user && user.army && user.army.units),
+    ships: countObject(user && user.army && user.army.ships),
+    operators: countObject(user && user.army && user.army.operators),
+    equips: countObject(user && user.inventory && user.inventory.equips),
+    miscItems: countObject(user && user.inventory && user.inventory.misc),
+    stages: countObject(user && user.stagePlayData),
+    missions: countObject(user && user.completedMissions),
+  };
 }
 
 function buildHealth(config) {
@@ -549,8 +585,19 @@ function persist(config, reason) {
   createBackup(config, reason);
   if (typeof config.saveUserDb !== "function") throw httpError(500, "User database save function is unavailable.");
   config.saveUserDb();
+  writeActiveUserSelection(config.activeUserPath, config.userDb.activeUserUid);
   if (typeof config.invalidateJoinLobbyAckPayloadCache === "function") {
     config.invalidateJoinLobbyAckPayloadCache(`user-manager:${reason || "edit"}`);
+  }
+}
+
+function persistActiveSelection(config, reason) {
+  if (!writeActiveUserSelection(config.activeUserPath, config.userDb.activeUserUid)) {
+    if (typeof config.saveUserDb !== "function") throw httpError(500, "User database save function is unavailable.");
+    config.saveUserDb();
+  }
+  if (typeof config.invalidateJoinLobbyAckPayloadCache === "function") {
+    config.invalidateJoinLobbyAckPayloadCache(`user-manager:${reason || "switch-user"}`);
   }
 }
 
@@ -708,7 +755,7 @@ function sendHtml(res, html) {
 
 function sendJson(res, statusCode, value) {
   const headers = {
-    "Access-Control-Allow-Origin": "*", //my stupid ass dont know how to bypass cors header check on browser
+    "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Cache-Control": "no-store",
@@ -721,7 +768,7 @@ function sendJson(res, statusCode, value) {
     return;
   }
   res.writeHead(statusCode, headers);
-  res.end(`${JSON.stringify(value, (_key, item) => (typeof item === "bigint" ? item.toString() : item), 2)}\n`);
+  res.end(`${JSON.stringify(value, (_key, item) => (typeof item === "bigint" ? item.toString() : item))}\n`);
 }
 
 function buildUserManagerHtml(basePath) {
@@ -1223,6 +1270,10 @@ function buildUserManagerHtml(basePath) {
         width: 100%;
       }
 
+      #loadJsonBtn {
+        grid-column: 1 / -1;
+      }
+
       .state {
         grid-column: 1 / -1;
         margin-left: 0;
@@ -1318,6 +1369,7 @@ function buildUserManagerHtml(basePath) {
         <div class="tabs">
           <button id="profileTab" class="active">Profile JSON</button>
           <button id="dbTab">Database JSON</button>
+          <button id="loadJsonBtn" class="primary">Load Profile JSON</button>
           <div class="state" id="jsonState">Ready</div>
         </div>
         <div class="editor-wrap">
@@ -1349,12 +1401,15 @@ function buildUserManagerHtml(basePath) {
       selectedUid: "",
       activeUid: "",
       profile: null,
+      profileLoaded: false,
+      profileOmittedFields: [],
       db: null,
       visibleUids: [],
       deleteSelectedUids: new Set(),
       mode: "profile",
       dirty: false,
-      saving: false
+      saving: false,
+      loadingJson: false
     };
 
     const els = {
@@ -1376,6 +1431,7 @@ function buildUserManagerHtml(basePath) {
       levelInput: document.getElementById("levelInput"),
       profileTab: document.getElementById("profileTab"),
       dbTab: document.getElementById("dbTab"),
+      loadJsonBtn: document.getElementById("loadJsonBtn"),
       jsonState: document.getElementById("jsonState"),
       jsonEditor: document.getElementById("jsonEditor"),
       saveBtn: document.getElementById("saveBtn"),
@@ -1402,7 +1458,7 @@ function buildUserManagerHtml(basePath) {
     function setDirty(value) {
       state.dirty = Boolean(value);
       els.dirtyFlag.textContent = state.dirty ? "Unsaved" : "";
-      els.saveBtn.disabled = state.saving || !state.dirty;
+      els.saveBtn.disabled = state.saving || !state.dirty || !isCurrentJsonLoaded();
     }
 
     function formatDate(value) {
@@ -1446,7 +1502,9 @@ function buildUserManagerHtml(basePath) {
       els.newBtn.addEventListener("click", createProfile);
       els.profileTab.addEventListener("click", function () { switchMode("profile"); });
       els.dbTab.addEventListener("click", function () { switchMode("db"); });
+      els.loadJsonBtn.addEventListener("click", loadCurrentJson);
       els.jsonEditor.addEventListener("input", function () {
+        if (!isCurrentJsonLoaded()) return;
         setDirty(true);
         validateEditor();
       });
@@ -1564,35 +1622,53 @@ function buildUserManagerHtml(basePath) {
       els.selectVisibleInput.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleCount;
     }
 
+    function findUserSummary(uid) {
+      return state.users.find(function (user) { return user.userUid === uid; }) || null;
+    }
+
     async function selectUser(uid) {
       if (state.dirty && !window.confirm("Discard unsaved edits?")) return;
-      const payload = await requestJson("/users/" + encodeURIComponent(uid));
+      const summary = findUserSummary(uid);
+      if (!summary) throw new Error("Profile " + uid + " was not found.");
       state.selectedUid = uid;
-      state.profile = payload.user;
+      state.profile = summary;
+      state.profileLoaded = false;
+      state.profileOmittedFields = [];
       state.mode = "profile";
       renderProfile();
       renderUsers();
-      setStatus("Loaded " + uid, "ok");
+      setStatus("Selected " + uid, "ok");
+    }
+
+    function isCurrentJsonLoaded() {
+      return state.mode === "profile" ? state.profileLoaded : Boolean(state.db);
     }
 
     function renderProfile() {
       els.profileTab.classList.toggle("active", state.mode === "profile");
       els.dbTab.classList.toggle("active", state.mode === "db");
       const profileMode = state.mode === "profile";
-      for (const input of [els.nicknameInput, els.uidInput, els.friendInput, els.levelInput]) input.disabled = !profileMode || !state.profile;
+      const loaded = isCurrentJsonLoaded();
+      for (const input of [els.nicknameInput, els.uidInput, els.friendInput, els.levelInput]) input.disabled = !profileMode || !state.profileLoaded;
       els.repairBtn.disabled = !profileMode || !state.selectedUid;
       els.tokensBtn.disabled = !profileMode || !state.selectedUid;
       els.cloneBtn.disabled = !profileMode || !state.selectedUid;
       els.copyProfileBtn.disabled = !profileMode || !state.selectedUid;
       els.downloadProfileBtn.disabled = !profileMode || !state.selectedUid;
       els.switchBtn.disabled = !profileMode || !state.selectedUid || state.selectedUid === state.activeUid;
+      els.loadJsonBtn.textContent = state.loadingJson
+        ? "Loading..."
+        : (profileMode ? "Load Profile JSON" : "Load Database JSON");
+      els.loadJsonBtn.disabled = state.loadingJson || loaded || (profileMode && !state.selectedUid);
+      els.jsonEditor.readOnly = !loaded;
+      els.jsonEditor.placeholder = loaded ? "" : "JSON is not loaded. Click " + els.loadJsonBtn.textContent + ".";
       renderDeleteSelectionControls();
       if (profileMode && state.profile) {
         els.nicknameInput.value = state.profile.nickname || "";
         els.uidInput.value = state.profile.userUid || "";
         els.friendInput.value = state.profile.friendCode || "";
         els.levelInput.value = state.profile.level == null ? "" : String(state.profile.level);
-        els.jsonEditor.value = JSON.stringify(state.profile, null, 2);
+        els.jsonEditor.value = state.profileLoaded ? JSON.stringify(state.profile, null, 2) : "";
       } else {
         els.nicknameInput.value = "";
         els.uidInput.value = "";
@@ -1600,7 +1676,8 @@ function buildUserManagerHtml(basePath) {
         els.levelInput.value = "";
         els.jsonEditor.value = state.db ? JSON.stringify(state.db, null, 2) : "";
       }
-      validateEditor();
+      if (loaded) validateEditor();
+      else setJsonState("Not loaded", "");
       setDirty(false);
     }
 
@@ -1608,12 +1685,40 @@ function buildUserManagerHtml(basePath) {
       if (state.mode === mode) return;
       if (state.dirty && !window.confirm("Discard unsaved edits?")) return;
       state.mode = mode;
-      if (mode === "db" && !state.db) {
-        const payload = await requestJson("/db");
-        state.db = payload.db;
-        renderMeta(payload.meta);
-      }
       renderProfile();
+    }
+
+    async function loadCurrentJson() {
+      if (state.loadingJson || isCurrentJsonLoaded()) return;
+      state.loadingJson = true;
+      renderProfile();
+      setStatus(state.mode === "profile" ? "Loading profile JSON" : "Loading database JSON", "warn");
+      try {
+        if (state.mode === "profile") {
+          if (!state.selectedUid) throw new Error("Select a profile first.");
+          const payload = await requestJson("/users/" + encodeURIComponent(state.selectedUid) + "?view=editor");
+          state.profile = payload.user;
+          state.profileLoaded = true;
+          state.profileOmittedFields = payload.omittedFields || [];
+          renderMeta(payload.meta);
+          const archiveNote = state.profileOmittedFields.length
+            ? " (" + state.profileOmittedFields.length + " archived field kept out of the editor)"
+            : "";
+          setStatus("Loaded profile JSON for " + state.selectedUid + archiveNote, "ok");
+        } else {
+          const payload = await requestJson("/db");
+          state.db = payload.db;
+          state.users = payload.users || state.users;
+          renderMeta(payload.meta);
+          renderUsers();
+          setStatus("Loaded database JSON", "ok");
+        }
+      } catch (err) {
+        setStatus(err.message, "invalid");
+      } finally {
+        state.loadingJson = false;
+        renderProfile();
+      }
     }
 
     function parseEditor() {
@@ -1621,6 +1726,10 @@ function buildUserManagerHtml(basePath) {
     }
 
     function validateEditor() {
+      if (!isCurrentJsonLoaded()) {
+        setJsonState("Not loaded", "");
+        return false;
+      }
       try {
         const parsed = parseEditor();
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -1636,7 +1745,7 @@ function buildUserManagerHtml(basePath) {
     }
 
     function applyQuickFields() {
-      if (state.mode !== "profile" || !state.profile) return;
+      if (state.mode !== "profile" || !state.profileLoaded) return;
       let parsed;
       try {
         parsed = parseEditor();
@@ -1662,10 +1771,12 @@ function buildUserManagerHtml(basePath) {
         if (state.mode === "profile") {
           const payload = await requestJson("/users/" + encodeURIComponent(state.selectedUid), {
             method: "PUT",
-            body: JSON.stringify(parsed)
+            body: JSON.stringify({ user: parsed, preserveArchivedFields: true })
           });
-          state.profile = payload.user;
-          state.selectedUid = state.profile.userUid;
+          state.selectedUid = String(payload.user && payload.user.userUid || parsed.userUid || state.selectedUid);
+          parsed.userUid = state.selectedUid;
+          state.profile = parsed;
+          state.profileLoaded = true;
           state.users = payload.users || state.users;
           renderMeta(payload.meta);
           renderProfile();
@@ -1676,7 +1787,7 @@ function buildUserManagerHtml(basePath) {
             method: "PUT",
             body: JSON.stringify(parsed)
           });
-          state.db = payload.db;
+          state.db = parsed;
           state.users = payload.users || [];
           renderMeta(payload.meta);
           renderProfile();
@@ -1687,26 +1798,24 @@ function buildUserManagerHtml(basePath) {
         setStatus(err.message, "invalid");
       } finally {
         state.saving = false;
-        els.saveBtn.disabled = !state.dirty;
+        els.saveBtn.disabled = !state.dirty || !isCurrentJsonLoaded();
       }
     }
 
     async function reloadFromDisk() {
       if (state.dirty && !window.confirm("Discard unsaved edits?")) return;
       const payload = await requestJson("/reload", { method: "POST", body: "{}" });
-      state.db = payload.db;
+      state.db = null;
       state.users = payload.users || [];
       renderMeta(payload.meta);
       renderUsers();
-      if (state.selectedUid && state.db.users && state.db.users[state.selectedUid]) {
-        state.profile = state.db.users[state.selectedUid];
-      } else if (state.users[0]) {
-        state.selectedUid = state.users[0].userUid;
-        state.profile = state.db.users[state.selectedUid];
-      } else {
-        state.selectedUid = "";
-        state.profile = null;
-      }
+      const current = findUserSummary(state.selectedUid);
+      const active = findUserSummary(state.activeUid);
+      const next = current || active || state.users[0] || null;
+      state.selectedUid = next ? next.userUid : "";
+      state.profile = next;
+      state.profileLoaded = false;
+      state.profileOmittedFields = [];
       renderProfile();
       setStatus("Reloaded from disk", "ok");
     }
@@ -1810,9 +1919,16 @@ function buildUserManagerHtml(basePath) {
     async function getSelectedProfileExport() {
       if (!state.selectedUid) throw new Error("Select a profile first.");
       if (state.mode !== "profile") throw new Error("Switch to Profile JSON before exporting.");
-      if (!validateEditor()) throw new Error("Profile JSON must be valid before exporting.");
+      if (state.profileLoaded && !validateEditor()) throw new Error("Profile JSON must be valid before exporting.");
       const payload = await requestJson("/users/" + encodeURIComponent(state.selectedUid) + "/export-json");
+      if (!state.profileLoaded) return payload;
       const profile = parseEditor();
+      const exportedProfile = payload.db && payload.db.users && payload.db.users[payload.userUid];
+      for (const field of state.profileOmittedFields) {
+        if (!Object.prototype.hasOwnProperty.call(profile, field) && exportedProfile && Object.prototype.hasOwnProperty.call(exportedProfile, field)) {
+          profile[field] = exportedProfile[field];
+        }
+      }
       const userUid = String(profile.userUid || payload.userUid || state.selectedUid);
       profile.userUid = userUid;
       payload.userUid = userUid;
@@ -1929,6 +2045,8 @@ function buildUserManagerHtml(basePath) {
       if (selectedOpenProfile) {
         state.selectedUid = "";
         state.profile = null;
+        state.profileLoaded = false;
+        state.profileOmittedFields = [];
       }
       renderMeta(payload.meta);
       renderUsers();
@@ -1945,6 +2063,8 @@ function buildUserManagerHtml(basePath) {
         body: "{}"
       });
       state.profile = payload.user;
+      state.profileLoaded = false;
+      state.profileOmittedFields = [];
       state.users = payload.users || state.users;
       state.db = null;
       renderMeta(payload.meta);
@@ -1960,6 +2080,8 @@ function buildUserManagerHtml(basePath) {
         body: "{}"
       });
       state.profile = payload.user;
+      state.profileLoaded = false;
+      state.profileOmittedFields = [];
       state.users = payload.users || state.users;
       renderMeta(payload.meta);
       renderProfile();
@@ -1974,6 +2096,8 @@ function buildUserManagerHtml(basePath) {
         body: "{}"
       });
       state.profile = payload.user;
+      state.profileLoaded = false;
+      state.profileOmittedFields = [];
       state.users = payload.users || state.users;
       renderMeta(payload.meta);
       renderProfile();
