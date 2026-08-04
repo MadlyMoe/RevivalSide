@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Combat:Side</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">CS</span>
+        <div>
+          <h1>Combat:Side</h1>
+          <p>Run the real CounterSide stage engine or edit a lightweight sandbox.</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span id="engineStatus" class="status-pill">Loading unit tables</span>
+        <button id="resetScenario" class="button secondary" type="button">Reset</button>
+        <button id="runSimulation" class="button primary" type="button">Run simulation</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="workspace" aria-label="Combat workspace">
+        <aside class="team-panel team-a" data-team="1">
+          <div class="team-heading">
+            <div>
+              <span class="eyebrow">Left side</span>
+              <h2>Team A</h2>
+            </div>
+            <span id="teamACount" class="count">0 units</span>
+          </div>
+          <label class="unit-search">
+            <span>Add unit</span>
+            <input id="teamASearch" type="search" autocomplete="off" placeholder="Name, ID, or asset name">
+          </label>
+          <div id="teamAResults" class="search-results" hidden></div>
+          <div id="teamARoster" class="roster"></div>
+        </aside>
+
+        <section class="stage-panel">
+          <div class="stage-heading">
+            <div>
+              <span class="eyebrow">Frozen client stage + CombatHost</span>
+              <h2 id="battleTitle">Scenario ready</h2>
+            </div>
+            <div class="battle-readout">
+              <span id="timeReadout">00:00.0</span>
+              <strong id="resultReadout">Not run</strong>
+            </div>
+          </div>
+          <div class="stage-toolbar">
+            <label for="simulationMode">Engine</label>
+            <select id="simulationMode" aria-label="Simulation engine">
+              <option value="live" selected>Live CounterSide stage</option>
+              <option value="editable">Editable stat sandbox</option>
+            </select>
+            <label for="stageSelect">Real stage</label>
+            <select id="stageSelect" aria-label="Real frozen-client stage" disabled>
+              <option>Loading frozen stages…</option>
+            </select>
+            <span id="stageStatus">Inspecting Unity assets</span>
+          </div>
+          <div class="canvas-shell">
+            <div id="stageWebgl" class="stage-webgl" aria-hidden="true"></div>
+            <canvas id="battleCanvas" width="1200" height="460" aria-label="Combat playback stage"></canvas>
+            <div id="clientHud" class="client-hud" hidden>
+              <div class="client-main-hp ally">
+                <strong id="shipHpLabel">SHIP</strong>
+                <div class="client-gauge"><span id="shipHpFill"></span></div>
+                <small id="shipHpValue">0 / 0</small>
+              </div>
+              <div class="client-timer"><span id="clientTimer">0:00</span></div>
+              <div id="bossHp" class="client-main-hp enemy">
+                <strong id="bossHpLabel">BOSS</strong>
+                <div class="client-gauge"><span id="bossHpFill"></span></div>
+                <small id="bossHpValue">0 / 0</small>
+              </div>
+              <div id="ultimateIndicator" class="ultimate-indicator">
+                <img src="/stage-asset/Data/StreamingAssets/ab_ui_game_hud_sprite_loc/Sprite/AB_UI_GAME_HUD_BUTTON_AUTO_SKILL_ON.png" alt="Auto ultimate">
+                <span id="ultimateState">AUTO ULTIMATE</span>
+              </div>
+            </div>
+            <div id="emptyStage" class="empty-stage">Add units to both teams, then run the simulation.</div>
+          </div>
+          <div class="timeline" aria-label="Playback controls">
+            <div class="camera-controls">
+              <button id="followCamera" type="button">Follow</button>
+              <label>
+                <span>Scene camera</span>
+                <input id="cameraSlider" type="range" min="0" max="0" value="0" step="1" disabled>
+              </label>
+              <output id="cameraReadout">0</output>
+            </div>
+            <div class="transport">
+              <button id="firstFrame" type="button" aria-label="First frame" title="First frame">|&larr;</button>
+              <button id="previousFrame" type="button" aria-label="Previous frame" title="Previous frame">&larr;</button>
+              <button id="playPause" class="play" type="button" aria-label="Play" title="Play">Play</button>
+              <button id="nextFrame" type="button" aria-label="Next frame" title="Next frame">&rarr;</button>
+              <button id="lastFrame" type="button" aria-label="Last frame" title="Last frame">&rarr;|</button>
+            </div>
+            <label class="scrubber">
+              <span class="sr-only">Simulation frame</span>
+              <input id="frameSlider" type="range" min="0" max="0" value="0" step="1">
+            </label>
+            <div class="timeline-meta">
+              <span id="frameReadout">Frame 0 / 0</span>
+              <button id="toggleMusic" type="button">Music off</button>
+              <label>
+                Speed
+                <select id="playbackSpeed">
+                  <option value="0.25">0.25x</option>
+                  <option value="0.5">0.5x</option>
+                  <option value="1" selected>1x</option>
+                  <option value="2">2x</option>
+                  <option value="4">4x</option>
+                </select>
+              </label>
+            </div>
+          </div>
+        </section>
+
+        <aside class="team-panel team-b" data-team="3">
+          <div class="team-heading">
+            <div>
+              <span class="eyebrow">Right side</span>
+              <h2>Team B</h2>
+            </div>
+            <span id="teamBCount" class="count">0 units</span>
+          </div>
+          <label class="unit-search">
+            <span>Add unit</span>
+            <input id="teamBSearch" type="search" autocomplete="off" placeholder="Name, ID, or asset name">
+          </label>
+          <div id="teamBResults" class="search-results" hidden></div>
+          <div id="teamBRoster" class="roster"></div>
+        </aside>
+      </section>
+
+      <section class="inspector-panel">
+        <div class="inspector-heading">
+          <div>
+            <span class="eyebrow">Scenario data</span>
+            <h2>Unit assets and table values</h2>
+          </div>
+          <p id="inspectorDescription">Live runtime values come directly from NKCGameServerLocal each frame.</p>
+        </div>
+        <div class="table-shell">
+          <table>
+            <thead>
+              <tr id="inspectorHead">
+                <th>Team</th>
+                <th>Unit</th>
+                <th>Asset</th>
+                <th>Source table</th>
+                <th>Table HP</th>
+                <th>Table ATK</th>
+                <th>Table DEF</th>
+                <th>Cost</th>
+                <th>Sim HP</th>
+                <th>Damage</th>
+                <th>Range</th>
+                <th>Speed</th>
+                <th>Cooldown</th>
+              </tr>
+            </thead>
+            <tbody id="unitInspector"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <div id="notice" class="notice" role="status" aria-live="polite"></div>
+    <audio id="stageMusic" loop preload="metadata"></audio>
+    <script src="stage-webgl.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

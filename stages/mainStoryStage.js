@@ -134,7 +134,7 @@ for (const row of EPISODE_ROWS) {
   const episodeNumber = isMainstream
     ? parseMainStoryEpisodeNumber(row.m_EpisodeStrID || row.m_OpenTag)
     : Number(row.m_SortIndex || row.m_EpisodeID || 0);
-  if (isMainstream && (episodeNumber <= 0 || episodeNumber > 15)) continue;
+  if (isMainstream && episodeNumber <= 0) continue;
   const episode = {
     episodeId: Number(row.m_EpisodeID),
     difficulty,
@@ -326,14 +326,18 @@ const MAIN_STORY_STAGE_BY_DUNGEON_ID = new Map(MAIN_STORY_STAGE_CHAIN.map((stage
 const EPISODE1_STAGE_BY_STAGE_ID = new Map(EPISODE1_STAGE_CHAIN.map((stage) => [stage.stageId, stage]));
 const EPISODE1_STAGE_BY_DUNGEON_ID = new Map(EPISODE1_STAGE_CHAIN.map((stage) => [stage.dungeonID, stage]));
 
-function buildStoryOpenTags() {
+function buildStoryOpenTags(options = {}) {
+  const maxMainstreamEpisode = Number(options.maxMainstreamEpisode);
+  const hasMainstreamLimit = Number.isFinite(maxMainstreamEpisode) && maxMainstreamEpisode > 0;
   const tags = new Set();
   for (const episode of MAIN_STORY_EPISODE_BY_ID.values()) {
-    if (!episode.isSubstream) continue;
-    for (const tag of normalizeTagList(episode.openTag, episode.collectionOpenTag)) tags.add(tag);
+    if (hasMainstreamLimit && episode.isMainstream && Number(episode.episodeNumber || 0) > maxMainstreamEpisode) continue;
+    for (const tag of normalizeTagList(episode.openTag, episode.collectionOpenTag)) {
+      if (!isSuppressedStoryOpenTag(tag)) tags.add(tag);
+    }
   }
   for (const stage of MAIN_STORY_STAGE_CHAIN) {
-    if (!stage.isSubstreamStory) continue;
+    if (hasMainstreamLimit && stage.isMainstreamStory && Number(stage.episodeNumber || 0) > maxMainstreamEpisode) continue;
     for (const tag of normalizeTagList(stage.openTag, stage.collectionOpenTag)) {
       if (!isSuppressedStoryOpenTag(tag)) tags.add(tag);
     }
@@ -996,7 +1000,7 @@ module.exports = {
   ensureMainStoryState,
   recordMainStoryDungeonClearForUser,
   resetMainStoryPostTutorialProgress,
-  getStoryOpenTags: () => STORY_OPEN_TAGS.slice(),
+  getStoryOpenTags: (options) => (options ? buildStoryOpenTags(options).slice() : STORY_OPEN_TAGS.slice()),
 
   EPISODE1_STAGE_CHAIN,
   getEpisode1StageByStageId,

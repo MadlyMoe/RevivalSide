@@ -63,15 +63,19 @@ gameplay-tables-json/
 # Temporary probes and local scratch projects
 tmp*/
 tmp_app_probe.cs
+.codex-*
 
 # Local runtime and release outputs
 exports/
 logs/
 launcher-settings.json
+frozen-client/
 prebuilt/revivalside-*/
 prebuilt/android-combat-host-*/
 prebuilt/local-launcher-test/
+prebuilt/local-client-patcher-test/
 prebuilt/logs/
+prebuilt/release-logs/
 prebuilt/syntax-probe/
 download-service/NUL
 

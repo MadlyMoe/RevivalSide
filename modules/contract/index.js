@@ -408,23 +408,10 @@ function getStoredContractBonusGroupIds(user) {
 }
 
 function getActiveContractRecords(clockState) {
-  const records = getVisibleContractIds()
+  return getVisibleContractIds()
     .map((contractId) => ({ contractId, record: resolveContractRecord(contractId) }))
     .filter((entry) => isContractRecordActiveForClock(entry.record, clockState, "contract"))
     .filter((entry) => !isRetiredContractRecord(entry.record, entry.contractId));
-  const bestByKey = new Map();
-  for (const entry of records) {
-    const key = contractDisplayKey(entry.record, entry.contractId);
-    if (!key) continue;
-    const current = bestByKey.get(key);
-    if (!current || scoreContractRecord(entry, clockState) > scoreContractRecord(current, clockState)) {
-      bestByKey.set(key, entry);
-    }
-  }
-  return records.filter((entry) => {
-    const key = contractDisplayKey(entry.record, entry.contractId);
-    return !key || bestByKey.get(key) === entry;
-  });
 }
 
 function resolveContractRecord(contractId) {
@@ -725,36 +712,6 @@ function normalizeTag(value) {
   return tag && tag !== "NONE" && tag !== "NULL" ? tag : "";
 }
 
-function contractDisplayKey(record, contractId = 0) {
-  if (!record) return "";
-  const id = Number(record.m_ContractID || record.ContractID || record.contractId || contractId) || 0;
-  const baseRecord = getContractRecord(id) || {};
-  const category = Number(record.m_ContractCategory || baseRecord.m_ContractCategory || 0) || 0;
-  const unitKey = normalizeContractIdentity(record.m_addUnitStrId || baseRecord.m_addUnitStrId || record.addUnitStrId || "");
-  const nameKey = normalizeContractIdentity(record.m_ContractName || baseRecord.m_ContractName || record.m_ContractStrID || "");
-  const bannerKey = normalizeContractIdentity(record.m_MainBannerFileName || baseRecord.m_MainBannerFileName || record.m_ContractBannerName || "");
-  const identity = unitKey || nameKey || bannerKey;
-  return identity ? `${category}:${identity}` : "";
-}
-
-function scoreContractRecord(entry, clockState) {
-  const record = entry && entry.record || {};
-  const contractId = Number(entry && entry.contractId || record.m_ContractID || 0) || 0;
-  const tags = [...getRecordOpenTags(record), ...getRecordIntervalTags(record)];
-  let score = contractId;
-  if (hasActiveClockTag(record, clockState)) score += 1_000_000_000;
-  for (const tag of tags) {
-    const text = String(tag || "").toUpperCase();
-    if (text.includes("GLOBAL")) score += 1_000_000;
-    const version = text.match(/_V(\d+)\b/);
-    if (version) score += Number(version[1] || 0) * 100_000;
-    if (text.includes("TUTORIAL")) score -= 200_000_000;
-    if (text.includes("OLD_VERSION")) score -= 1_000_000_000;
-  }
-  score += Math.max(0, Number(record.m_Priority || 0) || 0);
-  return score;
-}
-
 function isRetiredContractRecord(record, contractId = 0) {
   const id = Number(record && (record.m_ContractID || record.ContractID || record.contractId)) || Number(contractId) || 0;
   const baseRecord = getContractRecord(id) || {};
@@ -772,18 +729,6 @@ function isRetiredContractRecord(record, contractId = 0) {
     text.includes("DATE_GLOBAL_CLASSIFIED_OLD_VERSION") ||
     text.includes("SI_NAME_CONTRACT_OLD")
   );
-}
-
-function normalizeContractIdentity(value) {
-  return String(value || "")
-    .trim()
-    .toUpperCase()
-    .replace(/^NKM_UNIT_/, "")
-    .replace(/^SI_NAME_UNIT_/, "")
-    .replace(/^SI_UNIT_NAME_/, "")
-    .replace(/^SI_UNIT_TITLE_/, "")
-    .replace(/[^A-Z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
 }
 
 function getContractState(user, contractId, ctx) {

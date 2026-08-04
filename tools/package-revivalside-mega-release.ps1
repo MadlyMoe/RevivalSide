@@ -357,8 +357,9 @@ if (Test-Path -LiteralPath $outputPath) {
 New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
 
 $wikiAssetsJson = Join-Path $rootPath "wiki\data\assets.json"
-$wikiRuntimeCache = Join-Path $rootPath ".cache\wiki-assets\all"
-if ((Test-Path -LiteralPath $wikiRuntimeCache -PathType Container) -or -not (Test-Path -LiteralPath $wikiAssetsJson -PathType Leaf)) {
+$missingWikiData = @("assets.json", "units.json", "gears.json", "gearStats.json", "gearSetBonuses.json", "items.json", "skins.json", "contracts.json", "idIndex.json") |
+  Where-Object { -not (Test-Path -LiteralPath (Join-Path $rootPath "wiki\data\$_") -PathType Leaf) }
+if ($missingWikiData.Count -gt 0) {
   & node (Join-Path $rootPath "tools\build-revivalside-wiki.js")
   if ($LASTEXITCODE -ne 0) {
     throw "Wiki build failed"
@@ -367,17 +368,11 @@ if ((Test-Path -LiteralPath $wikiRuntimeCache -PathType Container) -or -not (Tes
   Write-Host "Using existing wiki metadata; runtime wiki images will build from installed CounterSide encrypted assets."
 }
 
-dotnet publish (Join-Path $rootPath "tools\RevivalSideLauncherApp\RevivalSideLauncherApp.csproj") `
-  -c Release `
-  -r $RuntimeIdentifier `
-  --self-contained true `
-  -p:PublishSingleFile=true `
-  -p:IncludeNativeLibrariesForSelfExtract=true `
-  -p:EnableCompressionInSingleFile=true `
-  -p:DebugType=None `
-  -p:DebugSymbols=false `
-  --nologo `
-  -o $outputPath
+& powershell -NoProfile -ExecutionPolicy Bypass `
+  -File (Join-Path $rootPath "tools\build-revivalside-launcher.ps1") `
+  -RuntimeIdentifier $RuntimeIdentifier `
+  -OutputDir $outputPath
+if ($LASTEXITCODE -ne 0) { throw "Launcher build failed for $RuntimeIdentifier" }
 
 Remove-PdbFiles $outputPath
 $launcherExe = Join-Path $outputPath "RevivalSideLauncher.exe"
@@ -418,19 +413,25 @@ if ($LASTEXITCODE -ne 0) { throw "CounterSide client patcher publish failed" }
 Remove-PdbFiles $clientPatcherOut
 Assert-ExecutableArchitecture (Join-Path $clientPatcherOut "CounterPassClientPatcher.exe") $targetArch "CounterPassClientPatcher.exe"
 
-foreach ($fileName in @("cs-listener.js", "package.json", "package-lock.json", ".env", ".env.example", "README.md", "CONTRIBUTING.md", "packet-schema.json")) {
+foreach ($fileName in @("cs-listener.js", "package.json", "package-lock.json", ".env.example", "README.md", "CONTRIBUTING.md", "packet-schema.json")) {
   Copy-FileIfPresent (Join-Path $rootPath $fileName) (Join-Path $outputPath $fileName)
 }
 
-foreach ($dirName in @("server", "modules", "packet-handlers", "combat-handler", "stages", "wiki")) {
+foreach ($dirName in @("server", "modules", "packet-handlers", "combat-handler", "combat-simulator", "stages", "wiki")) {
   Copy-DirectoryClean (Join-Path $rootPath $dirName) (Join-Path $outputPath $dirName)
 }
+Copy-DirectoryClean (Join-Path $rootPath "SpineViewer\dist") (Join-Path $outputPath "SpineViewer\dist")
 
 $toolsOut = Join-Path $outputPath "tools"
 New-Item -ItemType Directory -Force -Path $toolsOut | Out-Null
 foreach ($toolName in @(
-  "patch-hosts.ps1",
+  "revivalside-launcher-backend.js",
+  "build-revivalside-launcher.ps1",
+  "remove-legacy-hosts-patch.ps1",
+  "check-frozen-client-update.js",
+  "check-user-manager-lightweight.js",
   "serve-revivalside-wiki.js",
+  "serve-modside.js",
   "build-revivalside-wiki.js",
   "copy-wiki-assets.js",
   "ensure-gameplay-assets.js",
@@ -452,6 +453,10 @@ if ($IncludeGameplayJsons -and -not $SkipGameplayJsons -and (Test-Path -LiteralP
   Write-Host "Copied optional legacy gameplay-jsons."
 } else {
   Write-Host "No packaged gameplay-jsons required; runtime tables load from installed CounterSide luac assets."
+  foreach ($sourceRoot in @("Assetbundles", "StreamingAssets")) {
+    $relativeInterval = "$sourceRoot\ab_script\luac\LUA_INTERVAL_TEMPLET.json"
+    Copy-FileIfPresent (Join-Path $sourceGameplayJsons $relativeInterval) (Join-Path $outputPath "gameplay-jsons\$relativeInterval")
+  }
 }
 
 $serverDataOut = Join-Path $outputPath "server-data"
@@ -522,9 +527,12 @@ Included:
 - Local listener start/stop launcher.
 - User Manager at http://127.0.0.1:8088/user-manager while the listener is running.
 - Local wiki launcher.
+- Standalone React Mod:Side hub with Asset:Side, Story:Side, Unit:Side, and Combat:Side.
 - Optional wiki/cutscene image assets when present in the package.
-- Hosts patch/unpatch buttons with a Windows admin prompt.
-- Automatic CounterSide client patch check before listener start.
+- Direct frozen-client URL routing with no Windows hosts-file changes.
+- Steam-isolated frozen launch with zero managed Steamworks callsites and native Steam API DLLs quarantined.
+- Frozen-build update metadata served from the archived client's own Version.json and PatchInfo.json.
+- Automatic CounterSide client patch and isolation audit before listener start.
 - Server time controls.
 - Listener settings, ports, feature toggles, and advanced env overrides.
 - CounterSide Assembly-CSharp.dll path selector with Steam auto-detect.
@@ -543,6 +551,7 @@ Ports:
 - Game listener: 22000
 - User Manager / launcher API: 8088
 - Wiki: 5174
+- Mod:Side: 5175
 "@ | Set-Content -LiteralPath (Join-Path $outputPath "README.txt") -Encoding UTF8
 
 if ($Zip) {

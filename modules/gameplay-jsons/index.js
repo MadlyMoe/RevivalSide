@@ -30,7 +30,7 @@ function getGameplayTableRoots(options = {}) {
   const env = options.env || process.env;
   const roots = collectGameplayRootValues(options, env);
   const baseRoots = roots.length ? roots : [path.join(rootDir, "gameplay-jsons")];
-  return expandTableRoots(baseRoots, rootDir);
+  return expandTableRoots([...parsePathList(env.CS_MOD_TABLES_DIR), ...baseRoots], rootDir);
 }
 
 function getGameplayTableFileCandidates(directory, fileName, options = {}) {
@@ -61,6 +61,11 @@ function listGameplayTableFiles(options = {}) {
     }
   }
   return Array.from(entries.values()).sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+}
+
+function findGameplayTableEntry(directory, fileName, options = {}) {
+  const tableName = normalizeTableBaseName(fileName).toLowerCase();
+  return listGameplayTableFiles(options).find((entry) => entry.directory === directory && entry.tableName.toLowerCase() === tableName);
 }
 
 function readGameplayTable(directory, fileName, options = {}) {
@@ -413,9 +418,16 @@ function isLuaCacheFresh(manifestPath, expected) {
     return false;
   }
   if (!parsed || parsed.version !== LUA_CACHE_SCHEMA_VERSION) return false;
-  if (path.normalize(parsed.managedDir || "").toLowerCase() !== path.normalize(expected.managedDir || "").toLowerCase()) return false;
-  if (JSON.stringify(parsed.scriptRoots || []) !== JSON.stringify(expected.inventory)) return false;
-  return hasCachedLua(path.dirname(manifestPath), expected.requiredLua || DEFAULT_REQUIRED_LUA);
+  const inventorySignature = (inventory) => JSON.stringify((inventory || []).map(({ label, files }) => ({ label, files })));
+  if (inventorySignature(parsed.scriptRoots) !== inventorySignature(expected.inventory)) return false;
+  if (!hasCachedLua(path.dirname(manifestPath), expected.requiredLua || DEFAULT_REQUIRED_LUA)) return false;
+  if (path.normalize(parsed.managedDir || "").toLowerCase() !== path.normalize(expected.managedDir || "").toLowerCase()
+      || JSON.stringify(parsed.scriptRoots || []) !== JSON.stringify(expected.inventory)) {
+    parsed.managedDir = expected.managedDir;
+    parsed.scriptRoots = expected.inventory;
+    fs.writeFileSync(manifestPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+  }
+  return true;
 }
 
 function buildScriptRootInventory(scriptRoots) {
@@ -576,6 +588,7 @@ function buildGameplayTableCacheKey(rootDir, env, directory, fileName, options =
   );
   return [
     path.normalize(rootDir).toLowerCase(),
+    String(env.CS_MOD_TABLES_DIR || ""),
     String(explicitRoots || ""),
     String(env.CS_GAMEPLAY_TABLES_DIR || ""),
     String(env.CS_GAMEPLAY_ASSET_SOURCE || env.CS_GAMEPLAY_TABLE_SOURCE || ""),
@@ -617,8 +630,11 @@ function extractTableRecords(parsed) {
   if (Array.isArray(parsed.root)) return parsed.root;
   if (parsed.root && typeof parsed.root === "object") {
     return Object.entries(parsed.root)
-      .filter(([, entry]) => entry && typeof entry === "object")
-      .map(([key, entry]) => (Array.isArray(entry) ? { __key: key, values: entry } : { __key: key, ...entry }));
+      .map(([key, entry]) => Array.isArray(entry)
+        ? { __key: key, values: entry }
+        : entry && typeof entry === "object"
+          ? { __key: key, ...entry }
+          : { __key: key, value: entry });
   }
   return [];
 }
@@ -753,12 +769,14 @@ module.exports = {
   ensureGameplayLuaCache,
   expandTableRoots,
   extractTableRecords,
+  findGameplayTableEntry,
   findGameplayTableFile,
   getDefaultGameplayTablesDir,
   getGameplayLuaCacheRoot,
   getGameplayTableFileCandidates,
   getGameplayTableRoots,
   listGameplayTableFiles,
+  normalizeTableBaseName,
   parsePathList,
   readGameplayTable,
   readGameplayTableRecords,

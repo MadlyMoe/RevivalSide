@@ -47,6 +47,7 @@ internal sealed class CombatEngine
             "handleUnitSkill" => HandleUnitSkill(Read<UnitSkillCommandData>(request.Data)),
             "handleShipSkill" => HandleShipSkill(Read<ShipSkillCommandData>(request.Data)),
             "buildSync" => BuildSync(Read<SyncCommandData>(request.Data)),
+            "buildTimeline" => BuildTimeline(Read<TimelineCommandData>(request.Data)),
             "buildInitialSync" => BuildInitialSync(Read<BattleCommandData>(request.Data)),
             "buildRespawnAck" => BuildRespawnAck(Read<RespawnAckCommandData>(request.Data)),
             "buildSyntheticSync" => BuildSyntheticSync(Read<SyntheticSyncCommandData>(request.Data)),
@@ -62,6 +63,7 @@ internal sealed class CombatEngine
             "mergeJoinLobbyAck" => MergeJoinLobbyAck(Read<JoinLobbyMergeData>(request.Data)),
             "normalizeJoinLobbyAck" => NormalizeJoinLobbyAck(Read<JoinLobbyNormalizeData>(request.Data)),
             "exportLuaTable" => ExportLuaTable(Read<GameplayTableExportData>(request.Data)),
+            "validateUnitTemplets" => ValidateUnitTemplets(Read<UnitTempletValidationData>(request.Data)),
             _ => new HostResponse { Ok = false, Error = $"unknown command: {request.Command}" }
         };
     }
@@ -141,6 +143,13 @@ internal sealed class CombatEngine
         return ManagedCombatBridge.TryExportLuaTable(options, data, out var response, out var error)
             ? response ?? new HostResponse { Ok = true }
             : new HostResponse { Ok = false, Error = error ?? "managed Lua table export failed" };
+    }
+
+    private HostResponse ValidateUnitTemplets(UnitTempletValidationData data)
+    {
+        return ManagedCombatBridge.TryValidateUnitTemplets(options, data, out var response, out var error)
+            ? response ?? new HostResponse { Ok = true }
+            : new HostResponse { Ok = false, Error = error ?? "managed unit templet validation failed" };
     }
 
     private HostResponse StartBattle(StartBattleData data)
@@ -387,6 +396,13 @@ internal sealed class CombatEngine
             BattleState = data.BattleState,
             PayloadBase64 = Convert.ToBase64String(payload)
         };
+    }
+
+    private HostResponse BuildTimeline(TimelineCommandData data)
+    {
+        return ManagedCombatBridge.TryBuildTimeline(data, out var response, out var error)
+            ? response!
+            : response ?? new HostResponse { Ok = false, Error = error ?? "managed timeline unavailable" };
     }
 
     private HostResponse BuildInitialSync(BattleCommandData data)
@@ -1140,6 +1156,13 @@ internal sealed class SyncCommandData : BattleCommandData
 {
     public double? Delta { get; set; }
     public bool SkipSimulation { get; set; }
+}
+
+internal sealed class TimelineCommandData : BattleCommandData
+{
+    public double? Delta { get; set; }
+    public int MaxFrames { get; set; } = 300;
+    public int StartIndex { get; set; }
 }
 
 internal sealed class RespawnAckCommandData

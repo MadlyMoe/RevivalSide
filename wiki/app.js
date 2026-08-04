@@ -1,4 +1,5 @@
 const PAGE_SIZE = 250;
+const SEARCH_DELAY_MS = 150;
 
 const sections = {
   units: {
@@ -162,13 +163,17 @@ const sections = {
 };
 
 const state = {
-  data: null,
+  data: {},
+  meta: null,
+  loads: {},
   section: "units",
   search: "",
   filters: {},
   sort: "id",
   shown: PAGE_SIZE,
 };
+
+let searchTimer = 0;
 
 const elements = {
   dataStamp: document.getElementById("dataStamp"),
@@ -187,12 +192,14 @@ const elements = {
   loadMore: document.getElementById("loadMore"),
 };
 
-init();
+init().catch(showError);
 
 async function init() {
-  const response = await fetch("data/assets.json", { cache: "no-store" });
-  state.data = await response.json();
-  elements.dataStamp.textContent = `Generated ${formatDate(state.data.generatedAt)}`;
+  const response = await fetch("data/assets.json");
+  if (!response.ok) throw new Error(`Wiki metadata failed to load (${response.status})`);
+  state.meta = await response.json();
+  await loadSection(state.section);
+  elements.dataStamp.textContent = `Generated ${formatDate(state.meta.generatedAt)}`;
   syncThemeButton();
   renderTabs();
   renderSummary();
@@ -200,11 +207,38 @@ async function init() {
   render();
 }
 
+async function loadSection(section) {
+  const rowsKey = sections[section].rows;
+  if (state.data[rowsKey]) return;
+  if (!state.loads[rowsKey]) {
+    const file = state.meta.sections && state.meta.sections[rowsKey];
+    if (!file) throw new Error(`Wiki section is missing: ${rowsKey}`);
+    state.loads[rowsKey] = fetch(`data/${file}`).then(async (response) => {
+      if (!response.ok) throw new Error(`${sections[section].title} failed to load (${response.status})`);
+      return response.json();
+    });
+  }
+  try {
+    state.data[rowsKey] = await state.loads[rowsKey];
+  } finally {
+    delete state.loads[rowsKey];
+  }
+}
+
+function showError(error) {
+  console.error(error);
+  elements.dataStamp.textContent = "Wiki data failed to load";
+  elements.resultCount.textContent = error && error.message ? error.message : String(error);
+}
+
 function bindEvents() {
   elements.searchInput.addEventListener("input", () => {
-    state.search = elements.searchInput.value.trim().toLowerCase();
-    state.shown = PAGE_SIZE;
-    renderRows();
+    window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(() => {
+      state.search = elements.searchInput.value.trim().toLowerCase();
+      state.shown = PAGE_SIZE;
+      renderRows();
+    }, SEARCH_DELAY_MS);
   });
 
   elements.themeToggle.addEventListener("click", () => {
@@ -213,6 +247,7 @@ function bindEvents() {
   });
 
   elements.clearFilters.addEventListener("click", () => {
+    window.clearTimeout(searchTimer);
     state.filters = {};
     state.search = "";
     elements.searchInput.value = "";
@@ -277,30 +312,54 @@ function renderTabs() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = key === state.section ? "active" : "";
-    button.innerHTML = `<span>${escapeHtml(schema.title)}</span><small>${formatNumber((state.data[schema.rows] || []).length)}</small>`;
-    button.addEventListener("click", () => {
+    button.disabled = Boolean(state.loads[schema.rows]);
+    const count = state.meta.counts[schema.rows] || 0;
+    button.innerHTML = `<span>${escapeHtml(schema.title)}</span><small>${formatNumber(count)}</small>`;
+    button.addEventListener("click", async () => {
       state.section = key;
       state.filters = {};
       state.sort = sections[key].sort[0];
       state.shown = PAGE_SIZE;
+      const loading = loadSection(key);
       renderTabs();
-      render();
+      renderLoading(schema);
+      try {
+        await loading;
+        renderTabs();
+        if (state.section === key) render();
+      } catch (error) {
+        renderTabs();
+        if (state.section === key) showError(error);
+      }
     });
     elements.sectionTabs.appendChild(button);
   }
 }
 
 function renderSummary() {
-  const cards = Object.values(sections).map((schema) => [schema.title, (state.data[schema.rows] || []).length]);
+  const cards = Object.values(sections).map((schema) => [schema.title, state.meta.counts[schema.rows] || 0]);
   elements.summaryRow.innerHTML = cards
     .map(([label, value]) => `<div class="summary-card"><strong>${formatNumber(value)}</strong><span>${label}</span></div>`)
     .join("");
+}
+
+function renderLoading(schema) {
+  elements.sectionTitle.textContent = schema.title;
+  elements.resultCount.textContent = "Loading...";
+  elements.sortSelect.disabled = true;
+  elements.downloadJson.disabled = true;
+  elements.filters.innerHTML = "";
+  elements.tableHead.innerHTML = "";
+  elements.tableBody.innerHTML = "";
+  elements.loadMore.classList.add("hidden");
 }
 
 function render() {
   const schema = sections[state.section];
   state.sort = schema.sort.includes(state.sort) ? state.sort : schema.sort[0];
   elements.sectionTitle.textContent = schema.title;
+  elements.sortSelect.disabled = false;
+  elements.downloadJson.disabled = false;
   renderSort(schema);
   renderFilters();
   renderHead(schema);

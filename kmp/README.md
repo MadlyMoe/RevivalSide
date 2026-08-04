@@ -45,10 +45,10 @@ Refresh the bundled Node runtime and JS listener payload when needed:
 .\build-android-listener-assets.ps1
 ```
 
-For a standalone phone build that matches the v0.3.0 setup+launcher payload, stage the release payload archive too:
+For a standalone phone build, stage the release payload archive too. This also bundles the Android C# combat runtime, required managed assemblies, and gameplay tables so profile import and gameplay cannot ship with the combat host disabled:
 
 ```powershell
-.\build-android-listener-assets.ps1 -PayloadZip ..\prebuilt\revivalside-github-release-v0.3.0\RevivalSidePayload-v0.3.0.zip
+.\build-android-listener-assets.ps1 -PayloadZip ..\prebuilt\revivalside-github-release\RevivalSidePayload-v0.3.5.zip
 ```
 
 Then build/install:
@@ -95,4 +95,4 @@ The fallback Kotlin control API is used only if the bundled Node runtime or list
 - The app does not require root.
 - It cannot run alongside another Android VPN.
 - IPv4 is required for the current VPN packet bridge.
-- The desktop C# combat host and CounterPass patcher are not Android binaries; they need separate Android-native replacements if literal parity is required later.
+- Standalone payload builds include Android arm and arm64 .NET combat hosts. Compact diagnostic builds still require `-IncludeSteamManagedCombatHost -IncludeAndroidDotnetRuntime` when managed combat is needed.

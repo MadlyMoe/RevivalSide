@@ -148,16 +148,35 @@ public static class ManagedLuaFileLoader
 
     private static IEnumerable<string> GetTableSourceRoots()
     {
-        var rootName = Path.GetFileName(gameplayTablesDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        var modTablesDir = Environment.GetEnvironmentVariable("CS_MOD_TABLES_DIR");
+        if (!string.IsNullOrWhiteSpace(modTablesDir))
+        {
+            foreach (var root in ExpandTableSourceRoot(modTablesDir))
+            {
+                yield return root;
+            }
+        }
+
+        foreach (var root in ExpandTableSourceRoot(gameplayTablesDir))
+        {
+            yield return root;
+        }
+    }
+
+    private static IEnumerable<string> ExpandTableSourceRoot(string root)
+    {
+        if (string.IsNullOrWhiteSpace(root)) yield break;
+        root = Path.GetFullPath(root);
+        var rootName = Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
         if (rootName.Equals("StreamingAssets", StringComparison.OrdinalIgnoreCase)
             || rootName.Equals("Assetbundles", StringComparison.OrdinalIgnoreCase))
         {
-            yield return gameplayTablesDir;
+            yield return root;
             yield break;
         }
 
-        yield return Path.Combine(gameplayTablesDir, "StreamingAssets");
-        yield return Path.Combine(gameplayTablesDir, "Assetbundles");
+        yield return Path.Combine(root, "Assetbundles");
+        yield return Path.Combine(root, "StreamingAssets");
     }
 
     private static string BuildLuaTextFromJson(string json, string fileName)

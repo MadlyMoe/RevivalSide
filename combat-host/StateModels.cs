@@ -15,6 +15,8 @@ public sealed class GameLoadReq
     public int GameType { get; set; }
     public long RaidUID { get; set; }
     public int RaidLevel { get; set; }
+    public double RaidCurHP { get; set; }
+    public double RaidMaxHP { get; set; }
 }
 
 public sealed class StageData

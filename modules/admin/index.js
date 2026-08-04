@@ -1536,13 +1536,14 @@ function grantPostRewards(ctx, user, post) {
 }
 
 function buildPostData(post) {
+  const rewards = post.rewards || [];
   return Buffer.concat([
     writeSignedVarInt(Number(post.postId || ADMIN_POST_ID) || 0),
     writeSignedVarLong(toBigInt(post.postIndex || 0)),
     writeString(post.title || "Admin Delivery"),
-    writeString(post.contents || summarizeRewards(post.rewards || [])),
+    writeString(post.contents || summarizeRewards(rewards)),
     writeInt64FromStoredDate(post.sendDate),
-    writeObjectList((post.rewards || []).map((reward) => writeNullableObject(buildRewardInfoData(reward)))),
+    writeObjectList(rewards.map((reward) => writeNullableObject(buildRewardInfoData(reward)))),
     writeInt64FromStoredDate(post.expirationDate || farFutureDateTimeBinary()),
   ]);
 }

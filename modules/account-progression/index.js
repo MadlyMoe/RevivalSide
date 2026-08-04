@@ -83,8 +83,15 @@ function grantUserExp(user, amount, options = {}) {
     };
   }
 
-  const beforeLevel = clampInt(user.level, 1, getMaxUserLevel());
+  const beforeLevel = Math.max(1, Math.trunc(Number(user.level) || 1));
   const beforeExp = nonNegativeInt(user.exp);
+  if (!getPlayerExpRecord(beforeLevel)) {
+    user.exp = String(beforeExp + grant);
+    user.totalExp = String(nonNegativeBigInt(user.totalExp) + BigInt(grant));
+    if (options.reason) user.lastExpReason = String(options.reason);
+    user.lastExpAt = new Date().toISOString();
+    return { userExp: grant, beforeLevel, afterLevel: beforeLevel, beforeExp, afterExp: beforeExp + grant, leveledUp: false };
+  }
   const next = splitUserTotalExp(nonNegativeBigInt(user.totalExp) + BigInt(grant));
 
   user.level = next.level;
@@ -112,7 +119,14 @@ function expToNextLevel(level) {
 
 function normalizeUserLevelExp(user) {
   if (!user || typeof user !== "object") return user;
-  const maxLevel = getMaxUserLevel();
+  const rawStoredLevel = Math.max(1, Math.trunc(Number(user.level) || 1));
+  if (!getPlayerExpRecord(rawStoredLevel)) {
+    user.level = rawStoredLevel;
+    user.exp = String(nonNegativeInt(user.exp));
+    user.totalExp = String(nonNegativeBigInt(user.totalExp));
+    return user;
+  }
+  const maxLevel = Math.max(getMaxUserLevel(), rawStoredLevel);
   const storedLevel = clampInt(user.level, 1, maxLevel);
   const storedExp = nonNegativeInt(user.exp);
   const storedTotalExp = nonNegativeBigInt(user.totalExp);
@@ -217,9 +231,12 @@ function getStoredMissionState(user, row) {
   const exact = exactKey ? user.completedMissions[exactKey] : null;
   if (exact) return exact;
   const legacy = user.completedMissions[String(missionID)] || {};
-  if (!legacy || !Object.keys(legacy).length) return {};
-  if (!missionIdHasMultipleGroups(missionID)) return legacy;
-  return Number(legacy.groupId || missionGroupId(row)) === missionGroupId(row) ? legacy : {};
+  if (Object.keys(legacy).length && (!missionIdHasMultipleGroups(missionID) || Number(legacy.groupId || missionGroupId(row)) === missionGroupId(row))) {
+    return legacy;
+  }
+  return Object.values(user.completedMissions).find(
+    (mission) => Number(mission && mission.missionID) === missionID && Number(mission.groupId || missionID) === missionGroupId(row)
+  ) || {};
 }
 
 function setStoredMissionState(user, row, state) {
@@ -502,6 +519,7 @@ function shouldPersistMissionState(state, existing = {}, row = null) {
   if (state.rewardClaimed === true || (state.isComplete === true && state.claimedAt)) return true;
   if (existing.rewardClaimed === true || (existing.isComplete === true && existing.claimedAt)) return true;
   if (existing.isComplete === true && !isPeriodicMission(row)) return true;
+  if (state.source === "official-join-lobby" && Number(state.times || 0) > 0 && !isPeriodicMission(row)) return true;
   return false;
 }
 

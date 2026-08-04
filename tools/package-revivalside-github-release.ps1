@@ -2,264 +2,369 @@ param(
   [string]$OutputDir = "",
   [string]$UniversalInstallerDir = "",
   [string]$ReleaseTag = "",
+  [string]$ReleaseTarget = "",
   [string]$ReleaseBaseUrl = "",
+  [string]$StableTag = "launcher-latest",
   [string]$PythonPath = "",
-  [int]$ChunkSizeMB = 1900,
   [switch]$SkipUniversalBuild,
-  [switch]$SkipPayloadArchive,
-  [switch]$KeepArchive,
-  [switch]$UseExistingArchive,
   [switch]$Upload
 )
 
 $ErrorActionPreference = "Stop"
 
-if ($SkipPayloadArchive -and $UseExistingArchive) {
-  throw "-SkipPayloadArchive cannot be combined with -UseExistingArchive."
-}
-
-$root = Resolve-Path (Join-Path $PSScriptRoot "..")
-$rootPath = $root.Path
+$rootPath = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $prebuiltRoot = [System.IO.Path]::GetFullPath((Join-Path $rootPath "prebuilt"))
-$prebuiltRootWithSlash = $prebuiltRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
-
-if (-not $OutputDir) {
-  $OutputDir = Join-Path $rootPath "prebuilt\revivalside-github-release"
-}
-if (-not $UniversalInstallerDir) {
-  $UniversalInstallerDir = Join-Path $rootPath "prebuilt\revivalside-universal-installer"
-}
+$prebuiltPrefix = $prebuiltRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+if (-not $OutputDir) { $OutputDir = Join-Path $prebuiltRoot "revivalside-github-release" }
+if (-not $UniversalInstallerDir) { $UniversalInstallerDir = Join-Path $prebuiltRoot "revivalside-universal-installer" }
 if (-not $ReleaseTag) {
   $packageJson = Get-Content -Raw -LiteralPath (Join-Path $rootPath "package.json") | ConvertFrom-Json
   $ReleaseTag = "v$($packageJson.version)"
 }
+if (-not $ReleaseTarget) { $ReleaseTarget = (& git -C $rootPath rev-parse HEAD).Trim() }
 
 $outputPath = [System.IO.Path]::GetFullPath($OutputDir)
 $universalPath = [System.IO.Path]::GetFullPath($UniversalInstallerDir)
-if ($outputPath -ne $prebuiltRoot -and -not $outputPath.StartsWith($prebuiltRootWithSlash, [System.StringComparison]::OrdinalIgnoreCase)) {
-  throw "OutputDir must stay under $prebuiltRoot; resolved OutputDir=$outputPath"
-}
-if ($universalPath -ne $prebuiltRoot -and -not $universalPath.StartsWith($prebuiltRootWithSlash, [System.StringComparison]::OrdinalIgnoreCase)) {
-  throw "UniversalInstallerDir must stay under $prebuiltRoot; resolved UniversalInstallerDir=$universalPath"
-}
-
-function Resolve-ReleaseBaseUrl {
-  if ($ReleaseBaseUrl) { return $ReleaseBaseUrl.TrimEnd("/") }
-  $remote = (& git -C $rootPath remote get-url RevivalSide 2>$null)
-  if (-not $remote) { $remote = (& git -C $rootPath remote get-url origin 2>$null) }
-  if (-not $remote) { throw "Could not detect git remote. Pass -ReleaseBaseUrl explicitly." }
-  if ($remote -match "github\.com[:/](?<owner>[^/]+)/(?<repo>[^/.]+)(\.git)?$") {
-    return "https://github.com/$($Matches.owner)/$($Matches.repo)/releases/download/$ReleaseTag"
+foreach ($candidate in @($outputPath, $universalPath)) {
+  if ($candidate -ne $prebuiltRoot -and -not $candidate.StartsWith($prebuiltPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Release build paths must stay under $prebuiltRoot; resolved path=$candidate"
   }
-  throw "Could not parse GitHub owner/repo from remote '$remote'. Pass -ReleaseBaseUrl explicitly."
 }
 
-function Remove-PdbFiles([string]$Directory) {
-  if (-not (Test-Path -LiteralPath $Directory -PathType Container)) { return }
-  Get-ChildItem -LiteralPath $Directory -File -Filter "*.pdb" -ErrorAction SilentlyContinue |
-    Remove-Item -Force
+function Resolve-GitHubRepository {
+  foreach ($remoteName in @("RevivalSide", "origin")) {
+    $remote = (& git -C $rootPath remote get-url $remoteName 2>$null)
+    if ($remote -and $remote -match "github\.com[:/](?<owner>[^/]+)/(?<repo>[^/.]+)(\.git)?$") {
+      return "$($Matches.owner)/$($Matches.repo)"
+    }
+  }
+  throw "Could not detect the GitHub repository from git remotes."
+}
+
+function Get-CompatibleRelativePath([string]$BasePath, [string]$TargetPath) {
+  $base = [System.IO.Path]::GetFullPath($BasePath).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+  $target = [System.IO.Path]::GetFullPath($TargetPath)
+  $baseUri = New-Object System.Uri($base)
+  $targetUri = New-Object System.Uri($target)
+  return [System.Uri]::UnescapeDataString($baseUri.MakeRelativeUri($targetUri).ToString()).Replace('/', [System.IO.Path]::DirectorySeparatorChar)
 }
 
 function Get-FileSha256([string]$Path) {
   return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-function Get-CompatibleRelativePath([string]$BasePath, [string]$TargetPath) {
-  $baseFull = [System.IO.Path]::GetFullPath($BasePath)
-  $targetFull = [System.IO.Path]::GetFullPath($TargetPath)
-  $separator = [System.IO.Path]::DirectorySeparatorChar
-  if (-not $baseFull.EndsWith($separator)) {
-    $baseFull = $baseFull + $separator
-  }
-  $baseUri = New-Object System.Uri($baseFull)
-  $targetUri = New-Object System.Uri($targetFull)
-  if ($baseUri.Scheme -ne $targetUri.Scheme) {
-    throw "Cannot create relative path across URI schemes: $baseFull -> $targetFull"
-  }
-  $relativeUri = $baseUri.MakeRelativeUri($targetUri)
-  return [System.Uri]::UnescapeDataString($relativeUri.ToString()).Replace("/", $separator)
+function Remove-PdbFiles([string]$Directory) {
+  Get-ChildItem -LiteralPath $Directory -File -Filter "*.pdb" -ErrorAction SilentlyContinue | Remove-Item -Force
 }
 
-function New-PayloadZip([string]$PayloadDir, [string]$ZipPath) {
+function New-ComponentArchive(
+  [string]$Id,
+  [string]$Source,
+  [string]$EntryPrefix,
+  [string[]]$ExcludePrefixes = @()
+) {
+  if (-not (Test-Path -LiteralPath $Source -PathType Container)) { throw "Component source was not found: $Source" }
   Add-Type -AssemblyName System.IO.Compression
   Add-Type -AssemblyName System.IO.Compression.FileSystem
-  if (Test-Path -LiteralPath $ZipPath) { Remove-Item -LiteralPath $ZipPath -Force }
-  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ZipPath) | Out-Null
-  $zip = [System.IO.Compression.ZipFile]::Open($ZipPath, [System.IO.Compression.ZipArchiveMode]::Create)
+  $temporaryPath = Join-Path $outputPath "$Id.tmp.zip"
+  if (Test-Path -LiteralPath $temporaryPath) { Remove-Item -LiteralPath $temporaryPath -Force }
+  $zip = [System.IO.Compression.ZipFile]::Open($temporaryPath, [System.IO.Compression.ZipArchiveMode]::Create)
+  $count = 0
   try {
-    $files = Get-ChildItem -LiteralPath $PayloadDir -Recurse -File
-    $count = 0
-    foreach ($file in $files) {
-      $relative = (Get-CompatibleRelativePath $PayloadDir $file.FullName).Replace("\", "/")
-      $entryName = "payload/$relative"
-      [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file.FullName, $entryName, [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
+    foreach ($file in (Get-ChildItem -LiteralPath $Source -Recurse -File | Sort-Object FullName)) {
+      $relative = (Get-CompatibleRelativePath $Source $file.FullName).Replace('\', '/')
+      $excluded = $false
+      foreach ($prefix in $ExcludePrefixes) {
+        $normalized = $prefix.Trim('/').Replace('\', '/')
+        if ($relative -eq $normalized -or $relative.StartsWith("$normalized/", [System.StringComparison]::OrdinalIgnoreCase)) {
+          $excluded = $true
+          break
+        }
+      }
+      if ($excluded -or $relative.Equals(".env", [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+      $entryName = "$($EntryPrefix.Trim('/'))/$relative"
+      $entry = $zip.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
+      $entry.LastWriteTime = [System.DateTimeOffset]::new(1980, 1, 1, 0, 0, 0, [System.TimeSpan]::Zero)
+      $sourceStream = [System.IO.File]::OpenRead($file.FullName)
+      $entryStream = $entry.Open()
+      try { $sourceStream.CopyTo($entryStream) }
+      finally {
+        $entryStream.Dispose()
+        $sourceStream.Dispose()
+      }
       $count++
-      if (($count % 2500) -eq 0) { Write-Host "Zipped $count files..." }
     }
-    Write-Host "Zipped $count files into $ZipPath"
   }
   finally {
     $zip.Dispose()
   }
+  if ($count -eq 0) { throw "Component $Id had no files." }
+
+  $sha256 = Get-FileSha256 $temporaryPath
+  $name = "RevivalSide-$Id-$($sha256.Substring(0, 12)).zip"
+  $path = Join-Path $outputPath $name
+  Move-Item -LiteralPath $temporaryPath -Destination $path -Force
+  $item = Get-Item -LiteralPath $path
+  Write-Host ("Component {0}: {1:N2} MiB, {2} files" -f $Id, ($item.Length / 1MB), $count)
+  return [ordered]@{ id = $Id; name = $name; size = $item.Length; sha256 = $sha256; url = ""; path = $path; upload = $true }
 }
 
-function Split-File([string]$SourcePath, [string]$DestinationDir, [string]$PartPrefix, [long]$ChunkSizeBytes) {
-  New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
-  Get-ChildItem -LiteralPath $DestinationDir -File -Filter "$PartPrefix.part*" -ErrorAction SilentlyContinue |
-    Remove-Item -Force
-
-  $parts = @()
-  $buffer = New-Object byte[] (4MB)
-  $inputStream = [System.IO.File]::OpenRead($SourcePath)
+function Get-PreviousManifest([string]$Url) {
   try {
-    $partIndex = 1
-    while ($inputStream.Position -lt $inputStream.Length) {
-      $partName = "{0}.part{1:D3}" -f $PartPrefix, $partIndex
-      $partPath = Join-Path $DestinationDir $partName
-      $outputStream = [System.IO.File]::Open($partPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-      try {
-        $written = 0L
-        while ($written -lt $ChunkSizeBytes -and $inputStream.Position -lt $inputStream.Length) {
-          $toRead = [int][Math]::Min($buffer.Length, $ChunkSizeBytes - $written)
-          $read = $inputStream.Read($buffer, 0, $toRead)
-          if ($read -le 0) { break }
-          $outputStream.Write($buffer, 0, $read)
-          $written += $read
-        }
-      }
-      finally {
-        $outputStream.Dispose()
-      }
-      $item = Get-Item -LiteralPath $partPath
-      $parts += [ordered]@{
-        name = $partName
-        size = $item.Length
-        sha256 = Get-FileSha256 $partPath
-      }
-      Write-Host ("Wrote {0} ({1:N2} MB)" -f $partName, ($item.Length / 1MB))
-      $partIndex++
+    $client = New-Object System.Net.WebClient
+    try {
+      $json = [System.Text.Encoding]::UTF8.GetString($client.DownloadData($Url)).TrimStart([char]0xFEFF)
     }
+    finally {
+      $client.Dispose()
+    }
+    $manifest = $json | ConvertFrom-Json
+    if ($manifest.schemaVersion -eq 2) { return $manifest }
+  }
+  catch {
+    Write-Host "No reusable component manifest found at $Url"
+  }
+  return $null
+}
+
+function Get-PreviousComponents($Manifest) {
+  $byId = @{}
+  if (-not $Manifest -or -not $Manifest.components) { return $byId }
+  foreach ($group in $Manifest.components.PSObject.Properties) {
+    foreach ($component in $group.Value) { $byId[[string]$component.id] = $component }
+  }
+  return $byId
+}
+
+function Test-GitHubRelease([string]$Tag, [string]$Repository) {
+  $previousPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    & gh release view $Tag --repo $Repository *> $null
+    return $LASTEXITCODE -eq 0
   }
   finally {
-    $inputStream.Dispose()
+    $ErrorActionPreference = $previousPreference
   }
-  return $parts
 }
 
-$releaseBaseUrlResolved = Resolve-ReleaseBaseUrl
-$manifestAssetName = "RevivalSidePayloadManifest.json"
-$manifestUrl = "$releaseBaseUrlResolved/$manifestAssetName"
+function Resolve-ComponentUrl($Component, $PreviousById, [string]$CurrentBaseUrl) {
+  $previous = $PreviousById[$Component.id]
+  if ($previous -and ([string]$previous.sha256).Equals($Component.sha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $Component.url = [string]$previous.url
+    $Component.upload = $false
+    Write-Host "Reusing $($Component.id) from $($Component.url)"
+  }
+  else {
+    $Component.url = "$CurrentBaseUrl/$($Component.name)"
+  }
+}
+
+function Convert-ToManifestComponent($Component) {
+  return [ordered]@{
+    id = $Component.id
+    name = $Component.name
+    size = $Component.size
+    sha256 = $Component.sha256
+    url = $Component.url
+  }
+}
+
+function Assert-ComponentArchives([array]$ComponentsByGroup) {
+  Add-Type -AssemblyName System.IO.Compression
+  $entries = @{}
+  foreach ($component in $ComponentsByGroup) {
+    if ((Get-FileSha256 $component.path) -ne $component.sha256) { throw "Component hash changed after packaging: $($component.id)" }
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($component.path)
+    try {
+      foreach ($entry in $archive.Entries) {
+        $entries[$entry.FullName] = $true
+        if ($entry.FullName -match '(^|/)\.env$') { throw "Secret .env was found in $($component.name)" }
+        if ($entry.FullName -match '(?i)npcap[^/]*\.exe$') { throw "Npcap installer was found in $($component.name)" }
+      }
+    }
+    finally { $archive.Dispose() }
+  }
+  foreach ($required in @(
+    "payload/app/package.json",
+    "payload/app/wiki/data/assets.json",
+    "payload/app/server-data/users.json"
+  )) {
+    if (-not $entries[$required]) { throw "Component set is missing $required" }
+  }
+  foreach ($rid in @("win-arm64", "win-x64", "win-x86")) {
+    foreach ($required in @(
+      "payload/runtime-apps/$rid/RevivalSideLauncher.exe",
+      "payload/runtime-node/$rid/node.exe",
+      "payload/runtime-node/$rid/npm.cmd",
+      "payload/runtime-python/$rid/python.exe",
+      "payload/runtime-wireshark/$rid/dumpcap.exe",
+      "payload/runtime-wireshark/$rid/tshark.exe"
+    )) {
+      if (-not $entries[$required]) { throw "Component set is missing $required" }
+    }
+    if (-not ($entries.Keys | Where-Object { $_ -like "payload/runtime-installers/dotnet/$rid/*.exe" } | Select-Object -First 1)) {
+      throw "Component set is missing the .NET installer for $rid"
+    }
+  }
+  Write-Host "Component archive validation passed."
+}
+
+$repository = Resolve-GitHubRepository
+$versionReleaseBase = if ($ReleaseBaseUrl) { $ReleaseBaseUrl.TrimEnd('/') } else { "https://github.com/$repository/releases/download/$ReleaseTag" }
+$stableReleaseBase = "https://github.com/$repository/releases/download/$StableTag"
+$manifestName = "RevivalSideReleaseManifest.json"
+$stableManifestUrl = "$stableReleaseBase/$manifestName"
 
 if (-not $SkipUniversalBuild) {
-  $universalArgs = @(
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
+  $arguments = @(
+    "-NoProfile", "-ExecutionPolicy", "Bypass",
     "-File", (Join-Path $rootPath "tools\package-revivalside-universal-installer.ps1"),
     "-OutputDir", $universalPath
   )
-  if ($PythonPath) { $universalArgs += @("-PythonPath", $PythonPath) }
-  & powershell @universalArgs
-  if ($LASTEXITCODE -ne 0) { throw "Universal installer packaging failed" }
+  if ($PythonPath) { $arguments += @("-PythonPath", $PythonPath) }
+  & powershell @arguments
+  if ($LASTEXITCODE -ne 0) { throw "Universal installer packaging failed." }
 }
 
-$payloadDir = Join-Path $universalPath "payload"
-if (-not (Test-Path -LiteralPath $payloadDir -PathType Container)) {
-  throw "Payload folder was not found: $payloadDir"
+$payloadRoot = Join-Path $universalPath "payload"
+if (-not (Test-Path -LiteralPath $payloadRoot -PathType Container)) { throw "Payload folder was not found: $payloadRoot" }
+if (Get-ChildItem -LiteralPath $payloadRoot -Recurse -Force -File -Filter ".env" -ErrorAction SilentlyContinue) {
+  throw "Release payload contains a forbidden .env file."
+}
+if (Get-ChildItem -LiteralPath $payloadRoot -Recurse -File -Filter "npcap*.exe" -ErrorAction SilentlyContinue) {
+  throw "Release payload contains a forbidden Npcap installer."
 }
 
-if ((Test-Path -LiteralPath $outputPath) -and -not $UseExistingArchive) {
-  Remove-Item -LiteralPath $outputPath -Recurse -Force
-}
+if (Test-Path -LiteralPath $outputPath) { Remove-Item -LiteralPath $outputPath -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
 
-Write-Host "Publishing web setup with manifest URL: $manifestUrl"
+$stableManifest = Get-PreviousManifest $stableManifestUrl
+$previousById = Get-PreviousComponents $stableManifest
+$common = @(
+  (New-ComponentArchive "core" (Join-Path $payloadRoot "app") "payload/app" @("server-data", "wiki")),
+  (New-ComponentArchive "game-data" (Join-Path $payloadRoot "app\server-data") "payload/app/server-data"),
+  (New-ComponentArchive "wiki" (Join-Path $payloadRoot "app\wiki") "payload/app/wiki")
+)
+$platforms = [ordered]@{}
+foreach ($rid in @("win-arm64", "win-x64", "win-x86")) {
+  $platforms[$rid] = @(
+    (New-ComponentArchive "apps-$rid" (Join-Path $payloadRoot "runtime-apps\$rid") "payload/runtime-apps/$rid"),
+    (New-ComponentArchive "node-$rid" (Join-Path $payloadRoot "runtime-node\$rid") "payload/runtime-node/$rid"),
+    (New-ComponentArchive "python-$rid" (Join-Path $payloadRoot "runtime-python\$rid") "payload/runtime-python/$rid"),
+    (New-ComponentArchive "wireshark-$rid" (Join-Path $payloadRoot "runtime-wireshark\$rid") "payload/runtime-wireshark/$rid"),
+    (New-ComponentArchive "dotnet-$rid" (Join-Path $payloadRoot "runtime-installers\dotnet\$rid") "payload/runtime-installers/dotnet/$rid")
+  )
+}
+$allComponents = @($common) + @($platforms.Values | ForEach-Object { $_ })
+Assert-ComponentArchives $allComponents
+foreach ($component in $allComponents) { Resolve-ComponentUrl $component $previousById $versionReleaseBase }
+
+Write-Host "Publishing reusable web setup with manifest URL: $stableManifestUrl"
 dotnet publish (Join-Path $rootPath "tools\RevivalSideInstallerApp\RevivalSideInstallerApp.csproj") `
   -c Release -r win-x86 --self-contained true `
   -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true `
   -p:DebugType=None -p:DebugSymbols=false `
-  "-p:RevivalSideReleaseManifestUrl=$manifestUrl" `
-  --nologo `
-  -o $outputPath
-if ($LASTEXITCODE -ne 0) { throw "Web setup publish failed" }
+  "-p:RevivalSideReleaseManifestUrl=$stableManifestUrl" `
+  --nologo -o $outputPath
+if ($LASTEXITCODE -ne 0) { throw "Web setup publish failed." }
 Remove-PdbFiles $outputPath
+$setupPath = Join-Path $outputPath "RevivalSideSetup.exe"
+$setupItem = Get-Item -LiteralPath $setupPath
+$setupSha256 = Get-FileSha256 $setupPath
+$setupChanged = -not $stableManifest -or -not $stableManifest.setup -or
+  -not ([string]$stableManifest.setup.sha256).Equals($setupSha256, [System.StringComparison]::OrdinalIgnoreCase)
 
-if (-not $SkipPayloadArchive) {
-  $archiveName = "RevivalSidePayload-$ReleaseTag.zip"
-  $partPrefix = $archiveName
-  $archivePath = Join-Path $outputPath $archiveName
-  $chunkSizeBytes = [long]$ChunkSizeMB * 1MB
-
-  if ($UseExistingArchive) {
-    if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
-      throw "Existing payload archive was not found: $archivePath"
-    }
-    Write-Host "Reusing existing payload archive: $archivePath"
-  }
-  else {
-    New-PayloadZip $payloadDir $archivePath
-  }
-
-  $archiveItem = Get-Item -LiteralPath $archivePath
-  $archiveSha256 = Get-FileSha256 $archivePath
-  Get-ChildItem -LiteralPath $outputPath -File -Filter "$partPrefix.part*" -ErrorAction SilentlyContinue |
-    Remove-Item -Force
-
-  if ($archiveItem.Length -le $chunkSizeBytes) {
-    Write-Host ("Using single archive asset {0} ({1:N2} MB)" -f $archiveName, ($archiveItem.Length / 1MB))
-    $chunks = @(
-      [ordered]@{
-        name = $archiveName
-        size = $archiveItem.Length
-        sha256 = $archiveSha256
-      }
-    )
-  }
-  else {
-    $chunks = Split-File $archivePath $outputPath $partPrefix $chunkSizeBytes
-  }
-
-  $manifest = [ordered]@{
-    schemaVersion = 1
-    payloadId = "revivalside-$ReleaseTag-$($archiveSha256.Substring(0, 12))"
-    archiveName = $archiveName
-    archiveSize = $archiveItem.Length
-    archiveSha256 = $archiveSha256
-    chunks = $chunks
-  }
-  $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $outputPath $manifestAssetName) -Encoding UTF8
-  if ($archiveItem.Length -gt $chunkSizeBytes -and -not $KeepArchive) { Remove-Item -LiteralPath $archivePath -Force }
+$manifestComponents = [ordered]@{ common = @($common | ForEach-Object { Convert-ToManifestComponent $_ }) }
+foreach ($rid in $platforms.Keys) {
+  $manifestComponents[$rid] = @($platforms[$rid] | ForEach-Object { Convert-ToManifestComponent $_ })
 }
+$manifest = [ordered]@{
+  schemaVersion = 2
+  payloadId = "revivalside-$ReleaseTag"
+  releaseTag = $ReleaseTag
+  setup = [ordered]@{
+    name = "RevivalSideSetup.exe"
+    size = $setupItem.Length
+    sha256 = $setupSha256
+    url = "$stableReleaseBase/RevivalSideSetup.exe"
+  }
+  components = $manifestComponents
+}
+$manifestPath = Join-Path $outputPath $manifestName
+$manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 
+$setupUrl = "$stableReleaseBase/RevivalSideSetup.exe"
 @"
-RevivalSide Release Package
+RevivalSide $ReleaseTag
 
-Upload every file in this folder to the private GitHub release for ${ReleaseTag}:
+Download and run RevivalSideSetup.exe:
+$setupUrl
 
-  gh release create $ReleaseTag "$outputPath\*" --title "RevivalSide $ReleaseTag"
+This release uses platform-specific, content-addressed components. Setup downloads
+only the current Windows architecture. Unchanged runtimes are reused by hash on
+later releases. Npcap is not redistributed; Cross Save opens npcap.com when the
+capture driver is missing.
 
-Or, if the release already exists:
-
-  gh release upload $ReleaseTag "$outputPath\*" --clobber
-
-The setup executable contains no GitHub or Discord secrets.
-It downloads $manifestAssetName and payload parts from:
-
-  $releaseBaseUrlResolved
-
-The setup executable downloads release assets directly. It does not perform a
-Discord OAuth or device-code authorization flow.
+Included in this release:
+- Mod:Side with its creator, loader, Asset:Side, Story:Side, Unit:Side, Combat:Side, and Spine 3.7 Studio apps.
+- Multi-unit authoring with editable skills, appearances, collection/profile metadata, and MP3 voice bundles.
+- Frozen/offline client, custom-unit CombatHost, progression, event, shop, and reward compatibility fixes.
+- Cross Save capture/export/import and the lazy local RevivalSide Wiki.
+- Clean upgrade receipts that remove obsolete managed files while preserving profiles, settings, captures, exports, and logs.
 "@ | Set-Content -LiteralPath (Join-Path $outputPath "README.txt") -Encoding UTF8
 
 if ($Upload) {
-  $assets = Get-ChildItem -LiteralPath $outputPath -File | ForEach-Object { $_.FullName }
-  & gh release view $ReleaseTag *> $null
-  if ($LASTEXITCODE -ne 0) {
-    & gh release create $ReleaseTag $assets --title "RevivalSide $ReleaseTag"
+  $notesPath = Join-Path $outputPath "release-notes.md"
+  @"
+## RevivalSide $ReleaseTag
+
+### Mod tools
+
+- Added the Mod:Side home, creator, loader, mod editing/copying with collision-safe IDs, and specialized Asset:Side, Story:Side, Unit:Side, Combat:Side, and Spine 3.7 Studio apps.
+- Rebuilt Unit:Side around complete playable unit creation: all employee, NPC, enemy, boss, ship, and BASE2 templates; multi-unit packs; existing-unit editing; skill, appearance, collection/profile, association, and voice-line editors; lazy previews; audio extraction; and MP3-to-voice-bundle conversion.
+- Expanded Story:Side with CounterSide-style episode organization, editable existing episodes, project copying, cutscene/stage authoring, and dungeon-ID collision resolution.
+
+### Runtime and launcher
+
+- Made custom and duplicated units load consistently in CombatHost with movement, skills, skill bars/icons, voices, skins, and full-squad support, including boss-derived playable units.
+- Added independent Mod:Side and Combat:Side service lifecycle, asset preparation progress, a Mod:Side home landing page, the updated Discord invite, and reliable log-folder opening.
+- Added Cross Save capture/export/import, event login backgrounds, frozen-client controls, responsive launcher state/settings, and single-instance focus.
+
+### Game and PC packaging
+
+- Fixed Boss Raid duplicate handling plus tutorial/stage progression, squad loadouts, limit breaks, event shops, random-box rewards, and frozen-content compatibility.
+- Added the lazy local wiki and content-addressed Windows components for x64, x86, and ARM64 while preserving profiles, settings, captures, exports, mods, and logs during upgrades.
+
+**Installer:** [$setupUrl]($setupUrl)
+"@ | Set-Content -LiteralPath $notesPath -Encoding UTF8
+
+  if (-not (Test-GitHubRelease $ReleaseTag $repository)) {
+    & gh release create $ReleaseTag --repo $repository --title "RevivalSide $ReleaseTag" --target $ReleaseTarget --draft --notes-file $notesPath
+    if ($LASTEXITCODE -ne 0) { throw "Could not create release $ReleaseTag." }
   }
-  else {
-    & gh release upload $ReleaseTag $assets --clobber
+  if (-not (Test-GitHubRelease $StableTag $repository)) {
+    & gh release create $StableTag --repo $repository --title "RevivalSide Windows Installer" --target $ReleaseTarget --prerelease --notes "Stable Windows setup bootstrap. The manifest and setup are updated only when their contents change."
+    if ($LASTEXITCODE -ne 0) { throw "Could not create stable installer release $StableTag." }
   }
-  if ($LASTEXITCODE -ne 0) { throw "gh release upload failed" }
+
+  $newAssets = @($allComponents | Where-Object { $_.upload } | ForEach-Object { $_.path })
+  $newAssets += (Join-Path $outputPath "README.txt")
+  if ($setupChanged) { $newAssets += $setupPath }
+  if ($newAssets.Count -gt 0) {
+    & gh release upload $ReleaseTag $newAssets --repo $repository --clobber
+    if ($LASTEXITCODE -ne 0) { throw "Could not upload release component assets." }
+  }
+  if ($setupChanged) {
+    & gh release upload $StableTag $setupPath --repo $repository --clobber
+    if ($LASTEXITCODE -ne 0) { throw "Could not upload the stable setup executable." }
+  }
+  & gh release upload $StableTag $manifestPath --repo $repository --clobber
+  if ($LASTEXITCODE -ne 0) { throw "Could not publish the stable release manifest." }
+  & gh release upload $ReleaseTag $manifestPath --repo $repository --clobber
+  if ($LASTEXITCODE -ne 0) { throw "Could not publish the version release manifest." }
+  & gh release edit $ReleaseTag --repo $repository --draft=false --latest --notes-file $notesPath
+  if ($LASTEXITCODE -ne 0) { throw "Could not publish release $ReleaseTag." }
 }
 
-Write-Host "Packaged GitHub release assets at $outputPath"
+Write-Host "Packaged component release assets at $outputPath"

@@ -5,7 +5,6 @@ param(
   [string]$PythonVersion = "3.13.5",
   [string]$WiresharkVersion = "4.6.6",
   [string]$WiresharkWin32Version = "3.6.24",
-  [string]$NpcapVersion = "1.88",
   [string]$DotNetChannel = "8.0",
   [string]$PythonPath = "",
   [string[]]$PythonRequirements = @("UnityPy==1.25.0", "Pillow==12.2.0"),
@@ -486,36 +485,6 @@ function Resolve-DotNetRuntimeInstaller([string]$Rid) {
   return $installerPath
 }
 
-function Resolve-NpcapInstaller {
-  $downloadsDir = Join-Path $RuntimeCacheDir "downloads"
-  $desired = Join-Path $downloadsDir "npcap-$NpcapVersion.exe"
-  if (Test-Path -LiteralPath $desired -PathType Leaf) {
-    return $desired
-  }
-
-  $cached = Get-ChildItem -LiteralPath $RuntimeCacheDir -Recurse -File -Filter "npcap-*.exe" -ErrorAction SilentlyContinue |
-    Sort-Object Name -Descending |
-    Select-Object -First 1
-  try {
-    Save-Url "https://npcap.com/dist/npcap-$NpcapVersion.exe" $desired
-    if (Test-Path -LiteralPath $desired -PathType Leaf) {
-      return $desired
-    }
-  }
-  catch {
-    if ($cached) {
-      Write-Host "Npcap $NpcapVersion download failed; using cached $($cached.Name)"
-      return $cached.FullName
-    }
-    throw
-  }
-  if ($cached) {
-    Write-Host "Npcap $NpcapVersion download produced no file; using cached $($cached.Name)"
-    return $cached.FullName
-  }
-  throw "Npcap installer was not found or downloaded: $desired"
-}
-
 function Quote-ProcessArgument([string]$Value) {
   if ($null -eq $Value) { return '""' }
   if ($Value -notmatch '[\s"]') { return $Value }
@@ -590,11 +559,11 @@ foreach ($rid in $RuntimeIdentifiers) {
   New-Item -ItemType Directory -Force -Path $runtimeOut | Out-Null
 
   Write-Host "Publishing launcher/combat host for $rid"
-  dotnet publish (Join-Path $rootPath "tools\RevivalSideLauncherApp\RevivalSideLauncherApp.csproj") `
-    -c Release -r $rid --self-contained false `
-    -p:DebugType=None -p:DebugSymbols=false --nologo `
-    -o $runtimeOut
-  if ($LASTEXITCODE -ne 0) { throw "Launcher publish failed for $rid" }
+  & powershell -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $rootPath "tools\build-revivalside-launcher.ps1") `
+    -RuntimeIdentifier $rid `
+    -OutputDir $runtimeOut
+  if ($LASTEXITCODE -ne 0) { throw "Launcher build failed for $rid" }
   Remove-PdbFiles $runtimeOut
   Assert-ExecutableArchitecture (Join-Path $runtimeOut "RevivalSideLauncher.exe") $arch "RevivalSideLauncher.exe"
 
@@ -625,8 +594,6 @@ foreach ($rid in $RuntimeIdentifiers) {
   Copy-DirectoryClean (Resolve-WiresharkRuntime $rid) (Join-Path $payloadRoot "runtime-wireshark\$rid")
   Copy-InstallerFile (Resolve-DotNetRuntimeInstaller $rid) (Join-Path $payloadRoot "runtime-installers\dotnet\$rid")
 }
-Copy-InstallerFile (Resolve-NpcapInstaller) (Join-Path $payloadRoot "runtime-installers\npcap\all")
-
 Write-Host "Publishing universal setup"
 dotnet publish (Join-Path $rootPath "tools\RevivalSideInstallerApp\RevivalSideInstallerApp.csproj") `
   -c Release -r win-x86 --self-contained true `
@@ -659,10 +626,9 @@ Bundled runtime binaries are staged under runtime\ after setup:
 - runtime\python contains Python plus UnityPy/Pillow for asset extraction.
 - runtime\Wireshark contains dumpcap/tshark for Cross Save live capture.
 
-Bundled dependency installers are staged under runtime\installers:
-- runtime\installers\dotnet contains .NET 8 Runtime installers.
-- runtime\installers\npcap contains the Npcap driver installer used by Cross Save
-  live packet capture when the driver is missing.
+Bundled .NET installers are staged under runtime\installers\dotnet.
+Cross Save live capture uses the bundled Wireshark tools and requires the user
+to install Npcap from https://npcap.com/.
 "@ | Set-Content -LiteralPath (Join-Path $outputPath "README.txt") -Encoding UTF8
 
 Write-Host "Packaged $outputPath"

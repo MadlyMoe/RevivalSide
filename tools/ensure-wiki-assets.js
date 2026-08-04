@@ -34,6 +34,13 @@ function main() {
   const finalRoot = path.join(cacheRoot, "all");
   const requests = collectWikiAssetRequests(assetsJson, { gameRoot, dataDir });
   if (!requests.length) throw new Error(`no ${PNG_ROUTE_PREFIX} image URLs were found in ${assetsJson}`);
+  if (args.assetUrl) {
+    const outputRel = decodeAssetRoute(args.assetUrl);
+    const request = requests.find((item) => item.outputRel === outputRel);
+    if (!request) throw new Error(`unknown wiki image URL: ${args.assetUrl}`);
+    buildWikiAssetBundle({ args, cacheRoot, finalRoot, requests, request });
+    return;
+  }
   const inventory = buildInventory(requests, { assetsJson, managedDir });
 
   if (!args.force && isCacheFresh(cacheRoot, finalRoot, inventory, requests)) {
@@ -53,11 +60,12 @@ function main() {
 }
 
 function collectWikiAssetRequests(assetsJson, roots) {
-  const payload = JSON.parse(fs.readFileSync(assetsJson, "utf8"));
   const urls = new Set();
-  walkValues(payload, (value) => {
-    if (typeof value === "string" && value.startsWith(PNG_ROUTE_PREFIX)) urls.add(value);
-  });
+  for (const payload of readWikiDataFiles(assetsJson)) {
+    walkValues(payload, (value) => {
+      if (typeof value === "string" && value.startsWith(PNG_ROUTE_PREFIX)) urls.add(value);
+    });
+  }
 
   const byOutputRel = new Map();
   for (const url of urls) {
@@ -77,6 +85,81 @@ function collectWikiAssetRequests(assetsJson, roots) {
     }
   }
   return [...byOutputRel.values()].sort((left, right) => left.outputRel.localeCompare(right.outputRel));
+}
+
+function readWikiDataFiles(assetsJson) {
+  const dataRoot = path.dirname(assetsJson);
+  const manifest = JSON.parse(fs.readFileSync(assetsJson, "utf8"));
+  const payloads = [manifest];
+  for (const file of Object.values(manifest.sections || {})) {
+    const target = path.resolve(dataRoot, String(file));
+    if (!target.startsWith(`${dataRoot}${path.sep}`)) throw new Error(`wiki section escaped data root: ${file}`);
+    payloads.push(JSON.parse(fs.readFileSync(target, "utf8")));
+  }
+  return payloads;
+}
+
+function buildWikiAssetBundle({ args, cacheRoot, finalRoot, requests, request }) {
+  const bundleRequests = requests.filter((item) => item.bundleRel === request.bundleRel);
+  if (bundleRequests.every((item) => fs.existsSync(path.join(finalRoot, item.outputRel)))) return;
+
+  const decryptScript = path.join(ROOT_DIR, "tools", "cs_asset_decrypt.py");
+  const extractScript = path.join(ROOT_DIR, "tools", "cs_extract_decrypted_assets.py");
+  if (!fs.existsSync(decryptScript)) throw new Error(`missing asset decrypt helper: ${decryptScript}`);
+  if (!fs.existsSync(extractScript)) throw new Error(`missing asset extract helper: ${extractScript}`);
+
+  fs.mkdirSync(path.dirname(cacheRoot), { recursive: true });
+  const workRoot = fs.mkdtempSync(path.join(path.dirname(cacheRoot), ".wiki-bundle-"));
+  const decryptedRoot = path.join(workRoot, "decrypted");
+  const extractedRoot = path.join(workRoot, "extracted");
+  const groupLabel = safeLabel(path.basename(request.sourceRoot) || "assets");
+  const decryptedOut = path.join(decryptedRoot, groupLabel);
+  const extractedOut = path.join(extractedRoot, groupLabel);
+  try {
+    fs.mkdirSync(decryptedRoot, { recursive: true });
+    fs.mkdirSync(extractedRoot, { recursive: true });
+    runPython([
+      decryptScript,
+      "decrypt-header",
+      request.source,
+      "--root",
+      request.sourceRoot,
+      "--out-dir",
+      decryptedOut,
+      "--overwrite",
+    ], args);
+    runPython([
+      extractScript,
+      "--root",
+      decryptedOut,
+      "--out-dir",
+      extractedOut,
+      "--pattern",
+      "*.asset.dec",
+      "--types",
+      "Texture2D,Sprite",
+      "--type-tree",
+      "none",
+      "--overwrite-manifest",
+    ], args);
+
+    const extractedRoots = listExtractedRoots(extractedRoot);
+    let copied = 0;
+    for (const item of bundleRequests) {
+      const source = findExtractedOutput(extractedRoots, item.outputRel);
+      if (!source) continue;
+      const target = path.join(finalRoot, item.outputRel);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(source, target);
+      copied += 1;
+    }
+    if (!fs.existsSync(path.join(finalRoot, request.outputRel))) {
+      throw new Error(`wiki image was not extracted: ${request.outputRel}`);
+    }
+    log(args, `[wiki-assets] cached ${copied} image(s) from ${request.bundleRel}`);
+  } finally {
+    removePathWithRetries(workRoot, { bestEffort: true });
+  }
 }
 
 function buildWikiAssetCache({ args, cacheRoot, finalRoot, requests, inventory, gameRoot, dataDir }) {
@@ -495,6 +578,7 @@ function parseArgs(argv) {
     if (arg === "--managed-dir") args.managedDir = argv[++index];
     else if (arg === "--assets-json") args.assetsJson = argv[++index];
     else if (arg === "--cache-dir") args.cacheDir = argv[++index];
+    else if (arg === "--asset-url") args.assetUrl = argv[++index];
     else if (arg === "--limit-bundles") args.limitBundles = Number(argv[++index]);
     else if (arg === "--force") args.force = true;
     else if (arg === "--quiet") args.quiet = true;
@@ -513,6 +597,7 @@ function usage() {
       "  --managed-dir <dir>   CounterSide Data/Managed directory or Assembly-CSharp.dll path",
       "  --assets-json <path>  wiki data JSON with /asset-png/ image URLs",
       "  --cache-dir <dir>     output cache (default: .cache/wiki-assets)",
+      "  --asset-url <url>     cache only the encrypted bundle needed by one wiki image",
       "  --force               rebuild even when the installed asset inventory is unchanged",
       "  --quiet               suppress extractor output",
     ].join("\n")
@@ -520,4 +605,6 @@ function usage() {
   process.exit(0);
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = { bundleRelFromOutputRel, collectWikiAssetRequests, readWikiDataFiles };

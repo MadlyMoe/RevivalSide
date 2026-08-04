@@ -387,7 +387,7 @@ function craftStartAck(ctx, user, req) {
       writeSignedVarInt(Number(result && result.errorCode) || 0),
       writeNullableObjectOrNull(result && result.slot ? buildCraftSlotData(result.slot) : null),
       writeObjectList((result && result.costItems || []).map((item) => writeNullableObject(buildItemMiscData(item)))),
-      writeNullObject(),
+      writeNullableObject(buildResetCountData(result && result.resetCount)),
     ]),
   };
 }
@@ -674,7 +674,7 @@ function craftInstantAck(ctx, user, req) {
       writeSignedVarInt(Number((result && result.moldId) || req.moldId || 0) || 0),
       writeSignedVarInt(Number((result && result.moldCount) || req.moldCount || 1) || 1),
       writeObjectList((result && result.costItems || []).map((item) => writeNullableObject(buildItemMiscData(item)))),
-      writeNullObject(),
+      writeNullableObject(buildResetCountData(result && result.resetCount)),
       writeNullableObject(buildRewardData((result && result.reward) || createEmptyReward())),
     ]),
   };

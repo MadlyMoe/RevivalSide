@@ -63,8 +63,8 @@ def get_bundle_masks(path: Path) -> list[int]:
     ]
 
 
-def decrypt_bundle_header(path: Path) -> bytes:
-    data = bytearray(path.read_bytes())
+def transform_bundle_header(data: bytes, path: Path) -> bytes:
+    data = bytearray(data)
     masks = get_bundle_masks(path)
     mask_index = 0
     offset = 0
@@ -88,6 +88,10 @@ def decrypt_bundle_header(path: Path) -> bytes:
     return bytes(data)
 
 
+def decrypt_bundle_header(path: Path) -> bytes:
+    return transform_bundle_header(path.read_bytes(), path)
+
+
 def crypto2_decrypt(data: bytes) -> bytes:
     buffer = bytearray(data)
     mask_index = 0
@@ -108,6 +112,38 @@ def crypto2_decrypt(data: bytes) -> bytes:
             odd = value & ODD_MASK
             value = ((value & EVEN_MASK) >> 1) | ((odd << 1) & MASK64)
             value = (value ^ mask) & MASK64
+            buffer[offset : offset + 8] = value.to_bytes(8, "little")
+            offset += 8
+        else:
+            low_byte = mask & 0xFF
+            for index in range(offset, len(buffer)):
+                buffer[index] ^= low_byte
+            offset = len(buffer)
+
+        mask_index = (mask_index + 1) % len(CRYPTO2_MASKS)
+
+    return bytes(buffer)
+
+
+def crypto2_encrypt(data: bytes) -> bytes:
+    buffer = bytearray(data)
+    mask_index = 0
+    offset = 0
+
+    while offset < len(buffer):
+        mask = CRYPTO2_MASKS[mask_index]
+        remaining = len(buffer) - offset
+        if remaining >= 8:
+            value = int.from_bytes(buffer[offset : offset + 8], "little") ^ mask
+            odd = value & ODD_MASK
+            value = ((value & EVEN_MASK) >> 1) | ((odd << 1) & MASK64)
+            value = (
+                (value & 0xFFFFFFFF00000000)
+                | ((value & 0xFF000000) >> 8)
+                | ((value & 0x00FF0000) << 8)
+                | ((value & 0x0000FF00) >> 8)
+                | ((value & 0x000000FF) << 8)
+            )
             buffer[offset : offset + 8] = value.to_bytes(8, "little")
             offset += 8
         else:
@@ -416,15 +452,275 @@ def decrypt_header_files(args: argparse.Namespace) -> None:
 
     seen: set[Path] = set()
     count = 0
-    for path in paths:
+    for index, path in enumerate(paths, start=1):
         resolved = path.resolve()
         if resolved in seen:
             continue
         seen.add(resolved)
         output = decrypt_header_file(path, args.suffix, args.overwrite, args.root, args.out_dir)
         count += 1
-        print(f"wrote {output}")
+        if not args.quiet:
+            print(f"[{index}/{len(paths)}] wrote {output}")
     print(f"done count={count}")
+
+
+def patch_script_bundle(args: argparse.Namespace) -> None:
+    source = args.bundle.resolve()
+    replacements = args.replacement_dir.resolve()
+    output = args.out.resolve()
+    if output.name != source.name:
+        raise ValueError(f"output must keep the encrypted bundle name {source.name}: {output}")
+
+    replacement_files = {path.stem: path for path in replacements.glob("*.luac") if path.is_file()}
+    if not replacement_files:
+        raise ValueError(f"no .luac replacements found in {replacements}")
+
+    environment = load_bundle(source)
+    changed: dict[str, bytes] = {}
+    found: set[str] = set()
+    for obj in environment.objects:
+        if obj.type.name != "TextAsset":
+            continue
+        asset = obj.read()
+        plain_name = decrypted_lua_name(asset.m_Name).removesuffix("_c")
+        replacement = replacement_files.get(plain_name)
+        if replacement is None:
+            continue
+        found.add(plain_name)
+        replacement_data = replacement.read_bytes()
+        if crypto2_decrypt(text_asset_bytes(asset)) == replacement_data:
+            continue
+        asset.m_Script = crypto2_encrypt(replacement_data).decode("utf-8", "surrogateescape")
+        asset.save()
+        changed[plain_name] = replacement_data
+
+    if not found:
+        raise ValueError(f"none of the replacement scripts exist in {source}")
+
+    bundle = next((item for item in environment.files.values() if hasattr(item, "save")), None)
+    if bundle is None:
+        raise ValueError(f"Unity bundle was not found in {source}")
+    target_size = args.output_size or (source.stat().st_size if args.preserve_size else 0)
+    packed = bundle.save(packer="original")
+    packer = "original"
+    if target_size and len(packed) > target_size:
+        packed = bundle.save(packer="lzma")
+        packer = "lzma"
+    if target_size and len(packed) > target_size:
+        raise ValueError(f"patched bundle exceeds target size: {len(packed)} > {target_size}")
+
+    encrypted = transform_bundle_header(packed, output)
+    if target_size:
+        encrypted += b"\0" * (target_size - len(encrypted))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(encrypted)
+
+    verified = load_bundle(output)
+    remaining = dict(changed)
+    for obj in verified.objects:
+        if obj.type.name != "TextAsset":
+            continue
+        asset = obj.read()
+        plain_name = decrypted_lua_name(asset.m_Name).removesuffix("_c")
+        expected = remaining.get(plain_name)
+        if expected is not None and crypto2_decrypt(text_asset_bytes(asset)) == expected:
+            del remaining[plain_name]
+    if remaining:
+        raise ValueError(f"patched scripts failed verification: {', '.join(sorted(remaining))}")
+
+    print(
+        f"patched={len(changed)} matched={len(found)} packer={packer} "
+        f"bytes={output.stat().st_size} sha256={hashlib.sha256(output.read_bytes()).hexdigest()} out={output}"
+    )
+
+
+def _pointer_id(value: object) -> int:
+    return int(value.get("m_PathID", 0)) if isinstance(value, dict) else 0
+
+
+def _atlas_pages(text: str) -> tuple[list[str], list[int], list[str], str, bool]:
+    newline = "\r\n" if "\r\n" in text else "\n"
+    trailing = text.endswith(("\n", "\r"))
+    lines = text.splitlines()
+    indexes = [
+        index for index, line in enumerate(lines[:-1])
+        if line.strip() == line and line and lines[index + 1].startswith("size:")
+    ]
+    return [lines[index] for index in indexes], indexes, lines, newline, trailing
+
+
+def _spine_binary_version(data: bytes) -> str:
+    def read_string(offset: int) -> tuple[str, int]:
+        length = 0
+        shift = 0
+        while True:
+            if offset >= len(data) or shift > 28:
+                raise ValueError("invalid Spine binary string")
+            value = data[offset]
+            offset += 1
+            length |= (value & 0x7F) << shift
+            if value & 0x80 == 0:
+                break
+            shift += 7
+        if length <= 1:
+            return "", offset
+        end = offset + length - 1
+        if end > len(data):
+            raise ValueError("truncated Spine binary string")
+        return data[offset:end].decode("utf-8", "replace"), end
+
+    _, offset = read_string(0)
+    version, _ = read_string(offset)
+    return version
+
+
+def _main_texture_id(material_tree: dict) -> int:
+    entries = material_tree.get("m_SavedProperties", {}).get("m_TexEnvs", [])
+    for entry in entries:
+        if isinstance(entry, (list, tuple)) and len(entry) == 2:
+            name, value = entry
+        elif isinstance(entry, dict):
+            name, value = entry.get("first"), entry.get("second", {})
+        else:
+            continue
+        if name == "_MainTex":
+            return _pointer_id(value.get("m_Texture", {}))
+    return 0
+
+
+def patch_spine_bundle(args: argparse.Namespace) -> None:
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise RuntimeError("Pillow is required for Spine texture imports") from exc
+
+    skeleton_data = args.skeleton.read_bytes()
+    version = _spine_binary_version(skeleton_data)
+    if not version.startswith("3.7."):
+        raise ValueError(f"CounterSide requires a Spine 3.7 binary .skel; uploaded version is {version or 'unknown'}")
+    atlas_text = args.atlas.read_text(encoding="utf-8-sig")
+    uploaded_pages, uploaded_indexes, uploaded_lines, _, _ = _atlas_pages(atlas_text)
+    if not uploaded_pages:
+        raise ValueError("the uploaded .atlas has no PNG pages")
+    textures = {path.name.lower(): path for path in args.textures}
+    wanted_pages = {Path(name).name.lower() for name in uploaded_pages}
+    if set(textures) != wanted_pages:
+        raise ValueError(f"select exactly the atlas PNG pages: {', '.join(uploaded_pages)}")
+
+    environment = load_bundle(args.bundle)
+    objects = {obj.path_id: obj for obj in environment.objects}
+    script_names = {
+        obj.path_id: getattr(obj.read(), "m_Name", "")
+        for obj in environment.objects if obj.type.name == "MonoScript"
+    }
+    game_object_names = {
+        obj.path_id: getattr(obj.read(), "m_Name", "")
+        for obj in environment.objects if obj.type.name == "GameObject"
+    }
+    script_name = "SkeletonAnimation" if args.kind == "battle" else "SkeletonGraphic"
+    preferred_object = "SPINE_SkeletonAnimation" if args.kind == "battle" else "SPINE_SkeletonGraphic"
+    components: list[tuple[bool, object, dict]] = []
+    for obj in environment.objects:
+        if obj.type.name != "MonoBehaviour":
+            continue
+        try:
+            tree = obj.read_typetree()
+        except Exception:
+            continue
+        if script_names.get(_pointer_id(tree.get("m_Script"))) != script_name:
+            continue
+        name = game_object_names.get(_pointer_id(tree.get("m_GameObject")), "")
+        components.append((name.casefold() == preferred_object.casefold(), obj, tree))
+    if not components:
+        raise ValueError(f"source bundle has no {script_name} component")
+    _, _, component = max(components, key=lambda item: item[0])
+    skeleton_asset = objects.get(_pointer_id(component.get("skeletonDataAsset")))
+    if skeleton_asset is None:
+        raise ValueError("source Spine component has no SkeletonDataAsset")
+    skeleton_tree = skeleton_asset.read_typetree()
+    skeleton_text = objects.get(_pointer_id(skeleton_tree.get("skeletonJSON")))
+    atlas_ids = [_pointer_id(value) for value in skeleton_tree.get("atlasAssets", [])]
+    if skeleton_text is None or len(atlas_ids) != 1 or atlas_ids[0] not in objects:
+        raise ValueError("source Spine prefab must use one editable skeleton and atlas asset")
+    atlas_asset = objects[atlas_ids[0]]
+    atlas_tree = atlas_asset.read_typetree()
+    atlas_text_asset = objects.get(_pointer_id(atlas_tree.get("atlasFile")))
+    if atlas_text_asset is None:
+        raise ValueError("source Spine atlas TextAsset was not found")
+    source_atlas = text_asset_bytes(atlas_text_asset.read()).decode("utf-8-sig")
+    source_pages, source_indexes, source_lines, newline, trailing = _atlas_pages(source_atlas)
+    material_ids = [_pointer_id(value) for value in atlas_tree.get("materials", [])]
+    texture_objects = []
+    for material_id in material_ids:
+        material = objects.get(material_id)
+        texture = objects.get(_main_texture_id(material.read_typetree())) if material else None
+        if texture is not None and texture.type.name == "Texture2D":
+            texture_objects.append(texture)
+    if len(source_pages) != len(uploaded_pages) or len(texture_objects) != len(source_pages):
+        raise ValueError(f"uploaded atlas has {len(uploaded_pages)} page(s), but the selected source unit prefab requires {len(source_pages)}")
+
+    uploaded_page_paths = {Path(name).name.lower(): textures[Path(name).name.lower()] for name in uploaded_pages}
+    for index, source_page in enumerate(source_pages):
+        uploaded_page = uploaded_pages[index]
+        source_lines[source_indexes[index]] = source_page
+        with Image.open(uploaded_page_paths[Path(uploaded_page).name.lower()]) as image:
+            if image.format != "PNG":
+                raise ValueError(f"Spine atlas texture is not a PNG: {uploaded_page}")
+            size = re.fullmatch(r"size:\s*(\d+)\s*,\s*(\d+)", uploaded_lines[uploaded_indexes[index] + 1])
+            expected_size = (int(size.group(1)), int(size.group(2))) if size else None
+            if expected_size is None or image.size != expected_size:
+                raise ValueError(f"{uploaded_page} must be the atlas size {expected_size or 'width,height'}, got {image.size}")
+            texture = texture_objects[index].read()
+            texture.image = image.convert("RGBA")
+            texture.save()
+
+    skeleton = skeleton_text.read()
+    skeleton.m_Script = skeleton_data.decode("utf-8", "surrogateescape")
+    skeleton.save()
+    atlas = atlas_text_asset.read()
+    atlas.m_Script = newline.join(source_lines) + (newline if trailing else "")
+    atlas.save()
+
+    bundle_object = next((obj for obj in environment.objects if obj.type.name == "AssetBundle"), None)
+    if bundle_object is None:
+        raise ValueError("source AssetBundle metadata was not found")
+    bundle_tree = bundle_object.read_typetree()
+    renamed = False
+    container = []
+    for key, value in bundle_tree.get("m_Container", []):
+        asset = objects.get(_pointer_id(value.get("asset")))
+        if not renamed and Path(key).stem.casefold() == args.source_asset_name.casefold() and asset is not None and asset.type.name == "GameObject":
+            game_object = asset.read()
+            game_object.m_Name = args.asset_name
+            game_object.save()
+            key = str(Path(key).with_name(f"{args.asset_name}{Path(key).suffix}")).replace("\\", "/").lower()
+            renamed = True
+        container.append((key, value))
+    if not renamed:
+        raise ValueError(f"source prefab asset was not found: {args.source_asset_name}")
+    bundle_tree["m_Container"] = container
+    bundle_tree["m_Name"] = f"{args.bundle_name.lower()}.asset"
+    bundle_tree["m_AssetBundleName"] = args.bundle_name.lower()
+    bundle_object.save_typetree(bundle_tree)
+
+    bundle = next((item for item in environment.files.values() if hasattr(item, "save")), None)
+    if bundle is None:
+        raise ValueError("Unity bundle was not found in the selected source")
+    packed = bundle.save(packer="original")
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_bytes(transform_bundle_header(packed, args.out))
+    verified = load_bundle(args.out)
+    if not any(obj.type.name == "GameObject" and getattr(obj.read(), "m_Name", "").casefold() == args.asset_name.casefold() for obj in verified.objects):
+        raise ValueError("patched Spine bundle verification failed")
+    print(json.dumps({
+        "output": str(args.out),
+        "bytes": args.out.stat().st_size,
+        "spineVersion": version,
+        "pages": uploaded_pages,
+        "kind": args.kind,
+        "bundleName": args.bundle_name,
+        "assetName": args.asset_name,
+    }))
 
 
 def main() -> int:
@@ -461,6 +757,7 @@ def main() -> int:
     header_cmd.add_argument("--out-dir", type=Path, help="Write decrypted files into this folder preserving paths under --root")
     header_cmd.add_argument("--suffix", default=".dec")
     header_cmd.add_argument("--overwrite", action="store_true")
+    header_cmd.add_argument("--quiet", action="store_true", help="Print only the final summary")
 
     dump_cmd = sub.add_parser("dump-scripts", help="Dump all decrypted Lua TextAssets from script bundles")
     dump_cmd.add_argument("--root", type=Path, required=True, help="Root containing ab_script* bundles")
@@ -470,6 +767,24 @@ def main() -> int:
     dump_cmd.add_argument("--strings", action="store_true", help="Also write printable string dumps")
     dump_cmd.add_argument("--limit", type=int, default=0)
     dump_cmd.add_argument("--overwrite", action="store_true")
+
+    patch_cmd = sub.add_parser("patch-scripts", help="Replace Lua TextAssets in an encrypted script bundle")
+    patch_cmd.add_argument("--bundle", type=Path, required=True)
+    patch_cmd.add_argument("--replacement-dir", type=Path, required=True)
+    patch_cmd.add_argument("--out", type=Path, required=True)
+    patch_cmd.add_argument("--preserve-size", action="store_true")
+    patch_cmd.add_argument("--output-size", type=int, default=0)
+
+    spine_cmd = sub.add_parser("patch-spine", help="Clone a CounterSide Spine prefab bundle and replace its skeleton, atlas, and PNG pages")
+    spine_cmd.add_argument("--bundle", type=Path, required=True)
+    spine_cmd.add_argument("--skeleton", type=Path, required=True)
+    spine_cmd.add_argument("--atlas", type=Path, required=True)
+    spine_cmd.add_argument("--textures", nargs="+", type=Path, required=True)
+    spine_cmd.add_argument("--kind", choices=("graphic", "battle"), required=True)
+    spine_cmd.add_argument("--source-asset-name", required=True)
+    spine_cmd.add_argument("--bundle-name", required=True)
+    spine_cmd.add_argument("--asset-name", required=True)
+    spine_cmd.add_argument("--out", type=Path, required=True)
 
     args = parser.parse_args()
 
@@ -509,6 +824,14 @@ def main() -> int:
 
     if args.cmd == "dump-scripts":
         dump_script_bundles(args)
+        return 0
+
+    if args.cmd == "patch-scripts":
+        patch_script_bundle(args)
+        return 0
+
+    if args.cmd == "patch-spine":
+        patch_spine_bundle(args)
         return 0
 
     return 1

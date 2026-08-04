@@ -4,10 +4,24 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { URL } = require("url");
+const ROOT_DIR = path.resolve(__dirname, "..");
+loadDotEnv(path.join(ROOT_DIR, ".env"));
+const { activateInstalledModRuntime } = require("../modules/mod-loader");
+const modRuntime = activateInstalledModRuntime({ rootDir: ROOT_DIR, env: process.env });
 const { loadPacketHandlers } = require("./packetHandlerLoader");
 const { createUserManager } = require("./userManager");
-const ROOT_DIR = path.resolve(__dirname, "..");
 const { findCounterSideManagedDir } = require("../modules/counterside-install");
+const {
+  applyActiveUserSelection,
+  resolveActiveUserPath,
+  writeActiveUserSelection,
+} = require("../modules/user-db-selection");
+const {
+  loadAndroidClientUpdateState,
+  loadFrozenClientPatchState,
+  resolveAndroidClientUpdateResponse,
+  resolveFrozenClientPatchResponse,
+} = require("../modules/frozen-client-update");
 const {
   getDefaultGameplayTablesDir,
   readGameplayTableRecords,
@@ -22,6 +36,8 @@ const {
   isTutorialStageId,
   mapIdForStageDungeon: tutorialMapIdForStageDungeon,
   stageIdForDungeonId: tutorialStageIdForDungeonId,
+  hasTutorialCompletionMission,
+  TUTORIAL_COMPLETION_MISSION_IDS,
   TUTORIAL_STAGE_CHAIN,
 } = require("../stages/tutorialStage");
 const {
@@ -64,6 +80,7 @@ const {
   getArmyOperatorByUid,
   addUnitExp,
   addOperatorExp,
+  grantUnit,
 } = require("../modules/unit");
 const { INVENTORY_TYPES, getInventoryCapacity } = require("../modules/inventory-capacity");
 const {
@@ -98,7 +115,6 @@ const {
   grantRewardRecord,
 } = require("../modules/reward");
 
-loadDotEnv(path.join(ROOT_DIR, ".env"));
 const {
   buildAttendanceData: buildSerializedAttendanceData,
   buildAttendanceIntervalDataList: buildSerializedAttendanceIntervalDataList,
@@ -108,6 +124,7 @@ const {
   loadShopCatalog,
   buildSerializedRandomShopData,
   getActiveEventShopState,
+  filterEventClockShopOpenTags,
   ensureActiveEventShopCurrencies,
 } = require("../modules/shop");
 const { getShopPurchaseHistories, getShopTotalPaidAmount } = require("../modules/resource");
@@ -128,6 +145,7 @@ const {
 } = require("../modules/contract");
 const { buildMyOfficeStateData: buildSerializedMyOfficeStateData } = require("../modules/office");
 const lobbyCustomization = require("../modules/lobby");
+const loginBackground = require("../modules/login-background");
 const simulation = require("../modules/simulation");
 const stamina = require("../modules/stamina");
 const collection = require("../modules/collection");
@@ -141,8 +159,16 @@ const {
   buildSupportUnitData: buildPersistedSupportUnitData,
   ensureSupportUnit,
 } = require("../modules/combat-roster");
-const { createEventManager } = require("../modules/event-manager");
+const {
+  createEventManager,
+} = require("../modules/event-manager");
 const { createServerTime } = require("../modules/server-time");
+const {
+  getCapturedContentsTags,
+  getCapturedOpenTags,
+  getFrozenContentsTags,
+  hasFrozenMissionSnapshot,
+} = require("../modules/frozen-content-compat");
 
 function envFlag(...keys) {
   return keys.some((key) => {
@@ -313,7 +339,8 @@ const CAPTURED_GAME_FLOW_DIR =
 const PACKET_HANDLER_DIR = process.env.CS_PACKET_HANDLER_DIR || path.join(ROOT_DIR, "packet-handlers");
 const MODULE_HANDLER_ROOT = path.join(ROOT_DIR, "modules");
 const UNIT_TABLE_PATH = process.env.CS_UNIT_TABLE_PATH || path.join(ROOT_DIR, "server-data", "units.json");
-const DUNGEON_TABLE_PATH = process.env.CS_DUNGEON_TABLE_PATH || path.join(ROOT_DIR, "server-data", "dungeons.json");
+const DUNGEON_TABLE_OVERRIDE_PATH = String(process.env.CS_DUNGEON_TABLE_PATH || "").trim();
+const DUNGEON_TABLE_FALLBACK_PATH = path.join(ROOT_DIR, "server-data", "dungeons.json");
 const STAGE_TABLE_PATH = process.env.CS_STAGE_TABLE_PATH || "";
 const MAP_TABLE_PATH = process.env.CS_MAP_TABLE_PATH || "";
 const USE_LOCAL_USER_DB = process.env.CS_USE_LOCAL_USER_DB !== "0";
@@ -352,7 +379,20 @@ const CSHARP_COMBAT_HOST_DLL =
 const CSHARP_COMBAT_HOST_TIMEOUT_MS = Number(process.env.CS_CSHARP_COMBAT_HOST_TIMEOUT_MS || 20000);
 const CSHARP_COMBAT_HOST_DOTNET = process.env.CS_CSHARP_COMBAT_HOST_DOTNET || process.env.CS_DOTNET_PATH || findDefaultDotnetRuntime();
 const COUNTERSIDE_MANAGED_DIR = process.env.CS_COUNTERSIDE_MANAGED_DIR || findCounterSideManagedDir({ env: process.env });
+const REQUIRE_FROZEN_CLIENT_PATCH = process.env.CS_REQUIRE_FROZEN_CLIENT_PATCH === "1";
 const GAMEPLAY_TABLES_DIR = getDefaultGameplayTablesDir({ rootDir: ROOT_DIR, env: process.env, managedDir: COUNTERSIDE_MANAGED_DIR });
+const FROZEN_CLIENT_PATCH_STATE = loadFrozenClientPatchState(COUNTERSIDE_MANAGED_DIR, {
+  gameplayTablesDir: GAMEPLAY_TABLES_DIR,
+});
+const ANDROID_CLIENT_UPDATE_STATE = loadAndroidClientUpdateState(
+  process.env.CS_ANDROID_CLIENT_UPDATE_DIR || path.join(ROOT_DIR, "server-data", "android-client-update")
+);
+if (REQUIRE_FROZEN_CLIENT_PATCH && (!FROZEN_CLIENT_PATCH_STATE || !FROZEN_CLIENT_PATCH_STATE.isFrozenClient)) {
+  throw new Error("The controlled frozen client marker and version metadata could not be loaded.");
+}
+if (REQUIRE_FROZEN_CLIENT_PATCH && !FROZEN_CLIENT_PATCH_STATE.contentsVersion) {
+  throw new Error("The frozen client content version could not be read from the extracted gameplay cache.");
+}
 const OFFICIAL_COMBAT_REPLAY = process.env.CS_OFFICIAL_COMBAT_REPLAY === "1";
 const OFFICIAL_COMBAT_REPLAY_START_INDEX = Number(process.env.CS_OFFICIAL_COMBAT_REPLAY_START_INDEX || 64);
 const OFFICIAL_COMBAT_REPLAY_INTERVAL_MS = Number(process.env.CS_OFFICIAL_COMBAT_REPLAY_INTERVAL_MS || 33);
@@ -388,6 +428,7 @@ const PAYBACK_MISSION_TABS = Object.freeze(resolvePaybackMissionTabs());
 const SIMULATION_MISSION_TABS = [6, 7, 8];
 const FAST_LOBBY_MISSION_TABS = uniqueMissionTabs([1, 2, 3, ...SIMULATION_MISSION_TABS, ...GUIDE_MISSION_TABS]);
 const POST_TUTORIAL_MIN_USER_LEVEL = Math.max(2, Number(process.env.CS_POST_TUTORIAL_MIN_USER_LEVEL || 2) || 2);
+const DEFAULT_STARTER_SHIP_ID = 21001; // NKM_SHIP_A_COFFIN_1
 const NEW_ACCOUNT_ROSTER_MODE = resolveNewAccountRosterMode();
 const SEED_NEW_ACCOUNT_TROPHIES = process.env.CS_SEED_NEW_ACCOUNT_TROPHIES === "1";
 const USE_STEAM_TOKEN_AS_ACCESS_TOKEN = process.env.CS_USE_STEAM_TOKEN_AS_ACCESS_TOKEN === "1";
@@ -396,6 +437,7 @@ const MIRROR_PUBLIC_HOST = process.env.CS_HTTP_MIRROR_HOST || "127.0.0.1";
 const MIRROR_PUBLIC_BASE_URL =
   process.env.CS_HTTP_MIRROR_BASE_URL || `http://${MIRROR_PUBLIC_HOST}:${HTTP_MIRROR_PORT}`;
 const USER_DB_PATH = process.env.CS_USER_DB_PATH || path.join(ROOT_DIR, "server-data", "users.json");
+const ACTIVE_USER_PATH = resolveActiveUserPath(USER_DB_PATH, process.env.CS_ACTIVE_USER_PATH || "");
 const SERVER_TIME_STATE_PATH = process.env.CS_SERVER_TIME_STATE_PATH || path.join(ROOT_DIR, "server-data", "server-time.json");
 const USER_MANAGER_ENABLED = process.env.CS_USER_MANAGER !== "0";
 const USER_MANAGER_BASE_PATH = process.env.CS_USER_MANAGER_BASE_PATH || "/user-manager";
@@ -420,7 +462,6 @@ const STATIC_COMBAT_STATS = Object.freeze({
   moveSpeed: 0,
   attackCooldown: Number(process.env.CS_STATIC_UNIT_ATTACK_COOLDOWN || 1.6),
 });
-const TUTORIAL_SKIP_WIN_MISSION_IDS = Object.freeze([999, 100]);
 const POST_TUTORIAL_GUIDE_MISSION_IDS = Object.freeze([340, 341, 345, 610]);
 const POST_TUTORIAL_GUIDE_REQUIREMENT_STAGE_IDS = Object.freeze({
   340: 11665, // Daily / Simulation guide after NKM_MAIN_BATTLE_EP1_2_4_ACT_BOSS_A
@@ -431,7 +472,14 @@ const POST_TUTORIAL_GUIDE_REQUIREMENT_STAGE_IDS = Object.freeze({
 
 const GAME_SERVER_IP = process.env.CS_GAME_SERVER_IP || "127.0.0.1";
 const GAME_SERVER_PORT = Number(process.env.CS_GAME_SERVER_PORT || PORT);
-const CONTENTS_VERSION = process.env.CS_CONTENTS_VERSION || "9.2.c";
+const FROZEN_SOURCE_CONTENTS_VERSION =
+  String(process.env.CS_FROZEN_SOURCE_CONTENTS_VERSION || "").trim() ||
+  (FROZEN_CLIENT_PATCH_STATE && FROZEN_CLIENT_PATCH_STATE.isFrozenClient
+    ? FROZEN_CLIENT_PATCH_STATE.contentsVersion
+    : "");
+const LOCK_CONTENTS_VERSION = Boolean(FROZEN_SOURCE_CONTENTS_VERSION) || process.env.CS_LOCK_CONTENTS_VERSION === "1";
+const CONTENTS_VERSION = process.env.CS_CONTENTS_VERSION || FROZEN_SOURCE_CONTENTS_VERSION || "9.2.c";
+
 const REQUIRED_CONTENTS_TAGS = Object.freeze([
   "TAG_COMMON_SHOP_TAB_SUPPLY",
   "TAG_COMMON_SHOP_TAB_PACKAGE_SUPER_PACK",
@@ -467,9 +515,12 @@ const eventManager = createEventManager({ rootDir: ROOT_DIR, env: process.env })
 const serverTime = createServerTime({
   rootDir: ROOT_DIR,
   statePath: SERVER_TIME_STATE_PATH,
+  defaultDate: eventManager.config && eventManager.config.eventDate,
   logger: (message) => console.log(message),
 });
 const runtimeEventManager = createRuntimeEventManager(eventManager);
+const LOGIN_BACKGROUND_MODE = String(process.env.CS_LOGIN_BACKGROUND || loginBackground.AUTO).trim();
+const LOGIN_BACKGROUND_CATALOG = loginBackground.getLoginBackgroundCatalog({ rootDir: ROOT_DIR, env: process.env });
 const EVENT_MANAGER_DIAGNOSTICS = envFlag("CS_EVENT_DIAGNOSTICS");
 const EVENT_CONTENTS_TAGS_ENABLED = envFlag("CS_EVENT_EMIT_CONTENTS_TAGS", "CS_EVENT_CONTENTS_TAGS");
 const EVENT_COUNTER_PASS_CONTENTS_TAGS_ENABLED = envFlagDefault(
@@ -505,6 +556,7 @@ const capturedCombatReplayEntries = buildCapturedCombatReplayEntries(capturedGam
 const capturedFlowMirror = loadCapturedFlowMirror(CAPTURED_FLOW_DIR);
 const gameplayUnitStats = loadGameplayUnitStats(UNIT_TABLE_PATH);
 const userDb = loadUserDb(USER_DB_PATH);
+applyActiveUserSelection(userDb, ACTIVE_USER_PATH);
 const repairedDeckReferenceProfiles = repairUserDbDeckReferences(userDb);
 if (repairedDeckReferenceProfiles > 0 && USE_LOCAL_USER_DB) {
   console.log(`[user-db] repaired stale deck references profiles=${repairedDeckReferenceProfiles}`);
@@ -561,6 +613,8 @@ const combatHandler = createCombatHandler({
     CSHARP_COMBAT_HOST_DOTNET,
     COUNTERSIDE_MANAGED_DIR,
     GAMEPLAY_TABLES_DIR,
+    MOD_TABLES_DIR: modRuntime.currentRoot,
+    CONTENTS_TAGS: getEffectiveContentsTags(CONTENTS_TAGS),
   },
   combatStateId: COMBAT_STATE_ID,
   defaultCombatStats: DEFAULT_COMBAT_STATS,
@@ -581,6 +635,7 @@ const userManager = USER_MANAGER_ENABLED
       allowRemote: USER_MANAGER_ALLOW_REMOTE,
       userDb,
       userDbPath: USER_DB_PATH,
+      activeUserPath: ACTIVE_USER_PATH,
       saveUserDb,
       ensureUserDefaults,
       makeAccessToken,
@@ -611,6 +666,7 @@ if (process.env.CS_DUMP_MERGED_JOIN_LOBBY_ACK_PAYLOAD) {
 
 let lastSteamAccessToken = "";
 let lastEffectiveAccessToken = "";
+// Android negotiates contents and logs in on consecutive TCP connections.
 let lastAckContentsVersion = "";
 let lastAckContentsTags = [];
 let runtimeConfigPrinted = false;
@@ -630,8 +686,6 @@ function startTcpServer() {
       gameReplay: createGameReplayState(),
     };
     lastSteamAccessToken = "";
-    lastAckContentsVersion = "";
-    lastAckContentsTags = [];
 
     console.log(`\n[+] Client connected: ${socket.remoteAddress}:${socket.remotePort}`);
     logRuntimeConfig();
@@ -676,10 +730,20 @@ function logRuntimeConfig() {
       REFRAME_CAPTURED_GAME_FLOW ? "on" : "off"
     }`
   );
-  console.log(`[cfg] contentsVersion=${CONTENTS_VERSION}`);
+  console.log(
+    `[cfg] contentsVersion=${CONTENTS_VERSION} sourceVersion=${FROZEN_SOURCE_CONTENTS_VERSION || "(server)"} locked=${
+      LOCK_CONTENTS_VERSION ? "yes" : "no"
+    }`
+  );
   console.log(`[cfg] contentsTags=${CONTENTS_TAGS.length}`);
   const eventSummary = runtimeEventManager.getSummary();
   const serverTimeSummary = serverTime.getSummary();
+  const selectedLoginBackground = getActiveLoginBackground();
+  console.log(
+    `[cfg] loginBackground=${LOGIN_BACKGROUND_MODE || "auto"} resolved=${
+      selectedLoginBackground ? `${selectedLoginBackground.id}:${selectedLoginBackground.contentTag}` : "none"
+    } catalog=${LOGIN_BACKGROUND_CATALOG.length}`
+  );
   console.log(
     `[cfg] eventManager=${eventSummary.enabled ? "on" : "off"} clockDate=${
       eventSummary.dateIso || serverTimeSummary.eventDateKey || "(unset)"
@@ -722,6 +786,13 @@ function logRuntimeConfig() {
       `[cfg] officialGamebaseLoginAck=on version=${capturedTcpProfiles.gamebaseLoginAck.contentsVersion} tags=${capturedTcpProfiles.gamebaseLoginAck.contentsTag.length} openTags=${capturedTcpProfiles.gamebaseLoginAck.openTag.length}`
     );
   }
+  if (FROZEN_SOURCE_CONTENTS_VERSION) {
+    console.log(
+      `[cfg] frozenCompatibility source=${FROZEN_SOURCE_CONTENTS_VERSION} target=${CONTENTS_VERSION} contentsTags=${
+        getCapturedContentsVersionTags().length
+      } openTags=${getFrozenClientOpenTags().length}`
+    );
+  }
   console.log(`[cfg] gameServer=${GAME_SERVER_IP}:${GAME_SERVER_PORT}`);
   console.log(`[cfg] accessTokenSource=${USE_STEAM_TOKEN_AS_ACCESS_TOKEN ? "steam" : "server-issued"}`);
   console.log(
@@ -759,10 +830,22 @@ function logRuntimeConfig() {
     } tables=${GAMEPLAY_TABLES_DIR || "(none)"}`
   );
   console.log(`[cfg] verboseCaptureLogs=${VERBOSE_CAPTURE_LOGS ? "on" : "off"}`);
+  console.log(
+    `[cfg] frozenClientUpdate=${FROZEN_CLIENT_PATCH_STATE ? FROZEN_CLIENT_PATCH_STATE.standaloneVersion : "unavailable"} source=${
+      FROZEN_CLIENT_PATCH_STATE ? FROZEN_CLIENT_PATCH_STATE.patchInfoPath : "(none)"
+    } contents=${FROZEN_CLIENT_PATCH_STATE ? FROZEN_CLIENT_PATCH_STATE.contentsVersion || "unavailable" : "unavailable"} frozen=${
+      FROZEN_CLIENT_PATCH_STATE && FROZEN_CLIENT_PATCH_STATE.isFrozenClient ? "yes" : "no"
+    } required=${
+      REQUIRE_FROZEN_CLIENT_PATCH ? "on" : "off"
+    }`
+  );
+  console.log(
+    `[cfg] androidClientUpdate=${ANDROID_CLIENT_UPDATE_STATE ? `${ANDROID_CLIENT_UPDATE_STATE.sourceVersion}->${ANDROID_CLIENT_UPDATE_STATE.version}` : "unavailable"}`
+  );
 }
 
 function startHttpMirror() {
-  if (!capturedFlowMirror && !userManager) {
+  if (!capturedFlowMirror && !userManager && !ANDROID_CLIENT_UPDATE_STATE) {
     console.log(`[mirror] disabled; no manifest at ${path.join(CAPTURED_FLOW_DIR, "manifest.json")}`);
     return;
   }
@@ -773,6 +856,7 @@ function startHttpMirror() {
         if (await serveLauncherApi(req, res)) return;
         if (userManager && (await userManager.handle(req, res))) return;
         if (serveEventManagerDiagnostics(req, res)) return;
+        if (serveFrozenClientPatchMetadata(req, res)) return;
         if (capturedFlowMirror) {
           serveCapturedFlow(req, res, capturedFlowMirror);
           return;
@@ -795,6 +879,26 @@ function startHttpMirror() {
         console.log(`[+] User manager listening on ${MIRROR_PUBLIC_BASE_URL}${userManager.basePath}`);
       }
     });
+}
+
+function serveFrozenClientPatchMetadata(req, res) {
+  if (req.method !== "GET" && req.method !== "HEAD") return false;
+  const requestUrl = new URL(req.url || "/", MIRROR_PUBLIC_BASE_URL);
+  const response =
+    resolveAndroidClientUpdateResponse(requestUrl.pathname, ANDROID_CLIENT_UPDATE_STATE) ||
+    resolveFrozenClientPatchResponse(requestUrl.pathname, FROZEN_CLIENT_PATCH_STATE);
+  if (!response) return false;
+
+  res.writeHead(200, {
+    "Content-Type": response.contentType,
+    "Content-Length": response.body.length,
+    "Cache-Control": "no-store",
+    "X-RevivalSide-Asset-Update": response.label,
+  });
+  if (req.method === "HEAD") res.end();
+  else res.end(response.body);
+  console.log(`[mirror] FROZEN ${requestUrl.pathname} ${response.body.length}b ${response.label}`);
+  return true;
 }
 
 async function serveLauncherApi(req, res) {
@@ -967,7 +1071,7 @@ function importLatestOfficialProfile(options = {}) {
 }
 
 function getJoinLobbyWarmupUsers() {
-  const maxUsers = clampInt(process.env.CS_LAUNCHER_WARMUP_JOIN_LOBBY_USERS, 1, 16, 4);
+  const maxUsers = clampInt(process.env.CS_LAUNCHER_WARMUP_JOIN_LOBBY_USERS, 1, 16, 1);
   const selected = [];
   const seen = new Set();
   const addUser = (user) => {
@@ -1115,7 +1219,8 @@ function takePrewarmedJoinLobbyAckPayload(user, options = {}) {
   const entry = prewarmedJoinLobbyAckPayloads.get(cacheKey);
   if (!entry || !Buffer.isBuffer(entry.payload)) return null;
   const ttlMs = clampInt(process.env.CS_PREWARMED_JOIN_LOBBY_ACK_TTL_MS, 1000, 600000, 300000);
-  if (Date.now() - Number(entry.preparedAtMs || 0) > ttlMs) {
+  const stateKey = getLobbyPreparationStateKey(getServerNowDate(), getMissionClockOptions());
+  if (entry.stateKey !== stateKey || Date.now() - Number(entry.preparedAtMs || 0) > ttlMs) {
     prewarmedJoinLobbyAckPayloads.delete(cacheKey);
     return null;
   }
@@ -1353,6 +1458,7 @@ function createPacketContext() {
       USE_LOCAL_USER_DB,
       REPLAY_CAPTURED_CONTENTS_VERSION,
       REPLAY_CAPTURED_LOGIN_ACK,
+      LOCK_CONTENTS_VERSION,
       REPLAY_CAPTURED_GAME_FLOW,
       DYNAMIC_BATTLE_MANAGER,
       DYNAMIC_BATTLE_SYNC_INTERVAL_MS,
@@ -3654,7 +3760,7 @@ function recordMainStoryDungeonClear(socket, dungeonId, battleState = null) {
     state.missionResults = { ...missionResults };
   }
   const saved = recordMainStoryDungeonClearForUser(user, resolvedDungeonId, resolvedStageId, state, {
-    save: USE_LOCAL_USER_DB ? saveUserDb : null,
+    save: null,
     forceMissionSuccess: false,
   });
   if (saved) {
@@ -3891,7 +3997,7 @@ function buildDungeonSkipAckPayload(socket, req = {}) {
       },
       battleState,
     };
-    const loot = grantStageClearLoot(user, dungeonId, stageId, { replay: fakeReplay });
+    const loot = grantStageClearLoot(user, dungeonId, stageId, { replay: fakeReplay, save: false });
     grantStageClearExp(user, stageId, dungeonId, loot.userExp > 0 ? { exp: loot.userExp } : undefined);
     if (isMainStoryDungeonId(dungeonId) && !isTutorialDungeonId(dungeonId)) {
       recordMainStoryDungeonClearForUser(user, dungeonId, stageId, battleState, {
@@ -4044,7 +4150,7 @@ function buildDynamicGameEndNotPayload(replay, override = {}) {
   const raidBattleResult = isRaidGame ? maybeRecordRaidBattleResultForReplay(replay, { ...override, battleState }, win) : null;
   const isDiveGame = !isRaidGame && (Number(dynamicGame.diveStageID || 0) > 0 || Number(dynamicGame.gameType || 0) === NGT_DIVE);
   const diveBattleResult = isDiveGame ? worldMap.completeDiveBattle(override.user, dynamicGame, battleState, { win, now: dateTimeBinaryNow() }) : null;
-  const stageLoot = !isRaidGame && !isDiveGame && win ? getOrGrantStageClearLoot(replay, override.user, dungeonId, stageId) : null;
+  const stageLoot = !isRaidGame && !isDiveGame && win ? getOrGrantStageClearLoot(replay, override.user, dungeonId, stageId, { save: false }) : null;
   const costItems = isRaidGame
     ? (raidBattleResult && raidBattleResult.costItems) || []
     : isDiveGame
@@ -4859,17 +4965,43 @@ function stageIdForDungeonId(dungeonId) {
 function loadDungeonCatalog() {
   if (cachedDungeonCatalog) return cachedDungeonCatalog;
   cachedDungeonCatalog = { byId: {}, byStrId: {} };
-  if (DUNGEON_TABLE_PATH && fs.existsSync(DUNGEON_TABLE_PATH)) {
+  if (DUNGEON_TABLE_OVERRIDE_PATH && fs.existsSync(DUNGEON_TABLE_OVERRIDE_PATH)) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(DUNGEON_TABLE_PATH, "utf8"));
+      const parsed = JSON.parse(fs.readFileSync(DUNGEON_TABLE_OVERRIDE_PATH, "utf8"));
       cachedDungeonCatalog = parsed && typeof parsed === "object" ? parsed : cachedDungeonCatalog;
       ensureDungeonCatalogIndexes(cachedDungeonCatalog);
-      return cachedDungeonCatalog;
+      if (Object.keys(cachedDungeonCatalog.byId).length > 0) {
+        console.log(
+          `[dungeon-table] loaded override entries=${Object.keys(cachedDungeonCatalog.byId).length} source=${DUNGEON_TABLE_OVERRIDE_PATH}`
+        );
+        return cachedDungeonCatalog;
+      }
     } catch (err) {
-      console.log(`[dungeon-table] failed to load ${DUNGEON_TABLE_PATH}: ${summarizeErrorLine(err)}`);
+      console.log(`[dungeon-table] failed to load ${DUNGEON_TABLE_OVERRIDE_PATH}: ${summarizeErrorLine(err)}`);
     }
   }
-  cachedDungeonCatalog = buildDungeonCatalogFromGameplayJsons();
+
+  const frozenClientCatalog = buildDungeonCatalogFromGameplayJsons();
+  if (Object.keys(frozenClientCatalog.byId).length > 0) {
+    cachedDungeonCatalog = frozenClientCatalog;
+    console.log(
+      `[dungeon-table] loaded frozen-client entries=${Object.keys(cachedDungeonCatalog.byId).length} source=${GAMEPLAY_TABLES_DIR}`
+    );
+    return cachedDungeonCatalog;
+  }
+
+  if (fs.existsSync(DUNGEON_TABLE_FALLBACK_PATH)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(DUNGEON_TABLE_FALLBACK_PATH, "utf8"));
+      cachedDungeonCatalog = parsed && typeof parsed === "object" ? parsed : cachedDungeonCatalog;
+      ensureDungeonCatalogIndexes(cachedDungeonCatalog);
+      console.log(
+        `[dungeon-table] frozen-client table unavailable; loaded fallback entries=${Object.keys(cachedDungeonCatalog.byId).length} source=${DUNGEON_TABLE_FALLBACK_PATH}`
+      );
+    } catch (err) {
+      console.log(`[dungeon-table] failed to load ${DUNGEON_TABLE_FALLBACK_PATH}: ${summarizeErrorLine(err)}`);
+    }
+  }
   return cachedDungeonCatalog;
 }
 
@@ -5798,7 +5930,7 @@ function getDungeonUserExpReward(dungeonId) {
   return Math.max(0, Number(entry && entry.m_RewardUserEXP) || 0);
 }
 
-function getOrGrantStageClearLoot(replay, user, dungeonId, stageId) {
+function getOrGrantStageClearLoot(replay, user, dungeonId, stageId, options = {}) {
   const userUid = user && user.userUid ? String(toBigInt(user.userUid || 0)) : "";
   if (
     replay &&
@@ -5809,7 +5941,7 @@ function getOrGrantStageClearLoot(replay, user, dungeonId, stageId) {
     return replay.stageClearLoot;
   }
 
-  const result = grantStageClearLoot(user, dungeonId, stageId, { replay });
+  const result = grantStageClearLoot(user, dungeonId, stageId, { ...options, replay });
   if (replay && typeof replay === "object") replay.stageClearLoot = result;
   return result;
 }
@@ -5819,7 +5951,7 @@ function maybeGrantBattleStageClearLoot(replay, user, dungeonId, stageId, battle
   if (Number(replay.dynamicGame.dungeonID || 0) !== Number(dungeonId || 0)) return null;
   const state = battleState || replay.battleState || {};
   if (!isBattleWin(state)) return null;
-  return getOrGrantStageClearLoot(replay, user, dungeonId, stageId);
+  return getOrGrantStageClearLoot(replay, user, dungeonId, stageId, { save: false });
 }
 
 function grantStageClearLoot(user, dungeonId, stageId, options = {}) {
@@ -5881,7 +6013,7 @@ function grantStageClearLoot(user, dungeonId, stageId, options = {}) {
   if (unitExpDataList.length) reward.unitExpDataList = unitExpDataList;
   result.operatorExpApplied = combatExpResult.operatorExpApplied;
   result.changed = hasRewardPayload(reward) || combatExpResult.operatorExpApplied;
-  if (result.changed && USE_LOCAL_USER_DB) saveUserDb();
+  if (result.changed && USE_LOCAL_USER_DB && options.save !== false) saveUserDb();
   console.log(
     `[stage-loot] dungeonID=${dungeonId} stageID=${stageId} credits=${creditAmount} main=${
       mainReward.summary || "-"
@@ -6741,6 +6873,7 @@ function hasPersistedTutorialCompletion(user) {
   const tutorial = user.tutorial && typeof user.tutorial === "object" ? user.tutorial : null;
   if (user.loginFlow === "post-tutorial" || (tutorial && tutorial.loginMode === "post-tutorial")) return true;
   if (tutorial && tutorial.completed === true) return true;
+  if (hasTutorialCompletionMission(user)) return true;
 
   const phases = tutorial && tutorial.phases && typeof tutorial.phases === "object" ? tutorial.phases : null;
   if (
@@ -6835,9 +6968,9 @@ function resetTutorialProgressForUser(user, options = {}) {
     changed = true;
   }
   if (user.completedMissions && typeof user.completedMissions === "object") {
-    for (const missionId of TUTORIAL_SKIP_WIN_MISSION_IDS) {
-      if (Object.prototype.hasOwnProperty.call(user.completedMissions, String(missionId))) {
-        delete user.completedMissions[String(missionId)];
+    for (const [key, mission] of Object.entries(user.completedMissions)) {
+      if (TUTORIAL_COMPLETION_MISSION_IDS.includes(Number((mission && mission.missionID) || key))) {
+        delete user.completedMissions[key];
         changed = true;
       }
     }
@@ -8458,13 +8591,16 @@ function buildCapturedLoginLikeAck(sequence, packetId, user, label, fallbackBuil
   if (user && token) user.accessToken = token;
   const contentsTag = getEffectiveContentsTags(lastAckContentsTags.length ? lastAckContentsTags : template.contentsTag);
   const openTag = getEffectiveOpenTags(template.openTag);
+  const contentsVersion = LOCK_CONTENTS_VERSION
+    ? CONTENTS_VERSION
+    : lastAckContentsVersion || template.contentsVersion || CONTENTS_VERSION;
 
   const rawPayload = buildLoginAckRaw({
     errorCode: template.errorCode,
     accessToken: token,
     gameServerIP: GAME_SERVER_IP,
     gameServerPort: GAME_SERVER_PORT,
-    contentsVersion: template.contentsVersion,
+    contentsVersion,
     contentsTag,
     openTag,
     resultCode: packetId === GAMEBASE_LOGIN_ACK ? template.resultCode || 0 : template.resultCode,
@@ -8472,7 +8608,7 @@ function buildCapturedLoginLikeAck(sequence, packetId, user, label, fallbackBuil
 
   const compressedPayload = lz4StreamWrapUncompressed(rawPayload);
   console.log(
-    `[${label} official-template] version=${template.contentsVersion} tags=${contentsTag.length} openTags=${openTag.length} tokenLen=${token.length} gameServer=${GAME_SERVER_IP}:${GAME_SERVER_PORT} payloadSize=${compressedPayload.length}`
+    `[${label} official-template] version=${contentsVersion} tags=${contentsTag.length} openTags=${openTag.length} tokenLen=${token.length} gameServer=${GAME_SERVER_IP}:${GAME_SERVER_PORT} payloadSize=${compressedPayload.length}`
   );
   return buildFramedPacket(sequence, packetId, compressedPayload, true);
 }
@@ -8501,7 +8637,9 @@ function buildLoginLikePayload(user) {
   lastEffectiveAccessToken = token;
   if (user && token) user.accessToken = token;
 
-  const version = (user && user.contentsVersion) || lastAckContentsVersion || CONTENTS_VERSION;
+  const version = LOCK_CONTENTS_VERSION
+    ? CONTENTS_VERSION
+    : (user && user.contentsVersion) || lastAckContentsVersion || CONTENTS_VERSION;
   const baseTags = lastAckContentsTags.length
     ? lastAckContentsTags
     : user && user.contentsTags && user.contentsTags.length
@@ -8550,8 +8688,15 @@ function getActiveEventState() {
   return runtimeEventManager.getActiveEventState();
 }
 
-function getEventContentsTagsForContentsVersion() {
-  const state = getActiveEventState();
+function getActiveLoginBackground(state = getActiveEventState()) {
+  return loginBackground.resolveLoginBackgroundItem(
+    LOGIN_BACKGROUND_CATALOG,
+    state,
+    LOGIN_BACKGROUND_MODE
+  );
+}
+
+function getEventContentsTagsForContentsVersion(state = getActiveEventState()) {
   const fierceTags = getCurrentFierceSeasonTags();
   return filterCapturedContentsVersionTags(
     mergeTags(
@@ -8564,14 +8709,20 @@ function getEventContentsTagsForContentsVersion() {
 }
 
 function getEffectiveContentsTags(baseTags) {
-  const eventTags = getEventContentsTagsForContentsVersion();
-  return mergeTags(getCapturedContentsVersionTags(), baseTags, REQUIRED_CONTENTS_TAGS, eventTags);
+  const state = getActiveEventState();
+  const tags = FROZEN_SOURCE_CONTENTS_VERSION
+    ? getFrozenContentsTags(capturedTcpProfiles, CONTENTS_VERSION, CONTENTS_TAGS, REQUIRED_CONTENTS_TAGS)
+    : mergeTags(getCapturedContentsVersionTags(), baseTags, REQUIRED_CONTENTS_TAGS, getEventContentsTagsForContentsVersion(state));
+  return loginBackground.applyLoginBackgroundTag(tags, getActiveLoginBackground(state));
 }
 
 function getCapturedContentsVersionTags() {
-  return capturedTcpProfiles && capturedTcpProfiles.contentsVersionAck
-    ? capturedTcpProfiles.contentsVersionAck.contentsTag
-    : [];
+  return getCapturedContentsTags(capturedTcpProfiles, LOCK_CONTENTS_VERSION ? CONTENTS_VERSION : "");
+}
+
+function getFrozenClientOpenTags() {
+  if (!FROZEN_SOURCE_CONTENTS_VERSION) return [];
+  return getCapturedOpenTags(capturedTcpProfiles, CONTENTS_VERSION);
 }
 
 function filterCapturedContentsVersionTags(tags) {
@@ -8583,24 +8734,13 @@ function filterCapturedContentsVersionTags(tags) {
   return (Array.isArray(tags) ? tags : []).filter((tag) => allowed.has(String(tag || "").toUpperCase()));
 }
 
-function stripInactiveEventContentsTags(baseTags, activeEventTags) {
-  if (!eventManager || !eventManager.config || !eventManager.config.enabled) return Array.isArray(baseTags) ? baseTags : [];
-  if (!eventManager.getKnownContentsTags) return Array.isArray(baseTags) ? baseTags : [];
-  const knownTags = new Set(eventManager.getKnownContentsTags().map((tag) => String(tag || "").toUpperCase()));
-  if (!knownTags.size) return Array.isArray(baseTags) ? baseTags : [];
-  const activeTags = new Set((Array.isArray(activeEventTags) ? activeEventTags : []).map((tag) => String(tag || "").toUpperCase()));
-  return (Array.isArray(baseTags) ? baseTags : []).filter((tag) => {
-    const key = String(tag || "").toUpperCase();
-    return !knownTags.has(key) || activeTags.has(key);
-  });
-}
-
 function getEffectiveOpenTags(baseTags) {
   const activeEventState = getActiveEventState();
-  return filterInactiveCustomOperatorOpenTags(
+  const openTags = filterInactiveCustomOperatorOpenTags(
     filterSuppressedOpenTags(
       mergeTags(
         baseTags,
+        getFrozenClientOpenTags(),
         EXPLICIT_OPEN_TAGS,
         REQUIRED_STORY_OPEN_TAGS,
         activeEventState.openTags,
@@ -8610,6 +8750,9 @@ function getEffectiveOpenTags(baseTags) {
     ),
     activeEventState.openTags
   );
+  return EVENT_SHOP_OPEN_TAGS_ENABLED
+    ? filterEventClockShopOpenTags(openTags, runtimeEventManager)
+    : openTags;
 }
 
 function filterSuppressedOpenTags(tags) {
@@ -8630,6 +8773,7 @@ function filterInactiveCustomOperatorOpenTags(tags, activeOpenTags) {
 }
 
 function getRequiredContentsTags() {
+  if (FROZEN_SOURCE_CONTENTS_VERSION) return getEffectiveContentsTags(CONTENTS_TAGS);
   return mergeTags(getCapturedContentsVersionTags(), REQUIRED_CONTENTS_TAGS, getEventContentsTagsForContentsVersion());
 }
 
@@ -8825,6 +8969,10 @@ function buildMinimalJoinLobbyPayload(user) {
   const shipCount = getArmyShips(user).length;
   const operatorCount = getArmyOperators(user).length;
   const worldMapCityIds = worldMap.getWorldMapCityIds(user, { includeDefaults: true, now: lobbyNow });
+  const userData = buildMinimalUserData(user, userUid, friendCode, nickname);
+  const stagePlayDataList = buildStagePlayDataList(user);
+  const unlockedStageIds = user.unlockedStageIds || [];
+  const phaseClearDataList = buildPhaseClearDataList(user);
 
   console.log(
     `[JOIN_LOBBY_ACK local] uid=${userUid} friendCode=${friendCode} nickname=${JSON.stringify(
@@ -8835,11 +8983,10 @@ function buildMinimalJoinLobbyPayload(user) {
       worldMapCityIds.join(",") || "-"
     }`
   );
-
   return Buffer.concat([
     writeSignedVarInt(0), // errorCode
     writeSignedVarLong(friendCode),
-    writeNullableObject(buildMinimalUserData(user, userUid, friendCode, nickname)),
+    writeNullableObject(userData),
     writeNullObject(), // lobbyData
     writeNullObject(), // gameData
     writeNullableObject(buildWarfareGameData()), // warfareGameData
@@ -8859,7 +9006,7 @@ function buildMinimalJoinLobbyPayload(user) {
     writeObjectList(getAllContractStates(user, clockCtx).map((state) => writeNullableObject(buildSerializedContractStateData(state)))), // contractState
     writeObjectList(getAllContractBonusStates(user, clockCtx).map((state) => writeNullableObject(buildSerializedContractBonusStateData(state)))), // contractBonusState
     writeNullableObject(buildSelectableContractStateData(user, clockCtx)), // selectableContractState
-    writeObjectList(buildStagePlayDataList(user)), // stagePlayDataList
+    writeObjectList(stagePlayDataList), // stagePlayDataList
     writeNullableObject(buildEventInfoData()), // eventInfo
     writeString(user.reconnectKey || ""),
     writeNullableObject(buildZlongUserData()), // zlongUserData
@@ -8875,8 +9022,8 @@ function buildMinimalJoinLobbyPayload(user) {
     writeObjectList([]), // privatePvpHistories
     writeNullableObject(buildSerializedMyOfficeStateData(user)), // officeState
     writeNullObject(), // kakaoMissionData
-    writeIntList(user.unlockedStageIds || []),
-    writeObjectList(buildPhaseClearDataList(user)), // phaseClearDataList
+    writeIntList(unlockedStageIds),
+    writeObjectList(phaseClearDataList), // phaseClearDataList
     writeNullObject(), // phaseModeState
     writeObjectList([]), // serverKillCountDataList
     writeObjectList([]), // killCountDataList
@@ -8916,10 +9063,15 @@ function buildJoinLobbyAckPayload(user) {
   const fierceIntervalStrKeys = getFierceSeasonIntervalStrKeys();
   const eventShopMergeIntervalStrKeys =
     process.env.CS_JOIN_LOBBY_MERGE_EVENT_SHOP_INTERVALS !== "0" ? eventShopIntervalStrKeys : [];
+  const activeEventState = getActiveEventState();
+  const activeEventIntervalStrKeys = (activeEventState.intervalData || [])
+    .map((interval) => String(interval && interval.strKey || ""))
+    .filter(Boolean);
   const explicitMergeIntervalStrKeys = mergeTags(
     eventShopMergeIntervalStrKeys,
     fierceIntervalStrKeys,
-    activeEventMissionIntervalStrKeys
+    activeEventMissionIntervalStrKeys,
+    activeEventIntervalStrKeys
   );
   const mergeExplicitIntervalsIntoOfficial = preserveOfficialContractData && explicitMergeIntervalStrKeys.length > 0;
   const inactiveEventIntervalStrKeys = getInactiveEventIntervalStrKeys(localIntervalData);
@@ -8930,12 +9082,7 @@ function buildJoinLobbyAckPayload(user) {
       sha1Buffer(localPayload),
     ].join(":");
     const cached = joinLobbyAckPayloadCache.get(cacheKey);
-    if (cached) {
-      console.log(
-        `[JOIN_LOBBY_ACK cache] hit mode=merge uid=${user && user.userUid ? user.userUid : "(ephemeral)"} bytes=${cached.length}`
-      );
-      return cached;
-    }
+    if (cached) return cached;
 
     const merged = combatHandler.mergeJoinLobbyAck
       ? combatHandler.mergeJoinLobbyAck(officialPayload, localPayload, {
@@ -8994,12 +9141,7 @@ function buildJoinLobbyAckPayload(user) {
       sha1Buffer(localPayload),
     ].join(":");
     const cached = joinLobbyAckPayloadCache.get(cacheKey);
-    if (cached) {
-      console.log(
-        `[JOIN_LOBBY_ACK cache] hit mode=normalize uid=${user && user.userUid ? user.userUid : "(ephemeral)"} bytes=${cached.length}`
-      );
-      return cached;
-    }
+    if (cached) return cached;
     const normalized = combatHandler.normalizeJoinLobbyAck
       ? combatHandler.normalizeJoinLobbyAck(localPayload)
       : { ok: false, error: "combat handler normalize unavailable" };
@@ -9812,13 +9954,18 @@ function buildPersistedLobbyMissionEntries(user) {
   const result = new Map();
   for (const [key, mission] of Object.entries(completedMissions)) {
     const snapshot = normalizePersistedMissionSnapshot(key, mission);
-    if (!snapshot || shouldSkipPersistedLobbyMission(snapshot)) continue;
+    if (!snapshot || shouldSkipPersistedLobbyMission(snapshot) || !hasFrozenMissionTemplet(snapshot)) continue;
     const groupId = Number(snapshot.groupId || snapshot.missionID || 0);
     if (!Number.isInteger(groupId) || groupId <= 0) continue;
     const existing = result.get(groupId);
     if (!existing || shouldPreferMissionSnapshot(snapshot, existing)) result.set(groupId, snapshot);
   }
   return Array.from(result.entries());
+}
+
+function hasFrozenMissionTemplet(mission) {
+  const tabId = Number(mission && mission.tabId || 0);
+  return hasFrozenMissionSnapshot(getMissionTempletsByTabId(tabId), mission);
 }
 
 function normalizePersistedMissionSnapshot(key, mission) {
@@ -9858,11 +10005,12 @@ function shouldPreferMissionSnapshot(candidate, existing) {
 }
 
 function buildMissionData(missionId, mission = {}) {
+  const times = Math.max(0, Math.trunc(Number(mission.times || 0) || 0));
   return Buffer.concat([
     writeSignedVarInt(Number(mission.tabId || 1)),
     writeSignedVarInt(missionId),
     writeSignedVarInt(Number(mission.groupId || missionId)),
-    writeSignedVarLong(BigInt(Math.max(0, Number(mission.times || 0)))),
+    writeSignedVarLong(BigInt(times)),
     writeSignedVarLong(coerceDateTimeTicks(mission.lastUpdateDate)),
     writeBool(mission.rewardClaimed === true || mission.isComplete === true || Boolean(mission.claimedAt)),
   ]);
@@ -9924,7 +10072,9 @@ function dateTimeBinaryForDate(date) {
 function loadUserDb(filePath) {
   try {
     if (!fs.existsSync(filePath)) {
-      return normalizeUserDb({});
+      const starterPath = path.join(path.dirname(filePath), "starter-users.json");
+      if (!fs.existsSync(starterPath)) return normalizeUserDb({});
+      fs.copyFileSync(starterPath, filePath);
     }
     return normalizeUserDb(JSON.parse(fs.readFileSync(filePath, "utf8")));
   } catch (err) {
@@ -10085,6 +10235,7 @@ function saveUserDb() {
   const tmpPath = `${USER_DB_PATH}.tmp`;
   fs.writeFileSync(tmpPath, `${JSON.stringify(userDb, jsonUserDbReplacer, 2)}\n`, "utf8");
   fs.renameSync(tmpPath, USER_DB_PATH);
+  writeActiveUserSelection(ACTIVE_USER_PATH, userDb.activeUserUid);
 }
 
 function jsonUserDbReplacer(_key, value) {
@@ -10344,7 +10495,7 @@ function ensureUserDefaults(user) {
   user.exp = String(user.exp || "0");
   ensureAccountProgress(user);
   user.authLevel = Number(user.authLevel || 1);
-  user.contentsVersion = user.contentsVersion || CONTENTS_VERSION;
+  user.contentsVersion = LOCK_CONTENTS_VERSION ? CONTENTS_VERSION : user.contentsVersion || CONTENTS_VERSION;
   user.contentsTags = mergeTags(
     Array.isArray(user.contentsTags) && user.contentsTags.length ? user.contentsTags : CONTENTS_TAGS,
     REQUIRED_CONTENTS_TAGS
@@ -10361,6 +10512,7 @@ function ensureUserDefaults(user) {
   ensureInventory(user);
   ensureLocalShopInventory(user);
   ensureArmy(user);
+  ensureDefaultShip(user);
   ensureDefaultLineup(user);
   ensureDefaultLineup(user, { deckType: 3, index: 0 });
   user.tutorial = user.tutorial && typeof user.tutorial === "object"
@@ -10377,6 +10529,20 @@ function ensureUserDefaults(user) {
   }
   if (!CLEAR_ALL_MISSIONS_STATUS) repairPostTutorialGuideMissionCompletions(user);
   return user;
+}
+
+function ensureDefaultShip(user) {
+  if (!user || getArmyShips(user).length > 0) return null;
+  const ship = grantUnit(user, DEFAULT_STARTER_SHIP_ID, {
+    level: 1,
+    exp: 0,
+    regDate: dateTimeBinaryNow(),
+    fromContract: false,
+  });
+  if (ship && process.env.CS_DEFAULT_SHIP_REPAIR_LOG !== "0") {
+    console.log(`[user-db] repaired missing default ship uid=${user.userUid || "(ephemeral)"} shipId=${DEFAULT_STARTER_SHIP_ID}`);
+  }
+  return ship;
 }
 
 function ensureLocalShopInventory(user) {
@@ -10911,9 +11077,12 @@ function responseHeaders(entry, bodyLength) {
 
 function rewriteServerInfo(body) {
   const config = JSON.parse(body.toString("utf8"));
-  if (config.server && config.server.Global) {
-    config.server.Global.ip = GAME_SERVER_IP;
-    config.server.Global.port = GAME_SERVER_PORT;
+  if (config.server && typeof config.server === "object") {
+    for (const server of Object.values(config.server)) {
+      if (!server || typeof server !== "object") continue;
+      server.ip = GAME_SERVER_IP;
+      server.port = GAME_SERVER_PORT;
+    }
   }
   config.cdn = `${MIRROR_PUBLIC_BASE_URL}/patchfiles/`;
   return Buffer.from(JSON.stringify(config, null, 2), "utf8");
@@ -10987,7 +11156,7 @@ function findDefaultDotnetRuntime() {
 
 function findDefaultCombatHostExecutable(projectPath) {
   const packagedHost = path.join(ROOT_DIR, "combat-host", process.platform === "win32" ? "CombatHost.exe" : "CombatHost");
-  if (fs.existsSync(packagedHost) && !fs.existsSync(projectPath)) return packagedHost;
+  if (fs.existsSync(packagedHost)) return packagedHost;
   return "";
 }
 

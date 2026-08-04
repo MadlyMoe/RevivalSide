@@ -135,7 +135,7 @@ function createLoginLikeHydratedHandler(packetId, options = {}) {
             : null;
         const officialLoginTemplate =
           ackPacketId === 230
-            ? ctx.capturedTcpProfiles && ctx.capturedTcpProfiles.gamebaseLoginAck
+            ? ctx.capturedTcpProfiles && (ctx.capturedTcpProfiles.gamebaseLoginAck || ctx.capturedTcpProfiles.loginAck)
             : ctx.capturedTcpProfiles && ctx.capturedTcpProfiles.loginAck;
         if (
           ackPacketId === 230 &&

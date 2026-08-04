@@ -19,7 +19,7 @@ module.exports = {
       let rewardPosts = 0;
       let attendancePosts = 0;
       if (typeof ctx.prepareUserLobbySession === "function") {
-        const prepared = ctx.prepareUserLobbySession(user, { source: "steam-login", force: true });
+        const prepared = ctx.prepareUserLobbySession(user, { source: "steam-login" });
         rewardPosts = Number(prepared.rewardPosts || 0);
         attendancePosts = Number(prepared.attendancePosts || 0);
       } else {
@@ -57,6 +57,16 @@ module.exports = {
       }
       return ctx.buildLoginAck(packet.sequence, socket.session.user);
     });
+    if (socket.session.user && typeof ctx.prewarmJoinLobbyAckPayload === "function") {
+      try {
+        const cached = typeof ctx.takePrewarmedJoinLobbyAckPayload === "function"
+          ? ctx.takePrewarmedJoinLobbyAckPayload(socket.session.user, { consume: false })
+          : null;
+        if (!cached) ctx.prewarmJoinLobbyAckPayload(socket.session.user, { source: "steam-login" });
+      } catch (error) {
+        console.log(`[JOIN_LOBBY_ACK warm-cache] steam login skipped: ${error && error.message ? error.message : error}`);
+      }
+    }
     return true;
   },
 };

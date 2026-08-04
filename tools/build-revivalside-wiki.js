@@ -50,10 +50,12 @@ function main() {
   const skins = buildSkins(strings, imageIndex, units);
   const contracts = buildContracts(strings, imageIndex);
   const idIndex = buildIdIndex(strings, imageIndex);
-
-  const payload = {
+  const tables = { units, gears, gearStats, gearSetBonuses, items, skins, contracts, idIndex };
+  const serializedTables = Object.fromEntries(
+    Object.entries(tables).map(([name, rows]) => [name, `${JSON.stringify(rows)}\n`])
+  );
+  const metadata = {
     title: "RevivalSide Wiki",
-    generatedAt: new Date().toISOString(),
     source: {
       units: "server-data/units.json",
       gears: "LUA_ITEM_EQUIP_TEMPLET.json",
@@ -76,16 +78,24 @@ function main() {
       idIndex: idIndex.length,
       images: imageIndex.count,
     },
-    units,
-    gears,
-    gearStats,
-    gearSetBonuses,
-    items,
-    skins,
-    contracts,
-    idIndex,
+    sections: Object.fromEntries(Object.keys(tables).map((name) => [name, `${name}.json`])),
+  };
+  const previous = readJsonIfPresent(OUTPUT_PATH);
+  const previousMetadata = previous && { ...previous };
+  if (previousMetadata) delete previousMetadata.generatedAt;
+  const unchanged = previousMetadata && JSON.stringify(previousMetadata) === JSON.stringify(metadata)
+    && Object.entries(serializedTables).every(([name, json]) => readTextIfPresent(path.join(WIKI_DATA_DIR, `${name}.json`)) === json);
+  const payload = {
+    title: metadata.title,
+    generatedAt: unchanged ? previous.generatedAt : new Date().toISOString(),
+    source: metadata.source,
+    counts: metadata.counts,
+    sections: metadata.sections,
   };
 
+  for (const [name, json] of Object.entries(serializedTables)) {
+    fs.writeFileSync(path.join(WIKI_DATA_DIR, `${name}.json`), json);
+  }
   fs.writeFileSync(OUTPUT_PATH, `${JSON.stringify(payload)}\n`);
   console.log(`Wrote ${path.relative(ROOT_DIR, OUTPUT_PATH)}`);
   console.log(
@@ -101,6 +111,16 @@ function main() {
       `${imageIndex.count} PNGs indexed`,
     ].join(", ")
   );
+}
+
+function readJsonIfPresent(file) {
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); }
+  catch { return null; }
+}
+
+function readTextIfPresent(file) {
+  try { return fs.readFileSync(file, "utf8"); }
+  catch { return null; }
 }
 
 function buildUnits(strings, imageIndex) {

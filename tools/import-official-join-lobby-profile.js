@@ -5,6 +5,11 @@ const { createCombatHandler } = require("../combat-handler");
 const counterSideInstall = require("../modules/counterside-install");
 const gameplayJsons = require("../modules/gameplay-jsons");
 const { createOfficialProfileImporter } = require("../modules/official-profile-import");
+const {
+  applyActiveUserSelection,
+  resolveActiveUserPath,
+  writeActiveUserSelection,
+} = require("../modules/user-db-selection");
 const { rebuildUserDbIndexes } = require("../server/userManager");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
@@ -35,6 +40,7 @@ if (!args.captureDir) usage();
 
 const captureDir = path.resolve(args.captureDir);
 const userDbPath = path.resolve(args.userDb || path.join(ROOT_DIR, "server-data", "users.json"));
+const activeUserPath = resolveActiveUserPath(userDbPath, process.env.CS_ACTIVE_USER_PATH || "");
 const copyToPath = args.copyTo ? path.resolve(args.copyTo) : "";
 const combatHostPath = resolveOptionalPath(args.combatHost || process.env.CS_COMBAT_HOST_PATH || findDefaultCombatHostPath());
 const managedDir = counterSideInstall.normalizeManagedDir(
@@ -64,6 +70,7 @@ const originalLog = console.log;
 console.log = (...items) => console.error(...items);
 
 const userDb = JSON.parse(stripBom(fs.readFileSync(userDbPath, "utf8")));
+applyActiveUserSelection(userDb, activeUserPath);
 const backupPath = backupUserDb(userDbPath);
 const combatHostConfig = {
   CSHARP_COMBAT_HOST: true,
@@ -100,6 +107,7 @@ const importOptions = {
 const result = importOptions.sourceId ? importer.importSource(importOptions) : importer.importLatest(importOptions);
 rebuildUserDbIndexes(userDb);
 fs.writeFileSync(userDbPath, `${JSON.stringify(userDb, null, 2)}\n`);
+writeActiveUserSelection(activeUserPath, userDb.activeUserUid);
 
 let copiedUsersJsonPath = "";
 if (copyToPath) {

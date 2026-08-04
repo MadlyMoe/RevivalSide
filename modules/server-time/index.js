@@ -12,12 +12,15 @@ function createServerTime(options = {}) {
   const rootDir = path.resolve(options.rootDir || path.resolve(__dirname, "..", ".."));
   const statePath = path.resolve(options.statePath || path.join(rootDir, "server-data", "server-time.json"));
   const logger = typeof options.logger === "function" ? options.logger : null;
+  const defaultDate = coerceDate(options.defaultDate || options.eventDate);
+  const defaultDateKey = defaultDate ? utcDateKey(defaultDate) : "";
   let state = loadState(statePath, logger);
 
   function now(localNowInput = new Date()) {
     const localNow = validDate(localNowInput) || new Date();
     const manualNow = getManualNow(state, localNow);
     if (manualNow) return manualNow;
+    if (defaultDateKey) return combineUtcDateWithLocalTime(defaultDateKey, localNow);
     return new Date(localNow.getTime());
   }
 
@@ -26,8 +29,9 @@ function createServerTime(options = {}) {
     const manualCurrent = getManualNow(state, new Date());
     return {
       enabled: true,
-      mode: manualCurrent ? "manual" : "local",
+      mode: manualCurrent ? "manual" : defaultDateKey ? "event-date" : "local",
       manual: Boolean(manualCurrent),
+      defaultDateKey,
       statePath,
       currentIso: current.toISOString(),
       eventDateKey: utcDateKey(current),

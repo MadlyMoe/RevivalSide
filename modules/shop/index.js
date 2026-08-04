@@ -1009,6 +1009,9 @@ function getActiveEventShopState(ctxOrState = null, options = {}) {
   const activeTags = buildActiveShopTagState(state);
   const includeAllEventShops = shouldIncludeAllEventShops(options);
   const allEventTabs = includeAllEventShops ? collectAllEventShopTags(catalog, activeTags) : new Set();
+  const eventTabs = new Set(
+    (catalog.tabRecords || []).filter(isEventLimitedShopRecord).map(shopRecordTabKey).filter(Boolean)
+  );
   const activeTabs = new Set();
   const activeTabRecords = [];
 
@@ -1035,7 +1038,12 @@ function getActiveEventShopState(ctxOrState = null, options = {}) {
   for (const record of catalog.records || []) {
     const tabKey = shopRecordTabKey(record);
     const eventLimited = isEventLimitedShopRecord(record) || allEventTabs.has(tabKey);
-    const active = isShopRecordActiveByState(record, activeTags) || activeTabs.has(tabKey) || (includeAllEventShops && eventLimited);
+    const recordActive =
+      isShopRecordActiveByState(record, activeTags) ||
+      (activeTabs.has(tabKey) && getShopRecordAvailabilityIntervalTags(record).length === 0);
+    const active =
+      (recordActive && (!eventTabs.has(tabKey) || activeTabs.has(tabKey))) ||
+      (includeAllEventShops && eventLimited);
     if (!active) continue;
     const productId = Number(record && record.m_ProductID);
     if (Number.isInteger(productId) && productId > 0) productIds.push(productId);
@@ -1056,6 +1064,17 @@ function getActiveEventShopState(ctxOrState = null, options = {}) {
     contentsTags: Array.from(contentsTags).sort(),
     tabCount: new Set([...activeTabs, ...allEventTabs]).size,
   };
+}
+
+function filterEventClockShopOpenTags(tags, ctxOrState = null) {
+  const active = new Set(getActiveEventShopState(ctxOrState).openTags.map((tag) => tag.toUpperCase()));
+  const event = new Set(
+    getActiveEventShopState(ctxOrState, { includeAllEventShops: true }).openTags.map((tag) => tag.toUpperCase())
+  );
+  return (Array.isArray(tags) ? tags : []).filter((tag) => {
+    const key = String(tag || "").toUpperCase();
+    return !event.has(key) || active.has(key);
+  });
 }
 
 function ensureActiveEventShopCurrencies(user, eventManagerOrState = null, options = {}) {
@@ -1142,6 +1161,10 @@ function isShopRecordActive(record, activeTags) {
 
 function isShopRecordActiveByState(record, activeTags) {
   if (!record || !activeTags) return false;
+  const availabilityIntervalTags = getShopRecordAvailabilityIntervalTags(record);
+  if (availabilityIntervalTags.length) {
+    return hasUsableTagIntersection(activeTags.intervals, availabilityIntervalTags);
+  }
   return (
     hasUsableTagIntersection(activeTags.intervals, getShopRecordIntervalTags(record)) ||
     hasUsableTagIntersection(activeTags.openTags, getShopRecordOpenTags(record)) ||
@@ -1548,6 +1571,7 @@ module.exports = {
   createShopHandler,
   loadShopCatalog,
   getActiveEventShopState,
+  filterEventClockShopOpenTags,
   ensureActiveEventShopCurrencies,
   buildSerializedRandomShopData,
   ensureRandomShopState,
