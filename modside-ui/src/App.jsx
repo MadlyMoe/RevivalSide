@@ -40,6 +40,7 @@ export default function App() {
   const [health, setHealth] = useState(null);
   const [error, setError] = useState("");
   const [modView, setModView] = useState(initialModView);
+  const assetsReady = health?.assetRootAvailable === true;
 
   useEffect(() => {
     document.title = definition.title;
@@ -60,7 +61,7 @@ export default function App() {
     </header>
     {product === "mod" && <nav className="top-tabs" aria-label="Mod:Side workspaces"><Button icon={FiHome} className={modView === "home" ? "active" : "ghost"} onClick={() => selectModView("home")}>Home</Button><Button icon={FiEdit3} className={modView === "creator" ? "active" : "ghost"} onClick={() => selectModView("creator")}>Mod creator</Button><Button icon={FiPackage} className={modView === "loader" ? "active" : "ghost"} onClick={() => selectModView("loader")}>Mod loader</Button></nav>}
     <main className="workspace">
-      {product === "mod" && modView === "home" && <Home basePath={basePath} onOpen={selectModView} />}
+      {product === "mod" && modView === "home" && <Home basePath={basePath} onOpen={selectModView} assetsReady={assetsReady} />}
       {product === "mod" && modView === "creator" && <ModCreator />}
       {product === "mod" && modView === "loader" && <ModLoader />}
       {product === "assets" && <AssetApp />}
@@ -71,7 +72,7 @@ export default function App() {
   </div>;
 }
 
-function Home({ basePath, onOpen }) {
+function Home({ basePath, onOpen, assetsReady }) {
   const core = [
     { title: "Mod Creator", copy: "Create, validate, and export mod projects", icon: FiEdit3, className: "creator", onClick: () => onOpen("creator") },
     { title: "Mod Loader", copy: "Install, activate, and order loaded mods", icon: FiPackage, className: "loader", onClick: () => onOpen("loader") },
@@ -83,11 +84,12 @@ function Home({ basePath, onOpen }) {
     { title: "Combat:Side", copy: "Build and replay CombatHost battles", icon: FiActivity, className: "combat", href: `${basePath}/combat` },
     { title: "Spine 3.7 Studio", copy: "Edit and preview Spine 3.7 assets", icon: FiAperture, className: "spine", href: `${basePath}/spine/` },
   ];
-  return <section className="hub-panel"><div className="hub-content"><p className="eyebrow">Mod workspace</p><h1>Build, manage, and launch your mods.</h1><p className="lead">Package content and control exactly what the private server loads.</p><SectionTitle title="Mod:Side" meta="Core tools" /><div className="card-grid core">{core.map((item) => <AppCard key={item.title} {...item} />)}</div><SectionTitle title="Side apps" meta="Specialized workspaces" /><div className="card-grid apps">{apps.map((item) => <AppCard key={item.title} {...item} />)}</div></div></section>;
+  return <section className="hub-panel"><div className="hub-content"><p className="eyebrow">Mod workspace</p><h1>Build, manage, and launch your mods.</h1><p className="lead">Package content and control exactly what the private server loads.</p><SectionTitle title="Mod:Side" meta="Core tools" /><div className="card-grid core">{core.map((item) => <AppCard key={item.title} {...item} />)}</div><SectionTitle title="Side apps" meta={assetsReady ? "Specialized workspaces" : "Extract client assets in the launcher to unlock"} /><div className="card-grid apps">{apps.map((item) => <AppCard key={item.title} {...item} disabled={!assetsReady} />)}</div></div></section>;
 }
 
 function SectionTitle({ title, meta }) { return <div className="section-title"><h2>{title}</h2><span>{meta}</span></div>; }
-function AppCard({ title, copy, icon: Icon, className, href, onClick }) {
+function AppCard({ title, copy, icon: Icon, className, href, onClick, disabled = false }) {
   const content = <><span className={`app-card-icon ${className}`}><Icon aria-hidden="true" /></span><span><strong>{title}</strong><small>{copy}</small></span></>;
+  if (disabled) return <button className="app-card unavailable" type="button" disabled title="Extract client assets in the RevivalSide launcher to unlock this workspace.">{content}</button>;
   return href ? <a className="app-card" href={href}>{content}</a> : <button className="app-card" type="button" onClick={onClick}>{content}</button>;
 }

@@ -24,6 +24,34 @@ const MAX_FIELD_RESULTS = 60;
 const MAX_MOD_BODY_BYTES = 50 * 1024 * 1024;
 const TEXT_EXTENSIONS = new Set([".atlas", ".bytes", ".csv", ".json", ".log", ".lua", ".md", ".txt", ".xml", ".yaml", ".yml"]);
 const UNITY_RESOURCE_TYPES = new Set(["AudioClip", "Sprite", "TextAsset", "Texture2D"]);
+
+function extractedAssetLibraryReady(assetRoot) {
+  if (!fs.existsSync(assetRoot)) return false;
+  const stack = [assetRoot];
+  let hasAsset = false;
+  try {
+    while (stack.length && !hasAsset) {
+      const directory = stack.pop();
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        if (entry.isDirectory()) stack.push(path.join(directory, entry.name));
+        else if (entry.isFile() && entry.name !== "manifest.json") { hasAsset = true; break; }
+      }
+    }
+  } catch { return false; }
+  if (!hasAsset) return false;
+  for (const manifestPath of [path.join(path.dirname(assetRoot), "manifest.json"), path.join(assetRoot, "manifest.json")]) {
+    let descriptor;
+    try {
+      descriptor = fs.openSync(manifestPath, "r");
+      const header = Buffer.alloc(64 * 1024);
+      const length = fs.readSync(descriptor, header, 0, header.length, 0);
+      const count = header.subarray(0, length).toString("utf8").match(/"file_count"\s*:\s*(\d+)/);
+      if (count && Number(count[1]) > 0) return true;
+    } catch { /* extraction manifest is missing or incomplete */ }
+    finally { if (descriptor !== undefined) fs.closeSync(descriptor); }
+  }
+  return false;
+}
 const FIELD_ALIASES = {
   hp: ["health", "nsthp"], health: ["hp", "nsthp"], attack: ["atk", "damage", "nstatk", "atkfactor"], atk: ["attack", "damage", "nstatk", "atkfactor"],
   defense: ["def", "nstdef", "armor"], defence: ["def", "nstdef", "armor"], speed: ["movespeed", "attackspeed"], cooldown: ["cooltime", "cooltimereduce"],
@@ -271,7 +299,7 @@ async function routeRequest(config, html, req, res, requestUrl) {
       readOnly: true,
       modCreator: true,
       tableCount: tableFiles.length,
-      assetRootAvailable: fs.existsSync(config.assetRoot),
+      assetRootAvailable: extractedAssetLibraryReady(config.assetRoot),
       spineViewerAvailable: fs.existsSync(path.join(config.spineViewerRoot, "index.html")),
     }, req.method === "HEAD");
     return;
