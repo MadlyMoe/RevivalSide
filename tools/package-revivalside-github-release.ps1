@@ -329,6 +329,8 @@ if ($Upload) {
 
 - Made custom and duplicated units load consistently in CombatHost with movement, skills, skill bars/icons, voices, skins, and full-squad support, including boss-derived playable units.
 - Added independent Mod:Side and Combat:Side service lifecycle, asset preparation progress, a Mod:Side home landing page, the updated Discord invite, and reliable log-folder opening.
+- Mod Creator and Mod Loader now work without full asset extraction; asset-backed workspaces stay locked until extraction completes.
+- Repeated client freezes are blocked when a frozen client is already installed.
 - Added Cross Save capture/export/import, event login backgrounds, frozen-client controls, responsive launcher state/settings, and single-instance focus.
 
 ### Game and PC packaging

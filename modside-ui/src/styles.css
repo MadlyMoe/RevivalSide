@@ -82,6 +82,7 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .card-grid.apps { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .app-card { display: flex; align-items: center; gap: 16px; min-width: 0; min-height: 102px; padding: 18px; border: 1px solid #303d52; border-radius: 14px; color: inherit; background: linear-gradient(145deg, #151f2e, #101722); text-align: left; text-decoration: none; cursor: pointer; transition: transform .14s ease, border-color .14s ease, background .14s ease; }
 .app-card:hover { transform: translateY(-2px); border-color: #76699d; background: linear-gradient(145deg, #1b2640, #141c2a); }
+.app-card.unavailable { cursor: not-allowed; filter: blur(.7px) grayscale(.75); opacity: .42; }
 .app-card-icon { width: 54px; height: 54px; border-radius: 13px; }
 .card-grid.core .app-card-icon { width: 66px; height: 66px; }
 .app-card-icon svg { width: 25px; height: 25px; }

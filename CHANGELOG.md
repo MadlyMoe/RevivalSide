@@ -14,6 +14,8 @@ Changes since the PC v0.3.6 release.
 
 - Made custom, duplicated, and boss-derived units load consistently in CombatHost with movement, skills, skill bars/icons, voices, skins, and full-squad support.
 - Added independent Mod:Side and Combat:Side services, asset extraction progress, the Mod:Side home landing page, Cross Save capture/export/import, event login backgrounds, frozen-client controls, the updated Discord invite, and reliable log-folder opening.
+- Allowed Mod Creator and Mod Loader to open without the full asset extraction, while keeping asset-backed workspaces locked until extraction completes.
+- Prevented the launcher and backend from freezing another client while one is already installed.
 - Added responsive launcher settings/state and single-instance focus behavior.
 
 ### Game and PC packaging

@@ -995,6 +995,8 @@ async function updateFrozenClientManifest(frozenRoot, managed) {
 
 async function freezeClient() {
   const settings = loadSettings();
+  const existingManaged = findInstalledClientManagedDir(settings);
+  if (existingManaged) throw new Error(`A frozen client already exists at ${gameRootFromManaged(existingManaged)}. Remove it before freezing another.`);
   const sourceManaged = normalizeManagedDir(settings.CounterSideSourceManagedDir || settings.CounterSideManagedDir);
   const sourceRoot = gameRootFromManaged(sourceManaged);
   if (!isManagedDir(sourceManaged) || !fs.existsSync(path.join(sourceRoot, 'CounterSide.exe'))) {

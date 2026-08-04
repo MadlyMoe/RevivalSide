@@ -187,6 +187,11 @@ async function main() {
   assert.match(backendSource, /serve-modside\.js/);
   assert.match(backendSource, /emitService\('modside', 'running'/);
   assert.match(backendSource, /launcher\/api\/warmup/);
+  assert.match(backendSource, /A frozen client already exists at/);
+  const launcherHome = fs.readFileSync(path.join(__dirname, '..', 'launcher', 'src', 'games', 'revivalside', 'pages', 'Home', 'index.tsx'), 'utf8');
+  assert.match(launcherHome, /cancelLabel: "Core tools only"/);
+  assert.match(launcherHome, /!!snapshot\?\.frozenClientRoot/);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'launcher', 'src', 'games', 'revivalside', 'pages', 'Home', 'ActionButton.tsx'), 'utf8'), /disabled=\{disabled\}/);
   assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', 'server', 'listener.js'), 'utf8'), /createAssetViewer|assetViewer\.handle/);
   console.log('[launcher-backend] PASS login backgrounds, clean client-table audit, game-root bundles, missing-client handling, independent Mod:Side, Combat:Side lifecycle, and four-service readiness');
 }

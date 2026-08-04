@@ -402,7 +402,11 @@ async function main() {
     assert.strictEqual(deleted.previous, null);
     assert.strictEqual(fs.existsSync(importedProjectPath), false);
 
+    const healthWithoutManifest = await requestJson(port, "/mod-side/api/health");
+    assert.strictEqual(healthWithoutManifest.assetRootAvailable, false);
+    fs.writeFileSync(path.join(tempDir, "extracted-assets", "manifest.json"), JSON.stringify({ file_count: 1 }));
     const health = await requestJson(port, "/mod-side/api/health");
+    assert.strictEqual(health.assetRootAvailable, true);
     assert.strictEqual(health.spineViewerAvailable, true);
 
     const assets = await requestJson(port, "/mod-side/api/assets?path=icons");
