@@ -403,6 +403,7 @@ def main() -> int:
         help="For Sprite exports, write only resized CutsceneBG16x9 images.",
     )
     parser.add_argument("--overwrite-manifest", action="store_true")
+    parser.add_argument("--quiet", action="store_true", help="Print only the final summary")
     args = parser.parse_args()
 
     root = args.root.resolve()
@@ -439,9 +440,10 @@ def main() -> int:
             args.cutscene_backgrounds_only,
         )
         manifest_entries.append(entry)
-        print(
-            f"[{index}/{len(files)}] files={len(entry['files'])} errors={len(entry['errors'])} {path}"
-        )
+        if not args.quiet:
+            print(
+                f"[{index}/{len(files)}] files={len(entry['files'])} errors={len(entry['errors'])} {path}"
+            )
 
     manifest_path = args.manifest or (out_dir / "manifest.json")
     manifest_path.parent.mkdir(parents=True, exist_ok=True)

@@ -134,7 +134,7 @@ for (const row of EPISODE_ROWS) {
   const episodeNumber = isMainstream
     ? parseMainStoryEpisodeNumber(row.m_EpisodeStrID || row.m_OpenTag)
     : Number(row.m_SortIndex || row.m_EpisodeID || 0);
-  if (isMainstream && (episodeNumber <= 0 || episodeNumber > 15)) continue;
+  if (isMainstream && episodeNumber <= 0) continue;
   const episode = {
     episodeId: Number(row.m_EpisodeID),
     difficulty,

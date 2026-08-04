@@ -57,6 +57,19 @@ const TUTORIAL_STAGE_CHAIN = Object.freeze([
   }),
 ]);
 
+const TUTORIAL_COMPLETION_MISSION_IDS = Object.freeze([999, 100]);
+
+function hasTutorialCompletionMission(user) {
+  const missions = user && user.completedMissions && typeof user.completedMissions === "object"
+    ? Object.values(user.completedMissions)
+    : [];
+  return missions.some(
+    (mission) =>
+      TUTORIAL_COMPLETION_MISSION_IDS.includes(Number(mission && mission.missionID)) &&
+      (mission.isComplete === true || mission.rewardClaimed === true)
+  );
+}
+
 const TUTORIAL_STAGE_BY_STAGE_ID = new Map(TUTORIAL_STAGE_CHAIN.map((stage) => [stage.stageId, stage]));
 const TUTORIAL_STAGE_BY_DUNGEON_ID = new Map(TUTORIAL_STAGE_CHAIN.map((stage) => [stage.dungeonID, stage]));
 
@@ -239,5 +252,7 @@ module.exports = {
   isTutorialDungeonId,
   mapIdForStageDungeon,
   stageIdForDungeonId,
+  hasTutorialCompletionMission,
+  TUTORIAL_COMPLETION_MISSION_IDS,
   TUTORIAL_STAGE_CHAIN,
 };

@@ -307,9 +307,10 @@ later releases. Npcap is not redistributed; Cross Save opens npcap.com when the
 capture driver is missing.
 
 Included in this release:
-- Frozen/offline client listener compatibility and content-version handling.
-- Cross Save guided packet capture, standalone packet export, and optional profile import.
-- Lazy RevivalSide Wiki data, on-demand encrypted asset extraction, gzip, ETags, and cache headers.
+- Mod:Side with its creator, loader, Asset:Side, Story:Side, Unit:Side, Combat:Side, and Spine 3.7 Studio apps.
+- Multi-unit authoring with editable skills, appearances, collection/profile metadata, and MP3 voice bundles.
+- Frozen/offline client, custom-unit CombatHost, progression, event, shop, and reward compatibility fixes.
+- Cross Save capture/export/import and the lazy local RevivalSide Wiki.
 - Clean upgrade receipts that remove obsolete managed files while preserving profiles, settings, captures, exports, and logs.
 "@ | Set-Content -LiteralPath (Join-Path $outputPath "README.txt") -Encoding UTF8
 
@@ -318,12 +319,22 @@ if ($Upload) {
   @"
 ## RevivalSide $ReleaseTag
 
-- Added the redesigned Cross Save capture flow with standalone packet export and optional profile import.
-- Added the responsive local wiki with split lazy-loaded data, on-demand image extraction, gzip, ETags, and browser caching.
-- Split releases into content-addressed core, game-data, wiki, and per-architecture runtime components.
-- Setup now downloads only the current Windows architecture and preserves user profiles, settings, captures, exports, and logs during upgrades.
-- Removed bundled Npcap distribution; the launcher links to the official Npcap download page when needed.
-- Excluded local `.env` secrets from every release payload.
+### Mod tools
+
+- Added the Mod:Side home, creator, loader, mod editing/copying with collision-safe IDs, and specialized Asset:Side, Story:Side, Unit:Side, Combat:Side, and Spine 3.7 Studio apps.
+- Rebuilt Unit:Side around complete playable unit creation: all employee, NPC, enemy, boss, ship, and BASE2 templates; multi-unit packs; existing-unit editing; skill, appearance, collection/profile, association, and voice-line editors; lazy previews; audio extraction; and MP3-to-voice-bundle conversion.
+- Expanded Story:Side with CounterSide-style episode organization, editable existing episodes, project copying, cutscene/stage authoring, and dungeon-ID collision resolution.
+
+### Runtime and launcher
+
+- Made custom and duplicated units load consistently in CombatHost with movement, skills, skill bars/icons, voices, skins, and full-squad support, including boss-derived playable units.
+- Added independent Mod:Side and Combat:Side service lifecycle, asset preparation progress, a Mod:Side home landing page, the updated Discord invite, and reliable log-folder opening.
+- Added Cross Save capture/export/import, event login backgrounds, frozen-client controls, responsive launcher state/settings, and single-instance focus.
+
+### Game and PC packaging
+
+- Fixed Boss Raid duplicate handling plus tutorial/stage progression, squad loadouts, limit breaks, event shops, random-box rewards, and frozen-content compatibility.
+- Added the lazy local wiki and content-addressed Windows components for x64, x86, and ARM64 while preserving profiles, settings, captures, exports, mods, and logs during upgrades.
 
 **Installer:** [$setupUrl]($setupUrl)
 "@ | Set-Content -LiteralPath $notesPath -Encoding UTF8

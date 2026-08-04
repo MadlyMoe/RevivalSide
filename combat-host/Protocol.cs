@@ -13,6 +13,7 @@ public sealed class HostOptions
 {
     public string ManagedDir { get; set; } = "";
     public string GameplayTablesDir { get; set; } = "";
+    public List<string> ContentsTags { get; set; } = [];
     public double SyncIntervalSeconds { get; set; } = 0.25;
     public int DefaultUnitDamage { get; set; } = 10;
     public int DefaultUnitAttackRange { get; set; } = 130;
@@ -41,6 +42,117 @@ public sealed class HostResponse
     public List<IntervalExportRow>? Intervals { get; set; }
     public OfficialProfileSnapshot? OfficialProfile { get; set; }
     public string? TableJson { get; set; }
+    public CombatTimelineChunk? Timeline { get; set; }
+}
+
+public sealed class CombatTimelineChunk
+{
+    public double Delta { get; set; }
+    public bool Finished { get; set; }
+    public int WinTeam { get; set; }
+    public List<CombatFrameSnapshot> Frames { get; set; } = [];
+    public List<BattleUnitRecord> Records { get; set; } = [];
+}
+
+public sealed class CombatFrameSnapshot
+{
+    public int Index { get; set; }
+    public string GameState { get; set; } = "";
+    public double GameTime { get; set; }
+    public double PlayTime { get; set; }
+    public double RemainGameTime { get; set; }
+    public int WaveId { get; set; }
+    public int WinTeam { get; set; }
+    public bool Finished { get; set; }
+    public double RespawnCostA { get; set; }
+    public double RespawnCostB { get; set; }
+    public bool AutoUltimateEnabled { get; set; }
+    public int MainUnitUidA { get; set; }
+    public int MainUnitUidB { get; set; }
+    public List<CombatUnitSnapshot> Units { get; set; } = [];
+    public List<CombatEffectSnapshot> Effects { get; set; } = [];
+}
+
+public sealed class CombatUnitSnapshot
+{
+    public int GameUnitUid { get; set; }
+    public string UnitUid { get; set; } = "0";
+    public int UnitId { get; set; }
+    public int SkinId { get; set; }
+    public int Level { get; set; }
+    public int Team { get; set; }
+    public string TeamName { get; set; } = "";
+    public double Hp { get; set; }
+    public double MaxHp { get; set; }
+    public double X { get; set; }
+    public double Z { get; set; }
+    public double JumpY { get; set; }
+    public bool Right { get; set; }
+    public string PlayState { get; set; } = "";
+    public int TargetUid { get; set; }
+    public int SubTargetUid { get; set; }
+    public int StateId { get; set; }
+    public int StateChangeCount { get; set; }
+    public string StateName { get; set; } = "";
+    public string StateType { get; set; } = "";
+    public string SkillType { get; set; } = "";
+    public string Animation { get; set; } = "";
+    public double StateTime { get; set; }
+    public double AnimationTime { get; set; }
+    public double AnimationTimeMax { get; set; }
+    public bool AnimationLoop { get; set; }
+    public double SkillCooldown { get; set; }
+    public double HyperSkillCooldown { get; set; }
+    public double HyperSkillCooldownMax { get; set; }
+    public bool HasHyperSkill { get; set; }
+    public bool HyperSkillReady { get; set; }
+    public double SpriteScale { get; set; } = 1;
+    public double SpriteOffsetX { get; set; }
+    public double SpriteOffsetY { get; set; }
+    public double UnitSizeX { get; set; }
+    public double UnitSizeY { get; set; }
+    public double GaugeOffsetX { get; set; }
+    public double GaugeOffsetY { get; set; }
+    public bool IsSummon { get; set; }
+    public string UnitType { get; set; } = "";
+    public string SpriteBundleName { get; set; } = "";
+    public string SpriteName { get; set; } = "";
+}
+
+public sealed class CombatEffectSnapshot
+{
+    public int EffectUid { get; set; }
+    public int EffectId { get; set; }
+    public string EffectStrId { get; set; } = "";
+    public int MasterUnitUid { get; set; }
+    public int TargetUnitUid { get; set; }
+    public int Team { get; set; }
+    public double X { get; set; }
+    public double Z { get; set; }
+    public double JumpY { get; set; }
+    public bool Right { get; set; }
+    public string StateName { get; set; } = "";
+    public string Animation { get; set; } = "";
+    public double AnimationTime { get; set; }
+    public double AnimationTimeMax { get; set; }
+    public bool AnimationLoop { get; set; }
+    public double ScaleFactor { get; set; } = 1;
+    public bool UseZScale { get; set; }
+    public double Rotation { get; set; }
+    public double OffsetX { get; set; }
+    public double OffsetY { get; set; }
+    public double OffsetZ { get; set; }
+    public bool UseOffsetZtoY { get; set; }
+    public bool FixedPosition { get; set; }
+    public bool FollowMaster { get; set; }
+    public bool ForceRight { get; set; }
+    public bool LandConnect { get; set; }
+    public bool UseBoneRotate { get; set; }
+    public bool ClientEvent { get; set; }
+    public string ParentType { get; set; } = "";
+    public string BoneName { get; set; } = "";
+    public string EffectBundleName { get; set; } = "";
+    public string MainEffectName { get; set; } = "";
 }
 
 public sealed class HostPacket
@@ -111,6 +223,11 @@ public sealed class GameplayTableExportData
     public string Directory { get; set; } = "";
     public string FileName { get; set; } = "";
     public string RootName { get; set; } = "";
+}
+
+public sealed class UnitTempletValidationData
+{
+    public List<int> UnitIds { get; set; } = [];
 }
 
 public sealed class OfficialProfileSnapshot

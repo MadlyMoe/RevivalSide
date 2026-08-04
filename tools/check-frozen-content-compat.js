@@ -12,7 +12,10 @@ const {
   hasFrozenMissionSnapshot,
 } = require("../modules/frozen-content-compat");
 const { createServerTime } = require("../modules/server-time");
-const { getActiveScheduledBannerIntervalTags } = require("../modules/event-manager");
+const { createEventManager } = require("../modules/event-manager");
+const { filterEventClockShopOpenTags, getActiveEventShopState } = require("../modules/shop");
+const dateProfiles = require("../modules/event-manager/date-profiles.json");
+const ROOT_DIR = path.resolve(__dirname, "..");
 
 const profiles = {
   contentsVersionAck: {
@@ -47,6 +50,51 @@ assert.deepStrictEqual(
   ["GLOBAL", "TAG_COMMON_SHOP_TAB_CASH", "SYSTEM_TRANSCENDENCE_LV120", "MULTITASK_DOWNLOAD"],
   "the frozen handshake must use one canonical tag list instead of clock or user tags"
 );
+const october2022 = dateProfiles.profiles.find((profile) => profile.id === "2022-10-20-employee-banners");
+assert(october2022 && october2022.intervalTags.includes("DATE_GLOBAL_PICKUP_CONTRACT_ADMIN_ARTILLERY_V4"));
+assert(october2022.intervalTags.includes("DATE_GLOBAL_PICKUP_CONTRACT_ADMIN_GREATSWORD_V4"));
+const ministra2022 = dateProfiles.profiles.find((profile) => profile.id === "2022-10-20-ministra-banner");
+assert(ministra2022 && ministra2022.intervalTags.includes("DATE_GLOBAL_CLASSIFIED_CONTRACT_MINISTRA_V1"));
+const ironKnight = dateProfiles.profiles.find((profile) => profile.id === "2023-05-17-iron-knight");
+assert(ironKnight && new Date(ironKnight.startDate) <= new Date("2023-06-01T12:00:00Z"));
+assert(new Date("2023-06-01T12:00:00Z") < new Date(ironKnight.endDate));
+assert(ironKnight.intervalTags.includes("DATE_GLOBAL_CLASSIFIED_CONTRACT_BORDER_HORSE"));
+assert(ironKnight.intervalTags.includes("DATE_GLOBAL_CLASSIFIED_CONTRACTBANNER_AWAKEN_019"));
+const octoberState = createEventManager({ rootDir: ROOT_DIR, env: process.env }).getActiveEventState("2022-10-21");
+const octoberIntervals = new Set(octoberState.intervalData.map((interval) => interval.strKey));
+for (const tag of [
+  "DATE_COMMON_EPISODE_EVENT_SHADE_02",
+  "DATE_COMMON_MISSION_EVENT_SHADE_2",
+  "DATE_COMMON_SHOP_EVENT_SHADE",
+  "DATE_GLOBAL_EVENT_PASS_UNIT_CORRUPTED_C_SHADOW",
+  "DATE_GLOBAL_PICKUP_CONTRACT_ADMIN_ARTILLERY_V4",
+  "DATE_GLOBAL_PICKUP_CONTRACT_ADMIN_GREATSWORD_V4",
+  "DATE_GLOBAL_CLASSIFIED_CONTRACT_MINISTRA_V1",
+]) assert(octoberIntervals.has(tag), `missing 2022-10-21 interval ${tag}`);
+assert(octoberState.counterPasses.some((pass) => pass.eventPassId === 505), "Spira Counter Pass is not active");
+assert.strictEqual(octoberState.counterPasses.find((pass) => pass.eventPassId === 505).startDate, "2022-10-20T16:00:00.000Z");
+assert(octoberState.counterPassContentsTags.includes("GLOBAL_EVENT_PASS_UNIT_CORRUPTED_C_SHADOW"));
+for (const tag of [
+  "TAG_COMMON_MISSION_EVENT_SHADE_1",
+  "TAG_GLOBAL_PICKUP_CONTRACT_ADMIN_ARTILLERY_V4",
+  "TAG_CONTRACT_GLOBAL_PICKUP_ADMIN_GREATSWORD_V4",
+  "TAG_FIRST_UNIT_CORRUPTED_CA_MINISTRA",
+]) assert(octoberState.openTags.includes(tag), `missing 2022-10-21 open tag ${tag}`);
+const octoberShops = getActiveEventShopState(octoberState, { includeAllEventShops: false });
+assert(octoberShops.intervalTags.includes("DATE_COMMON_SHOP_EVENT_SHADE"), "Bottom of the Shade shop is not active");
+assert(!octoberShops.intervalTags.includes("SHOP_CASH_PACKAGE_2025_SUMMER"), "future shop leaked into 2022");
+assert(
+  octoberShops.intervalTags.every((tag) => octoberIntervals.has(tag)),
+  "shop emitted an interval outside the event clock"
+);
+assert.deepStrictEqual(
+  filterEventClockShopOpenTags(
+    ["TAG_COMMON_SHOP_EVENT_SHADE_1", "TAG_COMMON_SHOP_EVENT_ANNIVERSARY_3YEAR", "UNRELATED_TAG"],
+    octoberState
+  ),
+  ["TAG_COMMON_SHOP_EVENT_SHADE_1", "UNRELATED_TAG"],
+  "login open tags must keep only event-clock-active shops"
+);
 assert.deepStrictEqual(getCapturedOpenTags(profiles, "9.2.c"), [
   "EPISODE_TAB_SUPPLY",
   "EPISODE_TAB_CHALLENGE",
@@ -62,24 +110,6 @@ assert.strictEqual(
     { tabId: 4, missionID: 1001, groupId: 100 }
   ),
   true
-);
-assert.deepStrictEqual(
-  getActiveScheduledBannerIntervalTags({
-    officialScheduleEntries: [
-      { raw: { scheduleType: "contract" }, intervalTags: ["DATE_GLOBAL_FIRST_CONTRACT_SKY", "DATE_GLOBAL_PICKUP_CONTRACT_SKY"] },
-      { raw: { scheduleType: "contract" }, intervalTags: ["DATE_GLOBAL_CLASSIFIED_CONTRACT_ROSARIA", "DATE_GLOBAL_PICKUP_CONTRACT_ROSARIA"] },
-      { raw: { scheduleType: "contract" }, intervalTags: ["DATE_GLOBAL_CONTRACT_OPR_DAIN_PR_V4", "DATE_GLOBAL_CONTRACT_OPR_DAIN_V4"] },
-      { raw: { scheduleType: "contract" }, intervalTags: ["DATE_KOR_CLASSIFIED_CONTRACT_FENRIR_INTERN"] },
-      { label: "The 6th Prestige Service: Wolf's Wintering", raw: { scheduleType: "event" }, intervalTags: ["DATE_COMMON_EVENT_PAYBACK_003"] },
-    ],
-  }),
-  [
-    "DATE_GLOBAL_PICKUP_CONTRACT_SKY",
-    "DATE_GLOBAL_CLASSIFIED_CONTRACT_ROSARIA",
-    "DATE_GLOBAL_CONTRACT_OPR_DAIN_V4",
-    "DATE_KOR_CLASSIFIED_CONTRACT_FENRIR_INTERN",
-    "DATE_COMMON_EVENT_PAYBACK_003",
-  ]
 );
 assert.strictEqual(
   hasFrozenMissionSnapshot(

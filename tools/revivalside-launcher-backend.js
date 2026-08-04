@@ -8,26 +8,34 @@ const os = require('os');
 const path = require('path');
 const readline = require('readline');
 const { findCounterSideScriptBundleRoots } = require('../modules/counterside-install');
+const { getLoginBackgroundCatalog } = require('../modules/login-background');
 
 const EVENT_PREFIX = '@@REVIVALSIDE_EVENT@@';
 const GAME_PORTS = new Set(['20001', '20002', '20003', '20004', '22000']);
 const LISTENER_READINESS_TIMEOUT_MS = 120_000;
+const COMBAT_SIDE_PORT = 5185;
 const GAMEPLAY_CACHE_MANIFEST_NAME = '.revivalside-gameplay-luac-cache.json';
+const GIB = 1024 ** 3;
+const MODSIDE_MINIMUM_FREE_BYTES = 32 * GIB;
 const FROZEN_CLIENT_PATCH_REQUIREMENTS = Object.freeze([
+  'mod-runtime-loader=True',
+  'mod-string-loader=True', 'mod-asset-bundle-loader=True', 'mod-episode-ui=True',
   'steam-local-login=True', 'steam-standalone=True', 'steam-runtime-isolated=True',
   'steam-interop-callsites=0', 'frozen-official-update-bypass=True',
   'frozen-patch-download-bypass=True', 'frozen-contents-version-isolation=False',
   'frozen-login-contents-reconciliation=False', 'external-endpoint-references=0',
 ]);
 const DEFAULT_SETTINGS = Object.freeze({
-  SettingsVersion: 5,
+  SettingsVersion: 8,
   GamePort: 22000,
   HttpPort: 8088,
   WikiPort: 5174,
+  ModSidePort: 5175,
   CounterSideManagedDir: '',
   CounterSideSourceManagedDir: '',
   CrossSaveCaptureDir: '',
   EventDate: '2025-04-10',
+  LoginBackground: 'auto',
   JoinLobbyAckMode: 'auto',
   UserManagerAllowRemote: false,
   VerboseCapture: false,
@@ -44,6 +52,8 @@ const DEFAULT_SETTINGS = Object.freeze({
 });
 const root = resolveAppRoot();
 const settingsPath = path.join(root, 'launcher-settings.json');
+const installedRoot = process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'RevivalSide') : '';
+const installedSettingsPath = installedRoot ? path.join(installedRoot, 'launcher-settings.json') : '';
 
 function resolveAppRoot() {
   const configured = process.env.REVIVALSIDE_ROOT;
@@ -77,6 +87,10 @@ function emitService(service, state, details = '') {
   process.stdout.write(`${EVENT_PREFIX}${JSON.stringify({ type: 'service', service, state, details })}\n`);
 }
 
+function emitActionProgress(action, phase, progress) {
+  process.stdout.write(`${EVENT_PREFIX}${JSON.stringify({ type: 'action-progress', action, phase, progress })}\n`);
+}
+
 function output(value) {
   process.stdout.write(`${JSON.stringify({ ok: true, ...value })}\n`);
 }
@@ -93,21 +107,36 @@ function normalizeLobbyMode(value) {
   return 'auto';
 }
 
+function normalizeLoginBackground(value) {
+  const background = String(value || 'auto').trim();
+  if (background.toLowerCase() === 'auto') return 'auto';
+  return /^\d+$/.test(background) && Number(background) > 0 ? background : 'auto';
+}
+
 function loadSettings() {
   let saved = {};
+  let installed = {};
   try {
     saved = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
   } catch {
     // First launch or malformed legacy settings: use safe defaults.
   }
-  const settings = { ...DEFAULT_SETTINGS, ...saved };
+  try {
+    if (installedSettingsPath && path.resolve(installedSettingsPath) !== path.resolve(settingsPath)) installed = JSON.parse(fs.readFileSync(installedSettingsPath, 'utf8'));
+  } catch { /* installed launcher settings are optional */ }
+  const settings = Object.fromEntries(Object.entries(DEFAULT_SETTINGS).map(([key, value]) => [
+    key,
+    Object.prototype.hasOwnProperty.call(saved, key) ? saved[key] : value,
+  ]));
   settings.SettingsVersion = DEFAULT_SETTINGS.SettingsVersion;
   settings.GamePort = clampPort(settings.GamePort, DEFAULT_SETTINGS.GamePort);
   settings.HttpPort = clampPort(settings.HttpPort, DEFAULT_SETTINGS.HttpPort);
   settings.WikiPort = clampPort(settings.WikiPort, DEFAULT_SETTINGS.WikiPort);
+  settings.ModSidePort = clampPort(settings.ModSidePort, DEFAULT_SETTINGS.ModSidePort);
+  settings.LoginBackground = normalizeLoginBackground(saved.LoginBackground);
   settings.JoinLobbyAckMode = normalizeLobbyMode(settings.JoinLobbyAckMode);
-  settings.CounterSideManagedDir = normalizeExistingManagedDir(settings.CounterSideManagedDir);
-  settings.CounterSideSourceManagedDir = normalizeExistingManagedDir(settings.CounterSideSourceManagedDir);
+  settings.CounterSideManagedDir = normalizeExistingManagedDir(settings.CounterSideManagedDir) || normalizeExistingManagedDir(installed.CounterSideManagedDir);
+  settings.CounterSideSourceManagedDir = normalizeExistingManagedDir(settings.CounterSideSourceManagedDir) || normalizeExistingManagedDir(installed.CounterSideSourceManagedDir);
   // A frozen client can be removed outside the launcher while its Managed
   // path remains in launcher-settings.json. Treat that stale path as not
   // installed and retain a valid official install as the next freeze source.
@@ -136,6 +165,7 @@ function applyDotEnvDefaults(settings, saved) {
   assignIfUnsaved('GamePort', 'CS_PORT', (value) => clampPort(value, settings.GamePort));
   assignIfUnsaved('HttpPort', 'CS_HTTP_MIRROR_PORT', (value) => clampPort(value, settings.HttpPort));
   assignIfUnsaved('EventDate', 'CS_EVENT_DATE', String);
+  assignIfUnsaved('LoginBackground', 'CS_LOGIN_BACKGROUND', normalizeLoginBackground);
   assignIfUnsaved('JoinLobbyAckMode', 'CS_USE_LOCAL_JOIN_LOBBY_ACK', normalizeLobbyMode);
   assignIfUnsaved('UserManagerAllowRemote', 'CS_USER_MANAGER_ALLOW_REMOTE', parseBoolean);
   assignIfUnsaved('VerboseCapture', 'CS_VERBOSE_CAPTURE', parseBoolean);
@@ -152,7 +182,9 @@ function settingsToClient(settings) {
     tcpPort: settings.GamePort,
     httpPort: settings.HttpPort,
     wikiPort: settings.WikiPort,
+    modSidePort: settings.ModSidePort,
     eventDate: settings.EventDate,
+    loginBackground: settings.LoginBackground,
     lobbyAck: settings.JoinLobbyAckMode,
     allowLanAccess: settings.UserManagerAllowRemote,
     verboseLogging: settings.VerboseCapture,
@@ -173,7 +205,9 @@ function applyClientSettings(settings, client) {
   settings.GamePort = clampPort(client.tcpPort, settings.GamePort);
   settings.HttpPort = clampPort(client.httpPort, settings.HttpPort);
   settings.WikiPort = clampPort(client.wikiPort, settings.WikiPort);
+  settings.ModSidePort = clampPort(client.modSidePort, settings.ModSidePort);
   settings.EventDate = String(client.eventDate || '').trim();
+  settings.LoginBackground = normalizeLoginBackground(client.loginBackground);
   settings.JoinLobbyAckMode = normalizeLobbyMode(client.lobbyAck);
   settings.UserManagerAllowRemote = !!client.allowLanAccess;
   settings.VerboseCapture = !!client.verboseLogging;
@@ -280,8 +314,9 @@ function isPathInside(parent, target) {
 }
 
 function isFrozenRoot(directory) {
+  const trustedArchives = [frozenArchiveRoot(), installedRoot && path.join(installedRoot, 'frozen-client')].filter(Boolean);
   return !!directory
-    && isPathInside(frozenArchiveRoot(), directory)
+    && trustedArchives.some((archive) => isPathInside(archive, directory))
     && fs.existsSync(path.join(directory, 'CounterSide.exe'))
     && isManagedDir(path.join(directory, 'Data', 'Managed'));
 }
@@ -397,6 +432,7 @@ function buildListenerEnvironment(settings) {
     CS_PORT: String(settings.GamePort),
     CS_HTTP_MIRROR_PORT: String(settings.HttpPort),
     CS_EVENT_DATE: String(settings.EventDate || '').trim(),
+    CS_LOGIN_BACKGROUND: normalizeLoginBackground(settings.LoginBackground),
     CS_USE_LOCAL_JOIN_LOBBY_ACK: normalizeLobbyMode(settings.JoinLobbyAckMode),
     CS_USER_MANAGER_ALLOW_REMOTE: settings.UserManagerAllowRemote ? '1' : '0',
     CS_VERBOSE_CAPTURE: settings.VerboseCapture ? '1' : '0',
@@ -417,11 +453,13 @@ function buildListenerEnvironment(settings) {
   environment.CS_HTTP_MIRROR_BASE_URL = `http://127.0.0.1:${settings.HttpPort}`;
   for (const key of [
     'CS_COUNTERSIDE_MANAGED_DIR', 'COUNTERSIDE_MANAGED_DIR', 'CS_COUNTERSIDE_DIR',
-    'CS_GAMEPLAY_TABLES_DIR', 'CS_GAMEPLAY_ASSET_SOURCE', 'CS_GAMEPLAY_TABLE_SOURCE',
+    'CS_GAMEPLAY_TABLES_DIR', 'CS_GAMEPLAY_JSON_ROOTS', 'CS_GAMEPLAY_ASSET_SOURCE', 'CS_GAMEPLAY_TABLE_SOURCE',
     'CS_STAGE_TABLE_PATH', 'CS_MAP_TABLE_PATH',
   ]) {
     delete environment[key];
   }
+  const gameplayOverridesDir = path.join(root, 'gameplay-jsons');
+  if (fs.existsSync(gameplayOverridesDir)) environment.CS_GAMEPLAY_JSON_ROOTS = gameplayOverridesDir;
   if (isManagedDir(managed)) {
     environment.CS_COUNTERSIDE_MANAGED_DIR = managed;
     environment.COUNTERSIDE_MANAGED_DIR = managed;
@@ -475,6 +513,141 @@ function countFiles(directory, predicate, limit = Number.MAX_SAFE_INTEGER) {
     }
   }
   return count;
+}
+
+function assetInventory(directory) {
+  let files = 0;
+  let bytes = 0;
+  const stack = [directory];
+  while (stack.length) {
+    const current = stack.pop();
+    let entries = [];
+    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.isFile() && entry.name.toLowerCase().endsWith('.asset')) {
+        files += 1;
+        bytes += fs.statSync(full).size;
+      }
+    }
+  }
+  return { files, bytes };
+}
+
+function estimateModSideRequiredBytes(sourceBytes) {
+  return Math.max(MODSIDE_MINIMUM_FREE_BYTES, Math.ceil(Number(sourceBytes || 0) * 4.5));
+}
+
+function progressFromLine(line, start, span) {
+  const match = String(line).match(/^\[(\d+)\/(\d+)\]/);
+  if (!match || Number(match[2]) < 1) return null;
+  return Math.min(99, Math.round(start + span * Math.min(Number(match[1]), Number(match[2])) / Number(match[2])));
+}
+
+function actionProgressReporter(phase, start, span) {
+  let last = -1;
+  return (line) => {
+    const progress = progressFromLine(line, start, span);
+    if (progress == null || progress <= last) return;
+    last = progress;
+    emitActionProgress('extract-modside-assets', phase, progress);
+  };
+}
+
+function modSideAssetsReady() {
+  const extractedRoot = path.join(root, 'extracted-assets', 'all');
+  for (const manifestFile of [path.join(root, 'extracted-assets', 'manifest.json'), path.join(extractedRoot, 'manifest.json')]) {
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+      if (Number(manifest.file_count || 0) > 0 && countFiles(extractedRoot, () => true, 1)) {
+        return { ready: true, extractedRoot, fileCount: Number(manifest.file_count) };
+      }
+    } catch { /* missing or incomplete extraction */ }
+  }
+  return { ready: false, extractedRoot, fileCount: 0 };
+}
+
+function modSideAssetPreflight(settings) {
+  const cached = modSideAssetsReady();
+  if (cached.ready) return { ...cached, requiredGiB: 0, availableGiB: 0, hasSpace: true };
+  const preferredManaged = normalizeManagedDir(settings.CounterSideSourceManagedDir);
+  const managed = isManagedDir(preferredManaged) ? preferredManaged : normalizeManagedDir(settings.CounterSideManagedDir);
+  if (!isManagedDir(managed)) throw new Error('Select an official CounterSide client before preparing Mod:Side assets.');
+  const sourceRoot = gameRootFromManaged(managed);
+  const inventory = assetInventory(sourceRoot);
+  if (!inventory.files) throw new Error(`No Unity .asset bundles were found under ${sourceRoot}.`);
+  const requiredBytes = estimateModSideRequiredBytes(inventory.bytes);
+  const stats = fs.statfsSync(root);
+  const availableBytes = Number(stats.bavail) * Number(stats.bsize);
+  return {
+    ...cached,
+    sourceRoot,
+    bundleCount: inventory.files,
+    sourceGiB: Number((inventory.bytes / GIB).toFixed(1)),
+    requiredGiB: Math.ceil(requiredBytes / GIB),
+    availableGiB: Number((availableBytes / GIB).toFixed(1)),
+    hasSpace: availableBytes >= requiredBytes,
+  };
+}
+
+function pythonInvocation(python, args) {
+  return path.basename(python).toLowerCase() === 'py.exe' ? { file: python, args: ['-3', ...args] } : { file: python, args };
+}
+
+async function extractModSideAssets(settings, confirmed) {
+  if (!confirmed) throw new Error('Asset extraction requires confirmation after the free-space warning.');
+  const preflight = modSideAssetPreflight(settings);
+  if (preflight.ready) return preflight;
+  if (!preflight.hasSpace) {
+    throw new Error(`Mod:Side needs at least ${preflight.requiredGiB} GB free; only ${preflight.availableGiB} GB is available.`);
+  }
+  const tools = toolPaths();
+  if (!tools.python) throw new Error('Python is required to extract Mod:Side assets.');
+  const decryptScript = requireFile(path.join('tools', 'cs_asset_decrypt.py'), 'CounterSide asset decrypt helper');
+  const extractScript = requireFile(path.join('tools', 'cs_extract_decrypted_assets.py'), 'CounterSide asset extract helper');
+  const extractedParent = path.join(root, 'extracted-assets');
+  const extractedRoot = path.join(extractedParent, 'all');
+  const decryptedRoot = path.join(root, '.cache', 'modside-assets', 'decrypted');
+  if (!isPathInside(root, extractedRoot) || !isPathInside(root, decryptedRoot)) throw new Error('Unsafe Mod:Side asset output path.');
+  const environment = buildListenerEnvironment(settings);
+  const probe = pythonInvocation(tools.python, ['-c', 'import UnityPy; from PIL import Image']);
+  await runChecked(probe.file, probe.args, { env: environment, description: 'UnityPy asset support', logStdout: false });
+  emitActionProgress('extract-modside-assets', 'decrypting', 0);
+  fs.rmSync(extractedRoot, { recursive: true, force: true });
+  fs.rmSync(decryptedRoot, { recursive: true, force: true });
+  fs.mkdirSync(extractedParent, { recursive: true });
+  fs.mkdirSync(decryptedRoot, { recursive: true });
+  try {
+    log(`Preparing ${preflight.bundleCount.toLocaleString()} Unity bundles for Mod:Side (${preflight.sourceGiB} GB source).`);
+    const decrypt = pythonInvocation(tools.python, [
+      '-u', decryptScript, 'decrypt-header', '--all-assets', '--root', preflight.sourceRoot,
+      '--out-dir', decryptedRoot, '--overwrite',
+    ]);
+    await runChecked(decrypt.file, decrypt.args, {
+      env: environment,
+      description: 'CounterSide bundle decryption',
+      logStdout: false,
+      onStdoutLine: actionProgressReporter('decrypting', 0, 5),
+    });
+    const extract = pythonInvocation(tools.python, [
+      '-u', extractScript, '--root', decryptedRoot, '--out-dir', extractedRoot,
+      '--manifest', path.join(extractedParent, 'manifest.json'), '--overwrite-manifest',
+    ]);
+    await runChecked(extract.file, extract.args, {
+      env: environment,
+      description: 'CounterSide asset extraction',
+      logStdout: false,
+      onStdoutLine: actionProgressReporter('extracting', 5, 95),
+    });
+  } finally {
+    fs.rmSync(path.join(root, '.cache', 'modside-assets'), { recursive: true, force: true });
+  }
+  const ready = modSideAssetsReady();
+  if (!ready.ready) throw new Error('Mod:Side extraction finished without a valid extracted asset manifest.');
+  emitActionProgress('extract-modside-assets', 'complete', 100);
+  log(`Mod:Side assets ready: ${ready.fileCount.toLocaleString()} exported assets at ${ready.extractedRoot}.`);
+  return { ...ready, requiredGiB: preflight.requiredGiB, availableGiB: preflight.availableGiB, hasSpace: true };
 }
 
 function gameplayStatus(settings) {
@@ -554,6 +727,7 @@ function dependencyStatus() {
 
 function snapshot() {
   const settings = loadSettings();
+  ensureRuntimeLayout(settings);
   selectInstalledClient(settings, true);
   const captureDir = crossSaveCaptureDir(settings);
   const captures = fs.existsSync(captureDir)
@@ -562,6 +736,7 @@ function snapshot() {
   return {
     appRoot: root,
     settings: settingsToClient(settings),
+    loginBackgrounds: getLoginBackgroundCatalog({ rootDir: root }).map(({ id, label, assetName, music, contentTag }) => ({ id, label, assetName, music, contentTag })),
     gameplay: gameplayStatus(settings),
     routing: routingStatus(settings),
     dependencies: dependencyStatus(),
@@ -585,6 +760,9 @@ function run(file, args, options = {}) {
     });
     let stdout = '';
     let stderr = '';
+    if (options.onStdoutLine) {
+      readline.createInterface({ input: child.stdout }).on('line', options.onStdoutLine);
+    }
     child.stdout.on('data', (chunk) => {
       const text = chunk.toString();
       stdout += text;
@@ -880,6 +1058,14 @@ async function launchClient({ clientPatchVerified = false } = {}) {
   const executable = path.join(frozenRoot, 'CounterSide.exe');
   const environment = { ...process.env };
   for (const key of ['SteamAppId', 'SteamGameId', 'SteamClientLaunch', 'SteamEnv', 'SteamPath']) delete environment[key];
+  const modRuntimeDir = path.join(root, 'mods', '.runtime', 'current');
+  if (fs.existsSync(path.join(modRuntimeDir, 'mod-set.json'))) {
+    environment.CS_MOD_TABLES_DIR = modRuntimeDir;
+    environment.CS_MOD_STRINGS_DIR = path.join(modRuntimeDir, 'Strings');
+    environment.CS_MOD_ASSET_BUNDLES_DIR = path.join(modRuntimeDir, 'ClientAssetBundles');
+  } else {
+    for (const key of ['CS_MOD_TABLES_DIR', 'CS_MOD_STRINGS_DIR', 'CS_MOD_ASSET_BUNDLES_DIR']) delete environment[key];
+  }
   const child = childProcess.spawn(executable, [], { cwd: frozenRoot, env: environment, detached: true, windowsHide: false, stdio: 'ignore' });
   child.unref();
   log(`Launched Steam-isolated frozen CounterSide (${quarantined} files newly quarantined).`);
@@ -909,9 +1095,9 @@ function writeServerTime(iso) {
   return state;
 }
 
-async function postJson(url, value) {
+async function postJson(url, value, timeoutMs = 3000) {
   try {
-    await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value), signal: AbortSignal.timeout(3000) });
+    await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value), signal: AbortSignal.timeout(timeoutMs) });
   } catch (error) {
     log(`Running listener update skipped: ${error.message}`, 'warn');
   }
@@ -1054,6 +1240,8 @@ async function startListenerService() {
   }
 
   log('Listener ready: game port, captured HTTP mirror, fixture directory, and User Manager are listening.');
+  emitService('listener', 'starting', 'Optimizing lobby');
+  await postJson(`http://127.0.0.1:${settings.HttpPort}/launcher/api/warmup`, {}, LISTENER_READINESS_TIMEOUT_MS);
   emitService('listener', 'starting', 'Launching frozen client');
   await launchClient({ clientPatchVerified: true });
   emitService('listener', 'running', `Offline client launched | TCP ${settings.GamePort} / HTTP ${settings.HttpPort}`);
@@ -1070,6 +1258,24 @@ async function startWikiService() {
   pipeServiceChild(child);
   emitService('wiki', 'running', `http://127.0.0.1:${settings.WikiPort}/`);
   await waitForChildren([child]);
+}
+
+async function startModSideService() {
+  const settings = loadSettings();
+  ensureRuntimeLayout(settings);
+  const script = requireFile(path.join('tools', 'serve-modside.js'), 'Mod:Side server');
+  const combatScript = requireFile(path.join('combat-simulator', 'server.js'), 'Combat:Side server');
+  const environment = buildListenerEnvironment(settings);
+  const child = childProcess.spawn(toolPaths().node, [script, '--port', String(settings.ModSidePort)], {
+    cwd: root, env: environment, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const combatSide = childProcess.spawn(toolPaths().node, [combatScript, '--port', String(COMBAT_SIDE_PORT)], {
+    cwd: root, env: environment, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  pipeServiceChild(child);
+  pipeServiceChild(combatSide, '[Combat:Side] ');
+  emitService('modside', 'running', `http://127.0.0.1:${settings.ModSidePort}/mod-side`);
+  await waitForChildren([child, combatSide]);
 }
 
 async function startCaptureService() {
@@ -1299,6 +1505,8 @@ async function runAction(command, payload) {
     case 'launch-client': return launchClient();
     case 'verify-assets': return { gameplay: gameplayStatus(loadSettings()) };
     case 'build-cache': return { gameplay: await ensureGameplayCache(loadSettings(), true) };
+    case 'prepare-modside-assets': return { assets: modSideAssetPreflight(loadSettings()) };
+    case 'extract-modside-assets': return { assets: await extractModSideAssets(loadSettings(), payload.confirmed === true) };
     case 'set-server-time': {
       const state = writeServerTime(payload.iso);
       const settings = loadSettings();
@@ -1332,6 +1540,7 @@ async function main() {
     const service = process.argv[3];
     if (service === 'listener') return startListenerService();
     if (service === 'wiki') return startWikiService();
+    if (service === 'modside') return startModSideService();
     if (service === 'capture') return startCaptureService();
     throw new Error(`Unsupported launcher service: ${service}`);
   }
@@ -1350,6 +1559,8 @@ if (require.main === module) {
 module.exports = {
   FROZEN_CLIENT_PATCH_REQUIREMENTS,
   createListenerReadinessGate,
+  estimateModSideRequiredBytes,
   normalizeExistingManagedDir,
+  progressFromLine,
   verifyGameplayCacheSource,
 };

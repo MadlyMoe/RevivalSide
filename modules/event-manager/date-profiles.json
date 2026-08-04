@@ -1,6 +1,48 @@
 {
   "profiles": [
     {
+      "id": "2022-10-20-employee-banners",
+      "name": "Lyudmila and Alex favored banners",
+      "startDate": "2022-10-20T16:00:00Z",
+      "endDate": "2022-11-03T04:00:00Z",
+      "openTags": [
+        "TAG_GLOBAL_PICKUP_CONTRACT_ADMIN_ARTILLERY_V4",
+        "TAG_CONTRACT_GLOBAL_PICKUP_ADMIN_GREATSWORD_V4"
+      ],
+      "intervalTags": [
+        "DATE_GLOBAL_PICKUP_CONTRACT_ADMIN_ARTILLERY_V4",
+        "DATE_GLOBAL_PICKUP_CONTRACT_ADMIN_GREATSWORD_V4"
+      ]
+    },
+    {
+      "id": "2022-10-20-ministra-banner",
+      "name": "Ministra classified banner",
+      "startDate": "2022-10-20T16:00:00Z",
+      "endDate": "2022-11-10T04:00:00Z",
+      "openTags": [
+        "TAG_FIRST_UNIT_CORRUPTED_CA_MINISTRA"
+      ],
+      "intervalTags": [
+        "DATE_GLOBAL_CLASSIFIED_CONTRACT_MINISTRA_V1",
+        "DATE_GLOBAL_CLASSIFIED_CONTRACTBANNER_AWAKEN_008"
+      ]
+    },
+    {
+      "id": "2023-05-17-iron-knight",
+      "name": "The Iron Knight recruitment and contract missions",
+      "startDate": "2023-05-17T00:00:00Z",
+      "endDate": "2023-06-07T00:00:00Z",
+      "openTags": [
+        "TAG_FIRST_UNIT_BORDER_SA_HORSE",
+        "TAG_COMMON_MISSION_EVENT_KINGDOM"
+      ],
+      "intervalTags": [
+        "DATE_GLOBAL_CLASSIFIED_CONTRACT_BORDER_HORSE",
+        "DATE_GLOBAL_CLASSIFIED_CONTRACTBANNER_AWAKEN_019",
+        "DATE_COMMON_MISSION_EVENT_KINGDOM"
+      ]
+    },
+    {
       "id": "2025-04-10-danmachi-moonlight-pride",
       "name": "Spring 2025 collaboration and side stories",
       "startDate": "2025-04-10T00:00:00Z",

@@ -417,9 +417,10 @@ foreach ($fileName in @("cs-listener.js", "package.json", "package-lock.json", "
   Copy-FileIfPresent (Join-Path $rootPath $fileName) (Join-Path $outputPath $fileName)
 }
 
-foreach ($dirName in @("server", "modules", "packet-handlers", "combat-handler", "stages", "wiki")) {
+foreach ($dirName in @("server", "modules", "packet-handlers", "combat-handler", "combat-simulator", "stages", "wiki")) {
   Copy-DirectoryClean (Join-Path $rootPath $dirName) (Join-Path $outputPath $dirName)
 }
+Copy-DirectoryClean (Join-Path $rootPath "SpineViewer\dist") (Join-Path $outputPath "SpineViewer\dist")
 
 $toolsOut = Join-Path $outputPath "tools"
 New-Item -ItemType Directory -Force -Path $toolsOut | Out-Null
@@ -430,6 +431,7 @@ foreach ($toolName in @(
   "check-frozen-client-update.js",
   "check-user-manager-lightweight.js",
   "serve-revivalside-wiki.js",
+  "serve-modside.js",
   "build-revivalside-wiki.js",
   "copy-wiki-assets.js",
   "ensure-gameplay-assets.js",
@@ -451,6 +453,10 @@ if ($IncludeGameplayJsons -and -not $SkipGameplayJsons -and (Test-Path -LiteralP
   Write-Host "Copied optional legacy gameplay-jsons."
 } else {
   Write-Host "No packaged gameplay-jsons required; runtime tables load from installed CounterSide luac assets."
+  foreach ($sourceRoot in @("Assetbundles", "StreamingAssets")) {
+    $relativeInterval = "$sourceRoot\ab_script\luac\LUA_INTERVAL_TEMPLET.json"
+    Copy-FileIfPresent (Join-Path $sourceGameplayJsons $relativeInterval) (Join-Path $outputPath "gameplay-jsons\$relativeInterval")
+  }
 }
 
 $serverDataOut = Join-Path $outputPath "server-data"
@@ -521,6 +527,7 @@ Included:
 - Local listener start/stop launcher.
 - User Manager at http://127.0.0.1:8088/user-manager while the listener is running.
 - Local wiki launcher.
+- Standalone React Mod:Side hub with Asset:Side, Story:Side, Unit:Side, and Combat:Side.
 - Optional wiki/cutscene image assets when present in the package.
 - Direct frozen-client URL routing with no Windows hosts-file changes.
 - Steam-isolated frozen launch with zero managed Steamworks callsites and native Steam API DLLs quarantined.
@@ -544,6 +551,7 @@ Ports:
 - Game listener: 22000
 - User Manager / launcher API: 8088
 - Wiki: 5174
+- Mod:Side: 5175
 "@ | Set-Content -LiteralPath (Join-Path $outputPath "README.txt") -Encoding UTF8
 
 if ($Zip) {

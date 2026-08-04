@@ -5,6 +5,7 @@ const { createAdminRewardPosts } = require("../admin");
 const {
   writeString,
   writeSignedVarInt,
+  writeSignedVarLong,
   writeInt64LE,
   writeNullableObject,
   writeObjectList,
@@ -142,7 +143,7 @@ function buildAttendanceNotifyPayload(user, options = {}) {
 
   return Buffer.concat([
     writeSignedVarInt(0),
-    writeInt64LE(rawDateTimeTicks(clockNow)),
+    writeSignedVarLong(rawDateTimeTicks(clockNow)),
     writeObjectList(entries.map((entry) => writeNullableObject(buildAttendanceEntryData(entry)))),
   ]);
 }
