@@ -158,8 +158,9 @@ function saveUserDb(userDb, targetUserUid = null, options = {}) {
     if (userDb.activeUserUid !== undefined) insertMeta.run("activeUserUid", String(userDb.activeUserUid || ""));
 
     if (targetUserUid) {
-      // Save single user
-      const u = userDb.users[String(targetUserUid)];
+      // Save single user or remove deleted user
+      const targetKey = String(targetUserUid);
+      const u = userDb.users && userDb.users[targetKey];
       if (u) {
         insertUser.run(
           String(u.userUid),
@@ -170,9 +171,19 @@ function saveUserDb(userDb, targetUserUid = null, options = {}) {
           String(u.reconnectKey || ""),
           JSON.stringify(u)
         );
+      } else {
+        db.prepare("DELETE FROM users WHERE user_uid = ?").run(targetKey);
       }
     } else {
-      // Save all users
+      // Save all users & sync deleted records
+      const activeUids = Object.keys(userDb.users || {});
+      if (activeUids.length > 0) {
+        const placeholders = activeUids.map(() => "?").join(",");
+        db.prepare(`DELETE FROM users WHERE user_uid NOT IN (${placeholders})`).run(...activeUids);
+      } else {
+        db.exec("DELETE FROM users");
+      }
+
       for (const [uid, u] of Object.entries(userDb.users || {})) {
         if (!u) continue;
         insertUser.run(

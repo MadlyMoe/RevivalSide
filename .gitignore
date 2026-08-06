@@ -50,6 +50,10 @@ server-data/**
 !server-data/captured-tcp/**
 !server-data/captured-game-flow/
 !server-data/captured-game-flow/**
+server-data/users.sqlite*
+server-data/users.json*
+server-data/active-user.json
+server-data/users.backups/
 
 # Extracted/decrypted game assets and Lua table outputs
 decrypted-assets/
