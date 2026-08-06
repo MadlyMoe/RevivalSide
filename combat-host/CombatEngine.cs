@@ -170,6 +170,7 @@ internal sealed class CombatEngine
             RaidLevel = stage.RaidLevel != 0 ? stage.RaidLevel : req.RaidLevel,
             MapID = stage.MapID != 0 ? stage.MapID : MapIdForStageDungeon(stage.StageId != 0 ? stage.StageId : req.StageID, stage.DungeonID != 0 ? stage.DungeonID : req.DungeonID),
             GameType = stage.GameType != 0 ? stage.GameType : req.GameType,
+            DiveStageID = stage.DiveStageID != 0 ? stage.DiveStageID : req.DiveStageID,
             MiscMode = stage.MiscMode ?? "",
             PalaceID = stage.PalaceID,
             FierceBossId = stage.FierceBossId,

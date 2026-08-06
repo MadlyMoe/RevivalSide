@@ -30,6 +30,10 @@ function loadFrozenClientPatchState(managedDir, options = {}) {
   if (!patchState) return null;
   const standaloneVersion = patchState.version;
   const assetBuildCode = extractBuildCode(standaloneVersion) || buildCode;
+  const tutorialDungeonResourcesPath = selectExistingFile([
+    path.join(rootDir, "Assetbundles", "tutorialDungeonResources.json"),
+    path.join(dataDir, "StreamingAssets", "tutorialDungeonResources.json"),
+  ]);
 
   return Object.freeze({
     rootDir,
@@ -41,6 +45,10 @@ function loadFrozenClientPatchState(managedDir, options = {}) {
     extraAssetVersion: `ExtraAsset_${assetBuildCode}`,
     patchInfo: patchState.body,
     patchInfoPath: patchState.path,
+    tutorialDungeonResources: tutorialDungeonResourcesPath
+      ? fs.readFileSync(tutorialDungeonResourcesPath)
+      : null,
+    tutorialDungeonResourcesPath,
     frozenManifestPath,
     isFrozenClient: fs.existsSync(frozenManifestPath),
     contentsVersion: readFrozenContentsVersion(
@@ -81,6 +89,10 @@ function selectInstalledPatchInfo(candidates) {
   return states[0] || null;
 }
 
+function selectExistingFile(candidates) {
+  return candidates.find((candidate) => fs.existsSync(candidate)) || "";
+}
+
 function resolveFrozenClientPatchResponse(pathname, state) {
   if (!state) return null;
   const cleanPath = decodeURIComponent(String(pathname || ""));
@@ -89,6 +101,16 @@ function resolveFrozenClientPatchResponse(pathname, state) {
   }
   if (cleanPath === `/patchfiles/StandaloneWindows64/${state.standaloneVersion}/PatchInfo.json`) {
     return binaryResponse(state.patchInfo, "standalone-patch-info");
+  }
+  if (
+    cleanPath === `/patchfiles/StandaloneWindows64/${state.standaloneVersion}/tutorialDungeonResources.json` &&
+    state.tutorialDungeonResources
+  ) {
+    return binaryResponse(
+      state.tutorialDungeonResources,
+      "standalone-tutorial-dungeon-resources",
+      "application/json; charset=utf-8"
+    );
   }
   if (cleanPath === "/patchfiles/ExtraAsset/liveVersion.json") {
     return jsonResponse({ versionList: [{ version: state.extraAssetVersion }] }, "extra-asset-version");
@@ -178,10 +200,10 @@ function jsonResponse(value, label) {
   };
 }
 
-function binaryResponse(value, label) {
+function binaryResponse(value, label, contentType = "application/octet-stream") {
   return {
     label,
-    contentType: "application/octet-stream",
+    contentType,
     body: Buffer.from(value),
   };
 }

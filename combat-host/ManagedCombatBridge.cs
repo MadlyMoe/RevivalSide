@@ -1021,6 +1021,7 @@ internal static class ManagedCombatBridge
             {
                 runtime.SetField(gameData, "m_MapID", dynamicGame.MapID);
             }
+            runtime.ApplyDiveEnemyLevel(gameData, data.Stage, dynamicGame);
             runtime.ApplyGameType(gameData, dynamicGame);
             runtime.ApplyBattleConditionIds(gameData, dynamicGame.BattleConditionIds);
             var eventDeckId = data.Stage?.EventDeckId ?? dynamicGame.DungeonID;
@@ -3941,6 +3942,13 @@ internal static class ManagedCombatBridge
             SetField(gameData, "m_NKM_GAME_TYPE", Enum.Parse(GetType("NKM.NKM_GAME_TYPE"), gameTypeName));
         }
 
+        public void ApplyDiveEnemyLevel(object gameData, StageData? stage, DynamicGameState dynamicGame)
+        {
+            if (dynamicGame.GameType != 5 && !string.Equals(dynamicGame.MiscMode, "dive", StringComparison.OrdinalIgnoreCase)) return;
+            SetField(gameData, "m_TeamBLevelAdd", stage?.TeamBLevelAdd ?? 0);
+            SetField(gameData, "m_TeamBLevelFix", stage?.TeamBLevelFix ?? 0);
+        }
+
         public void ApplyBattleConditionIds(object gameData, IEnumerable<int>? battleConditionIds)
         {
             var dictionary = GetField(gameData, "m_BattleConditionIDs");
@@ -3958,6 +3966,7 @@ internal static class ManagedCombatBridge
             if (IsTutorialDungeon(dynamicGame.DungeonID)) return "NGT_TUTORIAL";
             return dynamicGame.GameType switch
             {
+                5 => "NGT_DIVE",
                 8 => "NGT_RAID",
                 9 => "NGT_CUTSCENE",
                 12 => "NGT_RAID_SOLO",

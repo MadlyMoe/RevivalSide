@@ -69,11 +69,13 @@ module.exports = {
         miscMode: "dive",
         diveStageID: diveGameLoad.diveStageID,
         diveDeckIndex: diveGameLoad.deckIndex,
+        teamBLevelAdd: diveGameLoad.teamBLevelAdd,
+        teamBLevelFix: 0,
         tutorial: false,
         cutsceneOnly: false,
       };
       console.log(
-        `[game-load:dive] diveStageID=${diveGameLoad.diveStageID} dungeonID=${diveGameLoad.dungeonID} deck=${diveGameLoad.deckIndex}`
+        `[game-load:dive] diveStageID=${diveGameLoad.diveStageID} dungeonID=${diveGameLoad.dungeonID} deck=${diveGameLoad.deckIndex} enemyLevel=${diveGameLoad.targetEnemyLevel} baseLevel=${diveGameLoad.baseEnemyLevel} levelAdd=${diveGameLoad.teamBLevelAdd}`
       );
     } else if (requestedFierceBossId > 0 && ctx.getGenericStageForRequest) {
       stage = ctx.getGenericStageForRequest(req);
@@ -221,7 +223,7 @@ module.exports = {
             playerDeck,
           }
         : stage;
-    
+
     // Dimension Trimming Debug Logging - Active Stage
     if (isTrimRequest && activeStage) {
       console.log(`[TRIM:GAME_LOAD_REQ] ActiveStage created with playerDeck: hasPlayerDeck=${!!activeStage.playerDeck} playerDeckUnitCount=${activeStage.playerDeck && activeStage.playerDeck.units ? activeStage.playerDeck.units.length : 0}`);
@@ -231,7 +233,9 @@ module.exports = {
       ctx.logCapturedClientPacketMatch(packet, 10, "game-load");
     }
     if (!activeStage || activeStage.tutorial) ctx.maybeSendTutorialCutsceneClear(socket, packet.payload);
-    if (ctx.config.DYNAMIC_BATTLE_MANAGER && activeStage && !activeStage.cutsceneOnly && ctx.sendDynamicGameLoadAck(socket, req, activeStage)) {
+    const dynamicGameLoadSent =
+      ctx.config.DYNAMIC_BATTLE_MANAGER && activeStage && !activeStage.cutsceneOnly && ctx.sendDynamicGameLoadAck(socket, req, activeStage);
+    if (dynamicGameLoadSent) {
       // Dimension Trimming Debug Logging - Dynamic Battle Path
       if (isTrimRequest) {
         console.log(`[TRIM:GAME_LOAD_REQ] Taking DYNAMIC_BATTLE_MANAGER path (managed combat)`);

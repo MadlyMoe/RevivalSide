@@ -13,6 +13,7 @@ public sealed class GameLoadReq
     public int StageID { get; set; }
     public int DungeonID { get; set; }
     public int GameType { get; set; }
+    public int DiveStageID { get; set; }
     public long RaidUID { get; set; }
     public int RaidLevel { get; set; }
     public double RaidCurHP { get; set; }
@@ -27,6 +28,7 @@ public sealed class StageData
     public int RaidLevel { get; set; }
     public int MapID { get; set; }
     public int GameType { get; set; }
+    public int DiveStageID { get; set; }
     public string MiscMode { get; set; } = "";
     public int PalaceID { get; set; }
     public int FierceBossId { get; set; }
@@ -38,6 +40,8 @@ public sealed class StageData
     public int PhaseId { get; set; }
     public int PhaseIndex { get; set; }
     public int EventDeckId { get; set; }
+    public int TeamBLevelAdd { get; set; }
+    public int TeamBLevelFix { get; set; }
     public bool UsesHybridEventDeck { get; set; }
     public bool EventDeckFreeShipSlot { get; set; }
     public List<int> BattleConditionIds { get; set; } = [];
@@ -138,6 +142,7 @@ public sealed class DynamicGameState
     public int RaidLevel { get; set; }
     public int MapID { get; set; }
     public int GameType { get; set; }
+    public int DiveStageID { get; set; }
     public string MiscMode { get; set; } = "";
     public int PalaceID { get; set; }
     public int FierceBossId { get; set; }

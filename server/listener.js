@@ -3186,6 +3186,7 @@ function buildDynamicGameLoadPayload(socket, req, stage) {
   replay.tutorialClearRecorded = false;
   replay.stageClearLoot = null;
   replay.lastDynamicGameEndResult = null;
+  replay.diveBattleResult = null;
   replay.managedGameLoadAckPayload = null;
   const gameLoadAckTemplate = getCapturedServerPayloadTemplate(GAME_LOAD_ACK);
   const nativeTutorialLoad =
@@ -4191,8 +4192,33 @@ function buildDynamicGameEndNotPayload(replay, override = {}) {
   );
   const raidBattleResult = isRaidGame ? maybeRecordRaidBattleResultForReplay(replay, { ...override, battleState }, win) : null;
   const isDiveGame = !isRaidGame && (Number(dynamicGame.diveStageID || 0) > 0 || Number(dynamicGame.gameType || 0) === NGT_DIVE);
-  const diveBattleResult = isDiveGame ? worldMap.completeDiveBattle(override.user, dynamicGame, battleState, { win, now: dateTimeBinaryNow() }) : null;
-  const stageLoot = !isRaidGame && !isDiveGame && win ? getOrGrantStageClearLoot(replay, override.user, dungeonId, stageId, { save: false }) : null;
+  let diveBattleResult = null;
+  if (isDiveGame) {
+    const diveBattleKey = String(dynamicGame.gameUID || dynamicGame.gameUid || `${dungeonId}:${stageId}`);
+    const cachedDiveResult =
+      replay &&
+      replay.diveBattleResult &&
+      String(replay.diveBattleResult.battleKey || "") === diveBattleKey
+        ? replay.diveBattleResult.result
+        : null;
+    diveBattleResult =
+      cachedDiveResult ||
+      worldMap.completeDiveBattle(override.user, dynamicGame, battleState, {
+        win,
+        now: dateTimeBinaryNow(),
+      });
+    if (diveBattleResult && replay) {
+      replay.diveBattleResult = { battleKey: diveBattleKey, result: diveBattleResult };
+      if (!cachedDiveResult && USE_LOCAL_USER_DB) saveUserDb();
+    } else if (!diveBattleResult) {
+      console.log(
+        `[dynamic-game-end:dive] unresolved diveStageID=${Number(dynamicGame.diveStageID || 0)} gameType=${Number(
+          dynamicGame.gameType || 0
+        )} dungeonID=${dungeonId}`
+      );
+    }
+  }
+  const stageLoot = !isRaidGame && !isDiveGame && win ? getOrGrantStageClearLoot(replay, override.user, dungeonId, stageId) : null;
   const costItems = isRaidGame
     ? (raidBattleResult && raidBattleResult.costItems) || []
     : isDiveGame
@@ -4214,7 +4240,7 @@ function buildDynamicGameEndNotPayload(replay, override = {}) {
     writeBool(win), // win
     writeBool(Boolean(override.giveup || false)), // giveup
     writeBool(Boolean(override.restart || false)), // restart
-    !isRaidGame && !isDiveGame && dungeonId
+    !isRaidGame && dungeonId && (!isDiveGame || win)
       ? writeNullableObject(
           buildDungeonClearData(dungeonId, {
             stageId,
@@ -4658,10 +4684,14 @@ function buildGameLoadAck(data = {}) {
     if (data.raidUID != null && spans.raidUID) {
       replacements.push({ ...spans.raidUID, payload: writeSignedVarLong(toBigInt(data.raidUID || 0)) });
     }
+    const hasExplicitTeamBLevelAdd = data.teamBLevelAdd != null && spans.teamBLevelAdd;
+    if (hasExplicitTeamBLevelAdd) {
+      replacements.push({ ...spans.teamBLevelAdd, payload: writeSignedVarInt(Number(data.teamBLevelAdd) || 0) });
+    }
     const teamBLevelFix = Number(data.teamBLevelFix || data.raidLevel || 0);
     if (teamBLevelFix > 0 && spans.teamBLevelFix) {
       replacements.push({ ...spans.teamBLevelFix, payload: writeSignedVarInt(teamBLevelFix) });
-      if (spans.teamBLevelAdd) {
+      if (spans.teamBLevelAdd && !hasExplicitTeamBLevelAdd) {
         replacements.push({ ...spans.teamBLevelAdd, payload: writeSignedVarInt(0) });
       }
     }
