@@ -483,11 +483,12 @@ function ensureRuntimeLayout(settings) {
     'exports', 'logs',
   ]) fs.mkdirSync(path.join(root, directory), { recursive: true });
   fs.mkdirSync(crossSaveCaptureDir(settings), { recursive: true });
-  const users = path.join(root, 'server-data', 'users.json');
-  if (!fs.existsSync(users)) {
+  const usersSqlite = path.join(root, 'server-data', 'users.sqlite');
+  const usersJson = path.join(root, 'server-data', 'users.json');
+  if (!fs.existsSync(usersSqlite) && !fs.existsSync(usersJson)) {
     const starter = path.join(root, 'server-data', 'starter-users.json');
-    if (fs.existsSync(starter)) fs.copyFileSync(starter, users);
-    else fs.writeFileSync(users, '{\n  "schemaVersion": 1,\n  "nextUserUid": "1000000001",\n  "nextFriendCode": "10000001",\n  "activeUserUid": "",\n  "users": {}\n}\n');
+    if (fs.existsSync(starter)) fs.copyFileSync(starter, usersJson);
+    else fs.writeFileSync(usersJson, '{\n  "schemaVersion": 1,\n  "nextUserUid": "1000000001",\n  "nextFriendCode": "10000001",\n  "activeUserUid": "",\n  "users": {}\n}\n');
   }
 }
 

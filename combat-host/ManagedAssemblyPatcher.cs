@@ -83,6 +83,10 @@ internal static class ManagedAssemblyPatcher
         PatchBoolReturn(module, "NKM.NKMItemManager", "LoadFromLua_Random_Mold_Box", false);
         PatchBoolReturn(module, "NKM.NKMItemManager", "LoadFromLua_Item_Mold_Tab", false);
         PatchBoolReturn(module, "NKM.NKMItemManager", "LoadFromLua_Item_AutoWeight", false);
+        PatchNoOp(module, "NKC.NKCSocketManager", "Disconnect");
+        PatchNoOp(module, "NKC.NKCSocketManager", "CloseSocket");
+        PatchNoOp(module, "NKC.NKCConnectGame", "Disconnect");
+        PatchNoOp(module, "NKC.NKCConnectGame", "CloseSocket");
         PatchNkcInitCombatOnly(module);
         module.Write(outputAssembly);
     }

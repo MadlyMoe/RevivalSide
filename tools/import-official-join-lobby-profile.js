@@ -12,6 +12,8 @@ const {
 } = require("../modules/user-db-selection");
 const { rebuildUserDbIndexes } = require("../server/userManager");
 
+const { loadUserDb } = require("../modules/user-storage");
+
 const ROOT_DIR = path.resolve(__dirname, "..");
 
 function usage() {
@@ -20,8 +22,8 @@ function usage() {
       "usage: node tools/import-official-join-lobby-profile.js --capture-dir <dir> [options]",
       "",
       "Options:",
-      "  --user-db <path>                  users.json path (default: server-data/users.json)",
-      "  --copy-to <path>                  copy updated users.json to this path after import",
+      "  --user-db <path>                  database path (default: server-data/users.sqlite or users.json)",
+      "  --copy-to <path>                  copy updated database to this path after import",
       "  --switch-active                   make imported profile active",
       "  --update-existing                 update the matching official profile instead of adding a new one",
       "  --preserve-official-uid           use the official UID when it does not conflict",
@@ -39,7 +41,10 @@ const args = parseArgs(process.argv.slice(2));
 if (!args.captureDir) usage();
 
 const captureDir = path.resolve(args.captureDir);
-const userDbPath = path.resolve(args.userDb || path.join(ROOT_DIR, "server-data", "users.json"));
+const defaultDbPath = fs.existsSync(path.join(ROOT_DIR, "server-data", "users.sqlite"))
+  ? path.join(ROOT_DIR, "server-data", "users.sqlite")
+  : path.join(ROOT_DIR, "server-data", "users.json");
+const userDbPath = path.resolve(args.userDb || defaultDbPath);
 const activeUserPath = resolveActiveUserPath(userDbPath, process.env.CS_ACTIVE_USER_PATH || "");
 const copyToPath = args.copyTo ? path.resolve(args.copyTo) : "";
 const combatHostPath = resolveOptionalPath(args.combatHost || process.env.CS_COMBAT_HOST_PATH || findDefaultCombatHostPath());
@@ -64,12 +69,14 @@ if (!managedDir || !fs.existsSync(path.join(managedDir, "Assembly-CSharp.dll")))
   throw new Error("CounterSide Data/Managed directory with Assembly-CSharp.dll was not found. Use --managed-dir <CounterSide\\Data\\Managed> or set CS_COUNTERSIDE_MANAGED_DIR.");
 }
 if (!fs.existsSync(captureDir)) throw new Error(`Capture extract directory was not found: ${captureDir}`);
-if (!fs.existsSync(userDbPath)) throw new Error(`users.json was not found: ${userDbPath}`);
+if (!fs.existsSync(userDbPath)) throw new Error(`User database was not found: ${userDbPath}`);
 
 const originalLog = console.log;
 console.log = (...items) => console.error(...items);
 
-const userDb = JSON.parse(stripBom(fs.readFileSync(userDbPath, "utf8")));
+const userDb = userDbPath.endsWith(".sqlite")
+  ? loadUserDb({ jsonPath: userDbPath })
+  : JSON.parse(stripBom(fs.readFileSync(userDbPath, "utf8")));
 applyActiveUserSelection(userDb, activeUserPath);
 const backupPath = backupUserDb(userDbPath);
 const combatHostConfig = {
