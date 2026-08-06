@@ -16,6 +16,8 @@ npm-debug.log*
 # .NET build outputs
 **/bin/
 **/obj/
+combat-host/bin/
+combat-host/obj/
 !prebuilt/
 !prebuilt/**
 
@@ -68,6 +70,7 @@ tmp_app_probe.cs
 # Local runtime and release outputs
 exports/
 logs/
+mods/
 launcher-settings.json
 frozen-client/
 prebuilt/revivalside-*/
