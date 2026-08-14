@@ -376,7 +376,17 @@ function runPython(args, options = {}) {
   const rootDir = options.rootDir || ROOT_DIR;
   const env = options.env || process.env;
   const configured = parsePathList(env.CS_PYTHON_PATH || env.PYTHON || "");
-  const commands = uniquePaths([...configured, process.platform === "win32" ? "py" : "", "python", "python3"].filter(Boolean));
+  const localVenvPythons = [
+    path.join(rootDir, ".venv", "bin", "python3"),
+    path.join(rootDir, ".venv", "bin", "python"),
+    path.join(rootDir, "venv", "bin", "python3"),
+    path.join(rootDir, "venv", "bin", "python"),
+    path.join(rootDir, ".venv", "Scripts", "python.exe"),
+    path.join(rootDir, "venv", "Scripts", "python.exe"),
+  ];
+  const commands = uniquePaths(
+    [...configured, ...localVenvPythons, process.platform === "win32" ? "py" : "", "python3", "python"].filter(Boolean)
+  );
   const failures = [];
   for (const command of commands) {
     const finalArgs = path.basename(command).toLowerCase() === "py" ? ["-3", ...args] : args;

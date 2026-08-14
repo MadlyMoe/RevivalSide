@@ -452,7 +452,9 @@ def decrypt_header_files(args: argparse.Namespace) -> None:
 
     seen: set[Path] = set()
     count = 0
-    for index, path in enumerate(paths, start=1):
+    paths_length = len(paths)
+
+    for path in paths:
         resolved = path.resolve()
         if resolved in seen:
             continue
@@ -460,7 +462,7 @@ def decrypt_header_files(args: argparse.Namespace) -> None:
         output = decrypt_header_file(path, args.suffix, args.overwrite, args.root, args.out_dir)
         count += 1
         if not args.quiet:
-            print(f"[{index}/{len(paths)}] wrote {output}")
+            print(f"[ {count}/{paths_length} ] wrote {output}")
     print(f"done count={count}")
 
 
