@@ -149,6 +149,15 @@ function findSteamLibraryRoots(env = process.env) {
 }
 
 function findSteamInstallRoots(env = process.env) {
+  const home = env.HOME || process.env.HOME || "";
+  const linuxRoots = home
+    ? [
+        path.join(home, ".steam", "steam"),
+        path.join(home, ".steam", "root"),
+        path.join(home, ".local", "share", "Steam"),
+        path.join(home, ".steam", "debian-installation"),
+      ]
+    : [];
   return [
     readRegistryString("HKCU\\Software\\Valve\\Steam", "SteamPath"),
     readRegistryString("HKLM\\SOFTWARE\\WOW6432Node\\Valve\\Steam", "InstallPath"),
@@ -158,6 +167,7 @@ function findSteamInstallRoots(env = process.env) {
     "C:\\Steam",
     "D:\\Steam",
     "E:\\Steam",
+    ...linuxRoots,
   ]
     .filter(Boolean)
     .map(unescapeSteamPath);

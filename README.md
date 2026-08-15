@@ -32,6 +32,16 @@ npm install
 npm run build:combat-host
 ```
 
+For Linux, you can find instructions at [docs/setup_linux.md](docs/setup_linux.md)(pre-alpha).
+
+The very short Linux setup is:
+
+```console
+if [ ! -d ".env" ]; then cp ".env.example" ".env"; fi
+npm install
+npm run build:combat-host
+```
+
 Fresh local accounts and runtime features can use `.luac` tables cached from the encrypted assets next to `Data\Managed`, without requiring raw/decompiled table dumps or `gameplay-jsons`.
 
 To run the local wiki:
