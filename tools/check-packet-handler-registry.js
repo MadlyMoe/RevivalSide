@@ -38,11 +38,15 @@ const specialistOwners = new Map([
   [3800, "modules\\admin\\handlers\\"],
 ]);
 
+function normalizePath(value) {
+  return String(value).replace(/\\/g, "/");
+}
+
 for (const [packetId, expectedPrefix] of specialistOwners) {
   const handler = handlers.get(packetId);
   assert(handler, `missing specialist request handler ${packetId}`);
   assert(
-    String(handler.fileName).startsWith(expectedPrefix),
+    normalizePath(handler.fileName).startsWith(normalizePath(expectedPrefix)),
     `packet ${packetId} is owned by ${handler.fileName}; expected ${expectedPrefix}`
   );
 }

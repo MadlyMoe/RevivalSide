@@ -13,7 +13,7 @@
     "check:mod-unit-maker": "node --check modules/mod-unit-maker/index.js && node --check modules/unity-bundle-compiler/index.js && node tools/check-mod-unit-maker.js && node tools/check-csharp-host-runtime-refresh.js",
     "check:mod-episode-maker": "node --check modules/mod-episode-maker/index.js && node --check server/assetViewer.js && node tools/check-mod-episode-maker.js",
     "check:listener": "node --check cs-listener.js && node --check server/listener.js && node --check server/userManager.js && node --check server/packetHandlerLoader.js && node --check modules/user-db-selection/index.js && node --check tools/import-official-join-lobby-profile.js && node tools/check-frozen-client-update.js && node tools/check-user-manager-lightweight.js && node tools/check-join-lobby-login-fast-path.js && node tools/check-story-open-tags.js && node tools/check-frozen-content-compat.js && node tools/check-stage-clear-persistence.js && node tools/check-squad-loadouts.js && node tools/check-packet-handler-registry.js",
-    "check:handlers": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Get-ChildItem packet-handlers,modules -Recurse -Filter *.js | Where-Object { $_.DirectoryName -match '[\\\\/]handlers$' } | ForEach-Object { node --check $_.FullName }\"",
+    "check:handlers": "node tools/check-handlers.js",
     "build:combat-host": "dotnet build combat-host/CombatHost.csproj --nologo",
     "build:launcher": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-revivalside-launcher.ps1",
     "check:launcher": "node --check tools/revivalside-launcher-backend.js && node tools/check-revivalside-launcher-backend.js && corepack pnpm --dir launcher build",
