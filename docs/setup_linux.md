@@ -11,7 +11,7 @@ You can set up only the wiki, only the listener, or both. If you want the normal
 
 ## Disclaimer
 
-Linux support for RevivalSide is currently in pre-alpha. This means that many features such as the wiki or UI launcher, have not been tested and are not guaranteed to work correctly, especially on non-Arch-based distros. If you are not ready to deal with technical issues, it's highly recommended staying on the Windows version of RevivalSide. If you encounter any issues, you can report them through the RevivalSide bug report channels.
+Linux support for RevivalSide is currently in pre-alpha. This means that some features such as UI launcher, have not been tested and are not guaranteed to work correctly, especially on non-Arch-based distros. If you are not ready to deal with technical issues, it's highly recommended staying on the Windows version of RevivalSide. If you encounter any issues, you can report them through the RevivalSide bug report channels.
 Instructions will be updated as RevivalSide Linux branch develops.
 
 ## Quick Map
@@ -185,7 +185,13 @@ The repo does not store raw game assets, raw DLLs, your account data, decrypted 
 
 Set a short variable for your CounterSide folder:
 
-```console
+Fish:
+```fish
+set client "$HOME/.steam/steam/steamapps/common/CounterSide"
+```
+
+Bash:
+```bash
 client="$HOME/.steam/steam/steamapps/common/CounterSide"
 ```
 
@@ -219,6 +225,68 @@ If `python` does not work on your machine, run:
 ```console
 python3 -m pip install UnityPy pillow
 ```
+
+### Build The Installed-Client Gameplay Cache
+
+Run:
+
+```console
+npm run ensure:gameplay-assets
+```
+
+This starts from `CS_COUNTERSIDE_MANAGED_DIR` or the auto-detected Steam install, walks from `Data/Managed` to the installed encrypted `Data/StreamingAssets/ab_script*` bundles, and writes decrypted Lua bytecode to `.cache/gameplay-luac`. It does not run `unluac` or rebuild parsed/decompiled table dumps.
+
+### Build The Server Data Indexes
+
+Run:
+
+```console
+python ./tools/cs_build_server_data.py --parsed-root ./gameplay-jsons/StreamingAssets --out-dir ./server-data
+```
+
+This creates compact server files like `server-data/units.json`.
+
+### Optional: Extract Images For The Wiki
+
+The wiki works without images, but it is much nicer with PNGs.
+
+First decrypt asset bundle headers:
+
+```console
+python ./tools/cs_asset_decrypt.py decrypt-header --all-assets --root "$client/Data/StreamingAssets" --out-dir ./extracted-assets/decrypted --overwrite
+```
+
+Then extract readable assets:
+
+```console
+python ./tools/cs_extract_decrypted_assets.py --root ./extracted-assets/decrypted --out-dir ./extracted-assets/all --manifest ./extracted-assets/manifest.json --overwrite-manifest
+```
+
+This can take a while. If you only care about IDs and text data, you can skip image extraction.
+
+## Start The Wiki
+
+From the repo folder, build the wiki data:
+
+```console
+npm run wiki:build
+```
+
+Then start the local wiki website:
+
+```console
+npm run wiki:serve
+```
+
+PowerShell should print something like:
+
+```text
+RevivalSide Wiki running at http://127.0.0.1:5174/
+```
+
+Open that address in your browser. If port `5174` is busy, the script will try the next port, like `5175`.
+
+Keep that PowerShell window open while you use the wiki. Close the window when you want to stop the wiki.
 
 ## Start The Server Listener
 
@@ -301,6 +369,13 @@ Then close and reopen the game.
 ## Everyday Startup
 
 After the first setup is done, most days are much shorter.
+
+### Wiki
+
+```console
+npm run wiki:build
+npm run wiki:serve
+```
 
 ### Listener
 
