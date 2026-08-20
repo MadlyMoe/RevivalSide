@@ -14,19 +14,21 @@ const EVENT_PREFIX = '@@REVIVALSIDE_EVENT@@';
 const GAME_PORTS = new Set(['20001', '20002', '20003', '20004', '22000']);
 const LISTENER_READINESS_TIMEOUT_MS = 120_000;
 const COMBAT_SIDE_PORT = 5185;
+const TAILSCALE_DOWNLOAD_URL = 'https://tailscale.com/download/windows';
 const GAMEPLAY_CACHE_MANIFEST_NAME = '.revivalside-gameplay-luac-cache.json';
 const GIB = 1024 ** 3;
 const MODSIDE_MINIMUM_FREE_BYTES = 32 * GIB;
 const FROZEN_CLIENT_PATCH_REQUIREMENTS = Object.freeze([
   'mod-runtime-loader=True',
   'mod-string-loader=True', 'mod-asset-bundle-loader=True', 'mod-episode-ui=True',
+  'friendly-pvp-ui-fix=True',
   'steam-local-login=True', 'steam-standalone=True', 'steam-runtime-isolated=True',
   'steam-interop-callsites=0', 'frozen-official-update-bypass=True',
   'frozen-patch-download-bypass=True', 'frozen-contents-version-isolation=False',
   'frozen-login-contents-reconciliation=False', 'external-endpoint-references=0',
 ]);
 const DEFAULT_SETTINGS = Object.freeze({
-  SettingsVersion: 8,
+  SettingsVersion: 11,
   GamePort: 22000,
   HttpPort: 8088,
   WikiPort: 5174,
@@ -42,6 +44,22 @@ const DEFAULT_SETTINGS = Object.freeze({
   ReplayCapturedGameFlow: false,
   SkipTutorialToWin: false,
   ResetTutorialOnLogin: false,
+  PrivatePvpMode: 'off',
+  PrivatePvpPublicHost: '',
+  PrivatePvpHostUrl: '',
+  PrivatePvpRelayUrl: '',
+  PrivatePvpRelaySecret: '',
+  PrivatePvpRelayHostId: '',
+  RelaySshHost: '',
+  RelaySshPort: 22,
+  RelaySshUser: '',
+  RelaySshKeyPath: '',
+  RelaySshHostKeyFingerprint: '',
+  RelayHostname: '',
+  RelayPort: 443,
+  RelayTlsCertificatePath: '',
+  RelayTlsPrivateKeyPath: '',
+  RelayInstallPath: '/opt/revivalside-relay',
   MinimizeToTrayOnClose: true,
   NotifyTrayWhenServiceStops: true,
   AdvancedEnvText: '',
@@ -113,6 +131,11 @@ function normalizeLoginBackground(value) {
   return /^\d+$/.test(background) && Number(background) > 0 ? background : 'auto';
 }
 
+function normalizePrivatePvpMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  return ['host', 'join', 'legacy-host', 'legacy-join'].includes(mode) ? mode : 'off';
+}
+
 function loadSettings() {
   let saved = {};
   let installed = {};
@@ -124,6 +147,7 @@ function loadSettings() {
   try {
     if (installedSettingsPath && path.resolve(installedSettingsPath) !== path.resolve(settingsPath)) installed = JSON.parse(fs.readFileSync(installedSettingsPath, 'utf8'));
   } catch { /* installed launcher settings are optional */ }
+  const savedSettingsVersion = Number(saved.SettingsVersion || 0);
   const settings = Object.fromEntries(Object.entries(DEFAULT_SETTINGS).map(([key, value]) => [
     key,
     Object.prototype.hasOwnProperty.call(saved, key) ? saved[key] : value,
@@ -146,6 +170,25 @@ function loadSettings() {
   settings.CrossSaveCaptureDir = String(settings.CrossSaveCaptureDir || '');
   settings.EventDate = String(settings.EventDate || '');
   settings.AdvancedEnvText = String(settings.AdvancedEnvText || '');
+  settings.PrivatePvpMode = normalizePrivatePvpMode(settings.PrivatePvpMode);
+  settings.PrivatePvpPublicHost = String(settings.PrivatePvpPublicHost || '').trim();
+  settings.PrivatePvpHostUrl = String(settings.PrivatePvpHostUrl || '').trim();
+  settings.PrivatePvpRelayUrl = String(settings.PrivatePvpRelayUrl || '').trim();
+  settings.PrivatePvpRelaySecret = String(settings.PrivatePvpRelaySecret || '');
+  settings.PrivatePvpRelayHostId = String(settings.PrivatePvpRelayHostId || '').trim();
+  if (savedSettingsVersion < 11 && !settings.PrivatePvpRelayUrl && ['host', 'join'].includes(settings.PrivatePvpMode)) {
+    settings.PrivatePvpMode = `legacy-${settings.PrivatePvpMode}`;
+  }
+  settings.RelaySshHost = String(settings.RelaySshHost || '').trim();
+  settings.RelaySshPort = clampPort(settings.RelaySshPort, DEFAULT_SETTINGS.RelaySshPort);
+  settings.RelaySshUser = String(settings.RelaySshUser || '').trim();
+  settings.RelaySshKeyPath = String(settings.RelaySshKeyPath || '').trim();
+  settings.RelaySshHostKeyFingerprint = String(settings.RelaySshHostKeyFingerprint || '').trim();
+  settings.RelayHostname = String(settings.RelayHostname || '').trim();
+  settings.RelayPort = clampPort(settings.RelayPort, DEFAULT_SETTINGS.RelayPort);
+  settings.RelayTlsCertificatePath = String(settings.RelayTlsCertificatePath || '').trim();
+  settings.RelayTlsPrivateKeyPath = String(settings.RelayTlsPrivateKeyPath || '').trim();
+  settings.RelayInstallPath = String(settings.RelayInstallPath || DEFAULT_SETTINGS.RelayInstallPath).trim();
   for (const key of [
     'UserManagerAllowRemote', 'VerboseCapture', 'ReplayCapturedGameFlow',
     'SkipTutorialToWin', 'ResetTutorialOnLogin', 'MinimizeToTrayOnClose',
@@ -172,6 +215,17 @@ function applyDotEnvDefaults(settings, saved) {
   assignIfUnsaved('ReplayCapturedGameFlow', 'CS_REPLAY_CAPTURED_GAME_FLOW', parseBoolean);
   assignIfUnsaved('SkipTutorialToWin', 'CS_SKIP_TUTORIAL_TO_WIN', parseBoolean);
   assignIfUnsaved('ResetTutorialOnLogin', 'CS_RESET_TUTORIAL_PROGRESS_ON_LOGIN', parseBoolean);
+  assignIfUnsaved('PrivatePvpPublicHost', 'CS_PVP_PUBLIC_HOST', (value) => String(value).trim());
+  assignIfUnsaved('PrivatePvpHostUrl', 'CS_PVP_HOST_URL', (value) => String(value).trim());
+  assignIfUnsaved('PrivatePvpRelayUrl', 'CS_PVP_RELAY_URL', (value) => String(value).trim());
+  assignIfUnsaved('PrivatePvpRelaySecret', 'CS_PVP_RELAY_SECRET', String);
+  assignIfUnsaved('PrivatePvpRelayHostId', 'CS_PVP_RELAY_HOST_ID', (value) => String(value).trim());
+  if (!Object.prototype.hasOwnProperty.call(saved, 'PrivatePvpMode')) {
+    if (values.CS_PRIVATE_PVP === '0') settings.PrivatePvpMode = 'off';
+    else if (values.CS_PVP_RELAY_URL && ['host', 'join'].includes(String(values.CS_PVP_RELAY_ROLE || '').toLowerCase())) settings.PrivatePvpMode = String(values.CS_PVP_RELAY_ROLE).toLowerCase();
+    else if (values.CS_PVP_HOST_URL) settings.PrivatePvpMode = 'legacy-join';
+    else if (parseBoolean(values.CS_PRIVATE_PVP) || values.CS_PVP_PUBLIC_HOST) settings.PrivatePvpMode = 'legacy-host';
+  }
 }
 
 function settingsToClient(settings) {
@@ -191,6 +245,22 @@ function settingsToClient(settings) {
     replayCapturedGameFlow: settings.ReplayCapturedGameFlow,
     skipTutorial: settings.SkipTutorialToWin,
     resetTutorialOnLogin: settings.ResetTutorialOnLogin,
+    privatePvpMode: settings.PrivatePvpMode,
+    privatePvpPublicHost: settings.PrivatePvpPublicHost,
+    privatePvpHostUrl: settings.PrivatePvpHostUrl,
+    privatePvpRelayUrl: settings.PrivatePvpRelayUrl,
+    privatePvpRelaySecret: settings.PrivatePvpRelaySecret,
+    privatePvpRelayHostId: settings.PrivatePvpRelayHostId,
+    relaySshHost: settings.RelaySshHost,
+    relaySshPort: settings.RelaySshPort,
+    relaySshUser: settings.RelaySshUser,
+    relaySshKeyPath: settings.RelaySshKeyPath,
+    relaySshHostKeyFingerprint: settings.RelaySshHostKeyFingerprint,
+    relayHostname: settings.RelayHostname,
+    relayPort: settings.RelayPort,
+    relayTlsCertificatePath: settings.RelayTlsCertificatePath,
+    relayTlsPrivateKeyPath: settings.RelayTlsPrivateKeyPath,
+    relayInstallPath: settings.RelayInstallPath,
     minimizeToTray: settings.MinimizeToTrayOnClose,
     notifyServiceStops: settings.NotifyTrayWhenServiceStops,
     advancedEnvironment: settings.AdvancedEnvText,
@@ -214,6 +284,22 @@ function applyClientSettings(settings, client) {
   settings.ReplayCapturedGameFlow = !!client.replayCapturedGameFlow;
   settings.SkipTutorialToWin = !!client.skipTutorial;
   settings.ResetTutorialOnLogin = !!client.resetTutorialOnLogin;
+  settings.PrivatePvpMode = normalizePrivatePvpMode(client.privatePvpMode);
+  settings.PrivatePvpPublicHost = String(client.privatePvpPublicHost || '').trim();
+  settings.PrivatePvpHostUrl = String(client.privatePvpHostUrl || '').trim();
+  settings.PrivatePvpRelayUrl = String(client.privatePvpRelayUrl || '').trim();
+  settings.PrivatePvpRelaySecret = String(client.privatePvpRelaySecret || '');
+  settings.PrivatePvpRelayHostId = String(client.privatePvpRelayHostId || '').trim();
+  settings.RelaySshHost = String(client.relaySshHost || '').trim();
+  settings.RelaySshPort = clampPort(client.relaySshPort, settings.RelaySshPort || 22);
+  settings.RelaySshUser = String(client.relaySshUser || '').trim();
+  settings.RelaySshKeyPath = String(client.relaySshKeyPath || '').trim();
+  settings.RelaySshHostKeyFingerprint = String(client.relaySshHostKeyFingerprint || '').trim();
+  settings.RelayHostname = String(client.relayHostname || '').trim();
+  settings.RelayPort = clampPort(client.relayPort, settings.RelayPort || 443);
+  settings.RelayTlsCertificatePath = String(client.relayTlsCertificatePath || '').trim();
+  settings.RelayTlsPrivateKeyPath = String(client.relayTlsPrivateKeyPath || '').trim();
+  settings.RelayInstallPath = String(client.relayInstallPath || '/opt/revivalside-relay').trim();
   settings.MinimizeToTrayOnClose = !!client.minimizeToTray;
   settings.NotifyTrayWhenServiceStops = !!client.notifyServiceStops;
   settings.AdvancedEnvText = String(client.advancedEnvironment || '');
@@ -392,7 +478,9 @@ function resolveTool(name, relativeCandidates = []) {
   if (onPath) return onPath;
   const programRoots = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean);
   for (const base of programRoots) {
-    const subdir = /(?:dumpcap|tshark)/i.test(name) ? 'Wireshark' : /(?:node|npm)/i.test(name) ? 'nodejs' : '';
+    const subdir = /(?:dumpcap|tshark)/i.test(name) ? 'Wireshark'
+      : /tailscale/i.test(name) ? 'Tailscale'
+        : /(?:node|npm)/i.test(name) ? 'nodejs' : '';
     const candidate = path.join(base, subdir, name);
     if (fs.existsSync(candidate)) return candidate;
   }
@@ -408,7 +496,36 @@ function toolPaths() {
     python: resolveTool('python.exe', [path.join('runtime', 'python', 'python.exe'), path.join('runtime-python', arch, 'python.exe')]) || resolveTool('py.exe'),
     dumpcap: resolveTool('dumpcap.exe', [path.join('runtime', 'Wireshark', 'dumpcap.exe'), path.join('runtime-wireshark', arch, 'dumpcap.exe')]),
     tshark: resolveTool('tshark.exe', [path.join('runtime', 'Wireshark', 'tshark.exe'), path.join('runtime-wireshark', arch, 'tshark.exe')]),
+    ssh: resolveTool(process.platform === 'win32' ? 'ssh.exe' : 'ssh'),
+    scp: resolveTool(process.platform === 'win32' ? 'scp.exe' : 'scp'),
+    sshKeyscan: resolveTool(process.platform === 'win32' ? 'ssh-keyscan.exe' : 'ssh-keyscan'),
+    sshKeygen: resolveTool(process.platform === 'win32' ? 'ssh-keygen.exe' : 'ssh-keygen'),
+    tailscale: resolveTool(process.platform === 'win32' ? 'tailscale.exe' : 'tailscale'),
   };
+}
+
+function isTailscaleIpv4(value) {
+  const parts = String(value || '').trim().split('.');
+  if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return false;
+  return Number(parts[0]) === 100 && Number(parts[1]) >= 64 && Number(parts[1]) <= 127;
+}
+
+function normalizeTailscaleGuestAddress(value, defaultPort = 8088) {
+  const raw = String(value || '').trim();
+  if (!raw) throw new Error('Paste the host code from the other RevivalSide launcher.');
+  let target;
+  try { target = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`); }
+  catch { throw new Error('The Tailscale host code is not valid.'); }
+  if (target.protocol !== 'http:' || target.username || target.password || (target.pathname && target.pathname !== '/') || target.search || target.hash) {
+    throw new Error('The Tailscale host code must be a plain Tailscale IP or HTTP URL without credentials or a path.');
+  }
+  const hostname = target.hostname.toLowerCase();
+  const magicDnsName = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.ts\.net$/i.test(hostname);
+  if (!isTailscaleIpv4(hostname) && !magicDnsName) {
+    throw new Error('Use the 100.x Tailscale code copied by the host, or a full .ts.net MagicDNS name.');
+  }
+  const port = clampPort(target.port || defaultPort, defaultPort);
+  return { hostname, hostUrl: `http://${hostname}:${port}` };
 }
 
 function applyAdvancedEnvironment(environment, text) {
@@ -427,6 +544,12 @@ function applyAdvancedEnvironment(environment, text) {
 function buildListenerEnvironment(settings) {
   const tools = toolPaths();
   const managed = normalizeManagedDir(settings.CounterSideManagedDir);
+  const privatePvpMode = normalizePrivatePvpMode(settings.PrivatePvpMode);
+  const relayRole = privatePvpMode === 'host' || privatePvpMode === 'join' ? privatePvpMode : 'off';
+  const legacyHost = privatePvpMode === 'legacy-host';
+  const legacyJoin = privatePvpMode === 'legacy-join';
+  const legacyHostAddress = String(settings.PrivatePvpPublicHost || '').trim();
+  const tailscaleHostAddress = legacyHost && isTailscaleIpv4(legacyHostAddress) ? legacyHostAddress : '';
   const environment = {
     ...process.env,
     CS_PORT: String(settings.GamePort),
@@ -439,8 +562,25 @@ function buildListenerEnvironment(settings) {
     CS_REPLAY_CAPTURED_GAME_FLOW: settings.ReplayCapturedGameFlow ? '1' : '0',
     CS_SKIP_TUTORIAL_TO_WIN: settings.SkipTutorialToWin ? '1' : '0',
     CS_RESET_TUTORIAL_PROGRESS_ON_LOGIN: settings.ResetTutorialOnLogin ? '1' : '0',
+    CS_PRIVATE_PVP: privatePvpMode === 'off' ? '0' : '1',
+    CS_PVP_PUBLIC_HOST: legacyHost ? legacyHostAddress : '',
+    CS_PVP_HOST_URL: legacyJoin ? String(settings.PrivatePvpHostUrl || '').trim() : '',
+    CS_PVP_RELAY_URL: relayRole === 'off' ? '' : String(settings.PrivatePvpRelayUrl || '').trim(),
+    CS_PVP_RELAY_SECRET: relayRole === 'off' ? '' : String(settings.PrivatePvpRelaySecret || ''),
+    CS_PVP_RELAY_HOST_ID: relayRole === 'host' ? String(settings.PrivatePvpRelayHostId || '').trim() : '',
+    CS_PVP_RELAY_ROLE: relayRole,
+    CS_GAME_LISTEN_HOST: legacyHost && !tailscaleHostAddress ? '0.0.0.0' : '127.0.0.1',
+    CS_HTTP_LISTEN_HOST: legacyHost && !tailscaleHostAddress ? '0.0.0.0' : settings.UserManagerAllowRemote && !tailscaleHostAddress ? '0.0.0.0' : '127.0.0.1',
+    CS_PVP_LISTEN_HOST: tailscaleHostAddress,
     CS_REQUIRE_FROZEN_CLIENT_PATCH: '1',
   };
+  if (environment.CS_PVP_RELAY_URL) {
+    environment.CS_GAME_LISTEN_HOST = '127.0.0.1';
+    environment.CS_HTTP_LISTEN_HOST = '127.0.0.1';
+    environment.CS_PVP_PUBLIC_HOST = '127.0.0.1';
+    environment.CS_PVP_HOST_URL = '';
+    environment.CS_PVP_LISTEN_HOST = '';
+  }
   if (environment.CS_EVENT_DATE) environment.CS_EVENT_MANAGER = 'auto';
   if (tools.python) environment.CS_PYTHON_PATH = tools.python;
   const packagedCombat = path.join(root, 'combat-host', 'CombatHost.exe');
@@ -474,6 +614,34 @@ function buildListenerEnvironment(settings) {
     }
   }
   return environment;
+}
+
+function validatePrivatePvpSettings(settings) {
+  const mode = normalizePrivatePvpMode(settings.PrivatePvpMode);
+  if (mode === 'off') return;
+  if (mode === 'legacy-host') {
+    if (!String(settings.PrivatePvpPublicHost || '').trim()) {
+      throw new Error('Legacy P2P host mode requires the LAN or private-VPN guest address.');
+    }
+    return;
+  }
+  if (mode === 'legacy-join') {
+    let target;
+    try { target = new URL(String(settings.PrivatePvpHostUrl || '').trim()); }
+    catch { throw new Error('Legacy P2P join mode requires a valid host URL.'); }
+    if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) {
+      throw new Error('Legacy P2P host URL must use HTTP or HTTPS without embedded credentials.');
+    }
+    return;
+  }
+  const relayUrl = String(settings.PrivatePvpRelayUrl || '').trim();
+  if (!/^https:\/\//i.test(relayUrl)) throw new Error('Relay PvP mode requires an HTTPS relay URL.');
+  if (String(settings.PrivatePvpRelaySecret || '').length < 32) {
+    throw new Error('Relay PvP mode requires an access secret with at least 32 characters.');
+  }
+  if (mode === 'host' && !/^[A-Za-z0-9_-]{8,80}$/.test(String(settings.PrivatePvpRelayHostId || '').trim())) {
+    throw new Error('Relay host mode requires an 8-80 character host relay ID.');
+  }
 }
 
 function ensureRuntimeLayout(settings) {
@@ -787,6 +955,103 @@ async function runChecked(file, args, options = {}) {
     throw new Error(`${options.description || path.basename(file)} failed: ${detail}`);
   }
   return result;
+}
+
+async function getTailscaleStatus() {
+  const tailscale = toolPaths().tailscale;
+  if (!tailscale) {
+    return {
+      installed: false,
+      connected: false,
+      ip: '',
+      state: 'NotInstalled',
+      downloadUrl: TAILSCALE_DOWNLOAD_URL,
+      message: 'Tailscale is not installed. The official Windows download page is ready to open.',
+    };
+  }
+  const ipResult = await run(tailscale, ['ip', '-4'], { logStdout: false, errorLevel: 'debug' });
+  const ip = String(ipResult.stdout || '').replace(/\r/g, '').split('\n').map((line) => line.trim()).find(isTailscaleIpv4) || '';
+  let state = ip ? 'Running' : 'Unknown';
+  if (!ip) {
+    const statusResult = await run(tailscale, ['status', '--json', '--peers=false'], { logStdout: false, errorLevel: 'debug' });
+    try { state = String(JSON.parse(statusResult.stdout).BackendState || state); } catch { /* older or unavailable CLI */ }
+  }
+  return {
+    installed: true,
+    connected: !!ip,
+    ip,
+    state,
+    downloadUrl: TAILSCALE_DOWNLOAD_URL,
+    message: ip ? `Tailscale is connected as ${ip}.` : state === 'NeedsLogin'
+      ? 'Tailscale is installed but needs you to sign in.'
+      : 'Tailscale is installed but is not connected.',
+  };
+}
+
+function tailscaleLoginUrl(output) {
+  const match = String(output || '').match(/https:\/\/login\.tailscale\.com\/[A-Za-z0-9_?&=./%-]+/i);
+  return match ? match[0] : '';
+}
+
+async function ensureTailscaleConnected() {
+  let status = await getTailscaleStatus();
+  if (!status.installed || status.connected) return status;
+  const tailscale = toolPaths().tailscale;
+  const command = status.state === 'NeedsLogin' ? 'login' : 'up';
+  const connected = await run(tailscale, [command, '--timeout=20s'], { logStdout: false, errorLevel: 'debug' });
+  const loginUrl = tailscaleLoginUrl(`${connected.stdout}\n${connected.stderr}`);
+  status = await getTailscaleStatus();
+  if (status.connected) return status;
+  return {
+    ...status,
+    loginUrl,
+    message: loginUrl
+      ? 'Finish the Tailscale sign-in in your browser, then click the same launcher button again.'
+      : 'Tailscale could not connect. Open Tailscale, sign in, then click the same launcher button again.',
+  };
+}
+
+async function configureTailscaleLegacyHost() {
+  const status = await ensureTailscaleConnected();
+  if (!status.connected) return status;
+  const settings = loadSettings();
+  settings.PrivatePvpMode = 'legacy-host';
+  settings.PrivatePvpPublicHost = status.ip;
+  settings.PrivatePvpHostUrl = '';
+  saveSettings(settings);
+  const shareCode = `http://${status.ip}:${settings.HttpPort}`;
+  return {
+    ...status,
+    configured: true,
+    shareCode,
+    settings: settingsToClient(settings),
+    message: `Legacy P2P host is ready. Share code copied: ${shareCode}`,
+  };
+}
+
+async function configureTailscaleLegacyGuest(value) {
+  const status = await ensureTailscaleConnected();
+  if (!status.connected) return status;
+  const settings = loadSettings();
+  const target = normalizeTailscaleGuestAddress(value, settings.HttpPort);
+  const reachable = await run(toolPaths().tailscale, ['ping', '--c=1', '--timeout=5s', target.hostname], {
+    logStdout: false,
+    errorLevel: 'debug',
+  });
+  if (reachable.code !== 0) {
+    throw new Error('That host is not reachable through Tailscale. Make sure both PCs are signed into the same tailnet and the host PC is online.');
+  }
+  settings.PrivatePvpMode = 'legacy-join';
+  settings.PrivatePvpHostUrl = target.hostUrl;
+  settings.PrivatePvpPublicHost = '';
+  saveSettings(settings);
+  return {
+    ...status,
+    configured: true,
+    hostUrl: target.hostUrl,
+    settings: settingsToClient(settings),
+    message: `Legacy P2P guest is ready for ${target.hostUrl}.`,
+  };
 }
 
 function firstLine(value) {
@@ -1135,9 +1400,12 @@ function stopChildProcess(child) {
   } catch { /* best effort */ }
 }
 
-function createListenerReadinessGate(settings, timeoutMs = LISTENER_READINESS_TIMEOUT_MS) {
+function createListenerReadinessGate(settings, timeoutMs = LISTENER_READINESS_TIMEOUT_MS, environment = buildListenerEnvironment(settings)) {
+  const gameHosts = [...new Set([environment.CS_GAME_LISTEN_HOST, environment.CS_PVP_LISTEN_HOST].filter(Boolean))];
+  const httpHosts = [...new Set([environment.CS_HTTP_LISTEN_HOST, environment.CS_PVP_LISTEN_HOST].filter(Boolean))];
   const signals = new Map([
-    ['game listener', `[+] Listening on port ${settings.GamePort}`],
+    ...gameHosts.map((host) => [`game listener ${host}`, `[+] Listening on ${host}:${settings.GamePort}`]),
+    ...httpHosts.map((host) => [`HTTP services ${host}`, `[+] HTTP services listening on ${host}:${settings.HttpPort}`]),
     ['captured HTTP mirror', `[+] Captured HTTP mirror listening on http://127.0.0.1:${settings.HttpPort}`],
     ['captured fixture directory', '[+] Captured HTTP mirror fixtureDir='],
     ['User Manager', `[+] User manager listening on http://127.0.0.1:${settings.HttpPort}/user-manager`],
@@ -1204,6 +1472,7 @@ async function waitForChildren(children) {
 
 async function startListenerService() {
   const settings = loadSettings();
+  validatePrivatePvpSettings(settings);
   ensureRuntimeLayout(settings);
   for (const [relative, description] of [
     ['cs-listener.js', 'Listener entry'], ['packet-schema.json', 'Packet schema'],
@@ -1224,7 +1493,7 @@ async function startListenerService() {
   const child = childProcess.spawn(tools.node, [path.join(root, 'cs-listener.js')], {
     cwd: root, env: environment, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
   });
-  const readiness = createListenerReadinessGate(settings);
+  const readiness = createListenerReadinessGate(settings, LISTENER_READINESS_TIMEOUT_MS, environment);
   const onExitBeforeReady = (code) => readiness.fail(new Error(`Listener exited with code ${code ?? 'unknown'} before reporting ready.`));
   const onErrorBeforeReady = (error) => readiness.fail(error);
   child.once('exit', onExitBeforeReady);
@@ -1474,6 +1743,243 @@ async function extractCrossSave() {
   return { imported, copyPath: copyTo, source: found.source, capture: found.capture };
 }
 
+function generateRelayCredentials() {
+  const settings = loadSettings();
+  settings.PrivatePvpRelaySecret = crypto.randomBytes(32).toString('base64url');
+  if (!settings.PrivatePvpRelayHostId) settings.PrivatePvpRelayHostId = `host-${crypto.randomBytes(12).toString('hex')}`;
+  saveSettings(settings);
+  return { settings: settingsToClient(settings) };
+}
+
+function relayUrlFromSettings(settings) {
+  const host = String(settings.RelayHostname || '').trim();
+  const port = clampPort(settings.RelayPort, 443);
+  return `https://${host}${port === 443 ? '' : `:${port}`}`;
+}
+
+function validateRelayDeployment(settings) {
+  const required = [
+    ['SSH host', settings.RelaySshHost], ['SSH user', settings.RelaySshUser],
+    ['SSH private key', settings.RelaySshKeyPath], ['SSH host-key fingerprint', settings.RelaySshHostKeyFingerprint],
+    ['Relay hostname', settings.RelayHostname],
+    ['TLS certificate', settings.RelayTlsCertificatePath], ['TLS private key', settings.RelayTlsPrivateKeyPath],
+    ['Install path', settings.RelayInstallPath], ['Relay secret', settings.PrivatePvpRelaySecret],
+  ];
+  for (const [label, value] of required) if (!String(value || '').trim()) throw new Error(`${label} is required.`);
+  if (!/^[A-Za-z0-9.-]+$/.test(settings.RelaySshHost)) throw new Error('SSH host must be a hostname or IPv4 address.');
+  if (!/^[A-Za-z_][A-Za-z0-9_-]{0,31}$/.test(settings.RelaySshUser)) throw new Error('SSH user contains unsupported characters.');
+  if (!/^SHA256:[A-Za-z0-9+/]{20,}={0,2}$/.test(settings.RelaySshHostKeyFingerprint)) {
+    throw new Error('SSH host-key fingerprint must use the SHA256:... format shown by ssh-keygen.');
+  }
+  if (!/^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(settings.RelayHostname)) {
+    throw new Error('Relay hostname must be the DNS name covered by the TLS certificate.');
+  }
+  if (!/^\/[A-Za-z0-9._/-]+$/.test(settings.RelayInstallPath) || settings.RelayInstallPath.split('/').includes('..')) {
+    throw new Error('Relay install path must be a simple absolute Linux path without .. segments.');
+  }
+  if (String(settings.PrivatePvpRelaySecret).length < 32) throw new Error('Relay secret must contain at least 32 characters.');
+  for (const [label, file] of [['SSH private key', settings.RelaySshKeyPath], ['TLS certificate', settings.RelayTlsCertificatePath], ['TLS private key', settings.RelayTlsPrivateKeyPath]]) {
+    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) throw new Error(`${label} was not found: ${file}`);
+  }
+  const tools = toolPaths();
+  if (!tools.ssh || !tools.scp || !tools.sshKeyscan || !tools.sshKeygen) {
+    throw new Error('Windows OpenSSH (ssh, scp, ssh-keyscan, and ssh-keygen) is required for one-click relay setup.');
+  }
+  return tools;
+}
+
+async function resolveRelayBinary() {
+  const candidates = [
+    path.join(root, 'relay-host', 'linux-x64', 'RevivalSideRelay'),
+    path.join(root, 'relay-host', 'publish', 'linux-x64', 'RevivalSideRelay'),
+  ];
+  for (const candidate of candidates) if (fs.existsSync(candidate)) return candidate;
+  const project = path.join(root, 'relay-host', 'RevivalSideRelay.csproj');
+  const dotnet = toolPaths().dotnet;
+  if (!fs.existsSync(project) || !dotnet) throw new Error('The packaged Linux relay binary is missing. Reinstall or rebuild RevivalSide.');
+  const outputDir = path.join(root, '.cache', 'relay-host', 'linux-x64');
+  await fsp.mkdir(outputDir, { recursive: true });
+  await runChecked(dotnet, [
+    'publish', project, '-c', 'Release', '-r', 'linux-x64', '--self-contained', 'true', '--nologo',
+    '-p:PublishSingleFile=true', '-p:IncludeNativeLibrariesForSelfExtract=true',
+    '-p:DebugType=None', '-p:DebugSymbols=false', '-o', outputDir,
+  ], { description: 'Linux relay build' });
+  const built = path.join(outputDir, 'RevivalSideRelay');
+  if (!fs.existsSync(built)) throw new Error('Linux relay build completed without producing RevivalSideRelay.');
+  return built;
+}
+
+function sshConnectionArgs(settings, knownHostsPath, scp = false) {
+  return [
+    scp ? '-P' : '-p', String(settings.RelaySshPort),
+    '-i', settings.RelaySshKeyPath,
+    '-o', 'BatchMode=yes',
+    '-o', 'ConnectTimeout=10',
+    '-o', 'ServerAliveInterval=10',
+    '-o', 'ServerAliveCountMax=2',
+    '-o', 'StrictHostKeyChecking=yes',
+    '-o', `UserKnownHostsFile=${knownHostsPath}`,
+  ];
+}
+
+async function createPinnedKnownHosts(settings, tools, stage) {
+  const scan = await runChecked(tools.sshKeyscan, [
+    '-T', '10', '-p', String(settings.RelaySshPort), settings.RelaySshHost,
+  ], { description: 'SSH host-key scan', logStdout: false });
+  const lines = String(scan.stdout || '').replace(/\r/g, '').split('\n').filter((line) => line && !line.startsWith('#'));
+  const accepted = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const candidate = path.join(stage, `known-host-${index}`);
+    await fsp.writeFile(candidate, `${lines[index]}\n`, 'utf8');
+    const fingerprint = await runChecked(tools.sshKeygen, ['-lf', candidate, '-E', 'sha256'], {
+      description: 'SSH host-key fingerprint', logStdout: false,
+    });
+    const match = String(fingerprint.stdout || '').match(/\b(SHA256:[A-Za-z0-9+/]+={0,2})\b/);
+    if (match && match[1] === settings.RelaySshHostKeyFingerprint) accepted.push(lines[index]);
+  }
+  if (!accepted.length) throw new Error('The VPS SSH host key does not match the pinned fingerprint. Nothing was uploaded.');
+  const knownHostsPath = path.join(stage, 'known_hosts');
+  await fsp.writeFile(knownHostsPath, `${accepted.join('\n')}\n`, { encoding: 'utf8', mode: 0o600 });
+  return knownHostsPath;
+}
+
+async function testRelay(settings = loadSettings()) {
+  const relayUrl = String(settings.PrivatePvpRelayUrl || relayUrlFromSettings(settings)).replace(/\/$/, '');
+  if (!/^https:\/\//i.test(relayUrl)) throw new Error('Relay URL must use HTTPS.');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(`${relayUrl}/health`, { signal: controller.signal });
+    const health = await response.json();
+    if (!response.ok || !health || health.ok !== true || health.service !== 'revivalside-relay' || health.tls !== true) {
+      throw new Error(`Unexpected relay health response (${response.status}).`);
+    }
+    return { relayUrl, health };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function deployRelay() {
+  const settings = loadSettings();
+  const tools = validateRelayDeployment(settings);
+  const relayBinary = await resolveRelayBinary();
+  const stage = await fsp.mkdtemp(path.join(os.tmpdir(), 'revivalside-relay-'));
+  const remoteStage = `/tmp/revivalside-relay-${crypto.randomBytes(8).toString('hex')}`;
+  const target = `${settings.RelaySshUser}@${settings.RelaySshHost}`;
+  const installPath = settings.RelayInstallPath.replace(/\/$/, '');
+  const serviceName = 'revivalside-relay.service';
+  emitActionProgress('deploy-relay', 'build', 10);
+  try {
+    const files = {
+      relay: path.join(stage, 'RevivalSideRelay'),
+      certificate: path.join(stage, 'certificate.pem'),
+      privateKey: path.join(stage, 'private-key.pem'),
+      environment: path.join(stage, 'revivalside-relay.env'),
+      service: path.join(stage, serviceName),
+      install: path.join(stage, 'install.sh'),
+    };
+    await fsp.copyFile(relayBinary, files.relay);
+    await fsp.copyFile(settings.RelayTlsCertificatePath, files.certificate);
+    await fsp.copyFile(settings.RelayTlsPrivateKeyPath, files.privateKey);
+    await fsp.writeFile(files.environment, [
+      `REVIVALSIDE_RELAY_SECRET=${settings.PrivatePvpRelaySecret}`,
+      `REVIVALSIDE_RELAY_PORT=${settings.RelayPort}`,
+      `REVIVALSIDE_RELAY_CERTIFICATE=${installPath}/tls/certificate.pem`,
+      `REVIVALSIDE_RELAY_PRIVATE_KEY=${installPath}/tls/private-key.pem`,
+      '',
+    ].join('\n'), { encoding: 'utf8', mode: 0o600 });
+    await fsp.writeFile(files.service, [
+      '[Unit]',
+      'Description=RevivalSide encrypted PvP relay',
+      'After=network-online.target',
+      'Wants=network-online.target',
+      '',
+      '[Service]',
+      'Type=simple',
+      'User=revivalside-relay',
+      'Group=revivalside-relay',
+      `WorkingDirectory=${installPath}`,
+      `EnvironmentFile=${installPath}/revivalside-relay.env`,
+      'Environment=DOTNET_BUNDLE_EXTRACT_BASE_DIR=/tmp/revivalside-relay-bundle',
+      'Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1',
+      'Environment=DOTNET_NOLOGO=1',
+      `ExecStart=${installPath}/RevivalSideRelay`,
+      'Restart=on-failure',
+      'RestartSec=3',
+      'NoNewPrivileges=true',
+      'PrivateTmp=true',
+      'PrivateDevices=true',
+      'ProtectSystem=strict',
+      'ProtectHome=true',
+      'ProtectKernelTunables=true',
+      'ProtectKernelModules=true',
+      'ProtectControlGroups=true',
+      'RestrictNamespaces=true',
+      'RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX',
+      'CapabilityBoundingSet=CAP_NET_BIND_SERVICE',
+      'AmbientCapabilities=CAP_NET_BIND_SERVICE',
+      'LockPersonality=true',
+      'UMask=0077',
+      'LimitNOFILE=4096',
+      '',
+      '[Install]',
+      'WantedBy=multi-user.target',
+      '',
+    ].join('\n'), 'utf8');
+    await fsp.writeFile(files.install, [
+      '#!/bin/sh',
+      'set -eu',
+      'umask 077',
+      'SOURCE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
+      'if ! id -u revivalside-relay >/dev/null 2>&1; then',
+      '  useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin revivalside-relay',
+      'fi',
+      `install -d -o root -g revivalside-relay -m 0750 '${installPath}' '${installPath}/tls'`,
+      `install -o root -g root -m 0755 "$SOURCE_DIR/RevivalSideRelay" '${installPath}/RevivalSideRelay'`,
+      `install -o root -g revivalside-relay -m 0640 "$SOURCE_DIR/certificate.pem" '${installPath}/tls/certificate.pem'`,
+      `install -o root -g revivalside-relay -m 0640 "$SOURCE_DIR/private-key.pem" '${installPath}/tls/private-key.pem'`,
+      `install -o root -g revivalside-relay -m 0640 "$SOURCE_DIR/revivalside-relay.env" '${installPath}/revivalside-relay.env'`,
+      `install -o root -g root -m 0644 "$SOURCE_DIR/${serviceName}" '/etc/systemd/system/${serviceName}'`,
+      'systemctl daemon-reload',
+      `systemctl enable '${serviceName}' >/dev/null`,
+      `systemctl restart '${serviceName}'`,
+      `systemctl is-active --quiet '${serviceName}'`,
+      '',
+    ].join('\n'), { encoding: 'utf8', mode: 0o700 });
+
+    const knownHostsPath = await createPinnedKnownHosts(settings, tools, stage);
+    const sshArgs = sshConnectionArgs(settings, knownHostsPath);
+    emitActionProgress('deploy-relay', 'connect', 30);
+    await runChecked(tools.ssh, [...sshArgs, target, `mkdir -m 700 -- '${remoteStage}'`], { description: 'Relay SSH connection' });
+    emitActionProgress('deploy-relay', 'upload', 50);
+    await runChecked(tools.scp, [
+      ...sshConnectionArgs(settings, knownHostsPath, true),
+      files.relay, files.certificate, files.privateKey, files.environment, files.service, files.install,
+      `${target}:${remoteStage}/`,
+    ], { description: 'Relay upload' });
+    emitActionProgress('deploy-relay', 'install', 75);
+    await runChecked(tools.ssh, [...sshArgs, target, `if [ "$(id -u)" -eq 0 ]; then /bin/sh '${remoteStage}/install.sh'; else sudo -n /bin/sh '${remoteStage}/install.sh'; fi`], {
+      description: 'Relay service installation',
+    });
+    settings.PrivatePvpRelayUrl = relayUrlFromSettings(settings);
+    if (!settings.PrivatePvpRelayHostId) settings.PrivatePvpRelayHostId = `host-${crypto.randomBytes(12).toString('hex')}`;
+    saveSettings(settings);
+    emitActionProgress('deploy-relay', 'health', 90);
+    const verified = await testRelay(settings);
+    emitActionProgress('deploy-relay', 'complete', 100);
+    return { ...verified, settings: settingsToClient(settings) };
+  } finally {
+    if (tools.ssh) {
+      const knownHostsPath = path.join(stage, 'known_hosts');
+      if (fs.existsSync(knownHostsPath)) {
+        await run(tools.ssh, [...sshConnectionArgs(settings, knownHostsPath), target, `rm -rf -- '${remoteStage}'`], { logStdout: false, errorLevel: 'debug' }).catch(() => {});
+      }
+    }
+    await fsp.rm(stage, { recursive: true, force: true });
+  }
+}
+
 async function readPayload() {
   let text = '';
   for await (const chunk of process.stdin) text += chunk;
@@ -1525,6 +2031,12 @@ async function runAction(command, payload) {
     }
     case 'export-cross-save': return exportCrossSave();
     case 'extract-cross-save': return extractCrossSave();
+    case 'generate-relay-credentials': return generateRelayCredentials();
+    case 'test-relay': return testRelay();
+    case 'deploy-relay': return deployRelay();
+    case 'tailscale-status': return ensureTailscaleConnected();
+    case 'configure-tailscale-host': return configureTailscaleLegacyHost();
+    case 'configure-tailscale-guest': return configureTailscaleLegacyGuest(payload.hostCode);
     case 'refresh-wiki-cache': return { pngCount: await ensureWikiCache(loadSettings(), true) };
     case 'refresh-cutscene-cache': {
       const settings = loadSettings();
@@ -1560,9 +2072,17 @@ if (require.main === module) {
 
 module.exports = {
   FROZEN_CLIENT_PATCH_REQUIREMENTS,
+  applyClientSettings,
+  buildListenerEnvironment,
   createListenerReadinessGate,
   estimateModSideRequiredBytes,
+  isTailscaleIpv4,
   normalizeExistingManagedDir,
+  normalizeTailscaleGuestAddress,
   progressFromLine,
+  relayUrlFromSettings,
+  settingsToClient,
+  validatePrivatePvpSettings,
+  validateRelayDeployment,
   verifyGameplayCacheSource,
 };

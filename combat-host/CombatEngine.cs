@@ -53,6 +53,7 @@ internal sealed class CombatEngine
             "buildSyntheticSync" => BuildSyntheticSync(Read<SyntheticSyncCommandData>(request.Data)),
             "isFinished" => IsFinished(Read<BattleCommandData>(request.Data)),
             "getResult" => GetResult(Read<BattleCommandData>(request.Data)),
+            "disposeBattle" => DisposeBattle(Read<BattleCommandData>(request.Data)),
             "validatePacket" => ValidatePacket(Read<PacketValidationData>(request.Data)),
             "inspectGameLoadAck" => InspectGameLoadAck(Read<PacketValidationData>(request.Data)),
             "inspectGameLoadCompleteAck" => InspectGameLoadCompleteAck(Read<PacketValidationData>(request.Data)),
@@ -482,6 +483,13 @@ internal sealed class CombatEngine
             },
             BattleState = state
         };
+    }
+
+    private static HostResponse DisposeBattle(BattleCommandData data)
+    {
+        return ManagedCombatBridge.TryDispose(data.DynamicGame, out var error)
+            ? new HostResponse { Ok = true }
+            : new HostResponse { Ok = false, Error = error ?? "managed battle disposal failed" };
     }
 
     private byte[] BuildSyncPayload(BattleState battleState, double delta, bool skipSimulation)
@@ -1130,6 +1138,7 @@ internal class BattleCommandData
 {
     public DynamicGameState? DynamicGame { get; set; }
     public BattleState? BattleState { get; set; }
+    public int TeamType { get; set; } = 1;
 }
 
 internal sealed class DeployCommandData : BattleCommandData

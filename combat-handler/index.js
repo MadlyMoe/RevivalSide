@@ -93,6 +93,7 @@ function createCombatHandler(options = {}) {
         initialData.replay.battleState = response.battleState;
         initialData.replay.dynamicGame.gameUID = gameUID;
         initialData.replay.dynamicGame.playerDeck = (initialData.stage && initialData.stage.playerDeck) || null;
+        initialData.replay.dynamicGame.playerDeckB = (initialData.stage && initialData.stage.playerDeckB) || null;
         initialData.replay.battleState.gameUID = gameUID;
         initialData.replay.tutorialReplayPhase = "dynamic";
         initialData.replay.syntheticGameTime = Number(response.battleState.gameTime || 4);
@@ -119,6 +120,7 @@ function createCombatHandler(options = {}) {
         dynamicGame: replay.dynamicGame,
         battleState: replay.battleState,
         req: request.req,
+        teamType: Number(request.teamType || 1),
       });
       if (response.ok && response.deployed && response.deployed.handled) {
         applyHostState(replay, response);
@@ -182,6 +184,13 @@ function createCombatHandler(options = {}) {
     return handleManagedSkill("handleShipSkill", request, "managed-ship-skill");
   }
 
+  function disposeBattle(replay) {
+    if (!replay || !replay.dynamicGame || !replay.dynamicGame.managedCombat || !csharpHost.enabled) return true;
+    const response = csharpHost.request("disposeBattle", { dynamicGame: replay.dynamicGame });
+    if (!response.ok) console.log(`[combat-host] disposeBattle failed: ${summarizeHostError(response.error)}`);
+    return Boolean(response.ok);
+  }
+
   function handleManagedSkill(command, request, fallbackLabel) {
     const replay = request.replay;
     const req = request.req;
@@ -191,6 +200,7 @@ function createCombatHandler(options = {}) {
         dynamicGame: replay.dynamicGame,
         battleState: replay.battleState,
         req,
+        teamType: Number(request.teamType || 1),
       });
       if (response.ok) {
         applyHostState(replay, response);
@@ -796,6 +806,7 @@ function createCombatHandler(options = {}) {
     handlePause,
     handleUnitSkill,
     handleShipSkill,
+    disposeBattle,
     tick,
     buildSync,
     buildGameSync: buildSync,

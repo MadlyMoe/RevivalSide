@@ -57,6 +57,7 @@ public sealed class StageData
     public List<List<int>> DeployableGameUnitUIDGroups { get; set; } = [];
     public List<int> EventDeckFreeUnitSlots { get; set; } = [];
     public PlayerDeckData? PlayerDeck { get; set; }
+    public PlayerDeckData? PlayerDeckB { get; set; }
 }
 
 public sealed class PlayerDeckData
@@ -165,6 +166,8 @@ public sealed class DynamicGameState
     public int? GameSpeedType { get; set; }
     public int? AutoSkillType { get; set; }
     public bool? AutoRespawnEnabled { get; set; }
+    public int? AutoSkillTypeB { get; set; }
+    public bool? AutoRespawnEnabledB { get; set; }
     public UnitPools UnitPools { get; set; } = new();
     public HashSet<int> UsedPooledGameUnitUIDs { get; set; } = [];
 }

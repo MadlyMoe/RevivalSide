@@ -3,6 +3,23 @@ module.exports = {
   name: "GAME_LOAD_COMPLETE_REQ",
   handle(ctx, socket) {
     socket.session.gameReplay.loadCompleteReceived = true;
+    const privatePvpRoom = ctx.privatePvp && ctx.privatePvp.getRoom(socket);
+    const privatePvpMember = ctx.privatePvp && ctx.privatePvp.getMember(socket);
+    if (privatePvpRoom && privatePvpRoom.matchStarted && privatePvpMember) {
+      privatePvpMember.loaded = true;
+      const players = privatePvpRoom.members.filter((entry) => !entry.observer);
+      if (!privatePvpRoom.battleStarted && players.length === 2 && players.every((entry) => entry.loaded)) {
+        privatePvpRoom.battleStarted = true;
+        const replay = socket.session.gameReplay;
+        const packets = ctx.ensureGameStartPackets(ctx.buildInitialBattlePackets(replay), replay, socket);
+        replay.pendingGameStartPackets = packets.filter(Boolean);
+        replay.pendingGameStartBootstrap = true;
+        ctx.sendPendingGameStartSync(socket, "private-pvp-load-complete");
+      } else {
+        console.log(`[private-pvp] room=${privatePvpRoom.code} loaded=${players.filter((entry) => entry.loaded).length}/${players.length}`);
+      }
+      return true;
+    }
     if (ctx.isTutorialCapturedBootstrapActive(socket)) {
       if (ctx.sendCapturedTutorialLoadCompleteBootstrap(socket, "tutorial-load-complete")) return true;
       console.log("[capture-game] tutorial captured bootstrap missing load-complete window; no dynamic fallback sent");

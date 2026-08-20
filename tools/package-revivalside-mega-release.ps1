@@ -422,6 +422,20 @@ foreach ($dirName in @("server", "modules", "packet-handlers", "combat-handler",
 }
 Copy-DirectoryClean (Join-Path $rootPath "SpineViewer\dist") (Join-Path $outputPath "SpineViewer\dist")
 
+$relayOut = Join-Path $outputPath "relay-host\linux-x64"
+New-Item -ItemType Directory -Force -Path $relayOut | Out-Null
+Write-Host "Publishing self-contained Linux PvP relay"
+dotnet publish (Join-Path $rootPath "relay-host\RevivalSideRelay.csproj") `
+  -c Release -r linux-x64 --self-contained true --nologo `
+  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+  -p:DebugType=None -p:DebugSymbols=false `
+  -o $relayOut
+if ($LASTEXITCODE -ne 0) { throw "Linux PvP relay publish failed" }
+Remove-PdbFiles $relayOut
+if (-not (Test-Path -LiteralPath (Join-Path $relayOut "RevivalSideRelay") -PathType Leaf)) {
+  throw "Linux PvP relay publish did not produce RevivalSideRelay"
+}
+
 $toolsOut = Join-Path $outputPath "tools"
 New-Item -ItemType Directory -Force -Path $toolsOut | Out-Null
 foreach ($toolName in @(

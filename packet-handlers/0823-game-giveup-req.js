@@ -10,6 +10,11 @@ module.exports = {
       "game-giveup"
     );
 
+    if (ctx.privatePvp && ctx.privatePvp.getRoom(socket) && typeof ctx.finishPrivatePvpGiveup === "function") {
+      ctx.finishPrivatePvpGiveup(socket);
+      return true;
+    }
+
     const replay = socket.session && socket.session.gameReplay;
     if (!replay || !replay.dynamicGame) return true;
     const battleState = replay.battleState || {};

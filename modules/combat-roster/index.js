@@ -57,7 +57,6 @@ const PACKET_NAMES = Object.freeze({
   1666: "SET_DUNGEON_SUPPORT_UNIT_REQ",
   1668: "REMAIN_PASS_REWARD_REQ",
   2621: "UPDATE_DEFENCE_DECK_REQ",
-  4117: "PRIVATE_PVP_LOBBY_SYNC_DECK_INDEX_REQ",
 });
 
 function createCombatRosterHandlers() {
@@ -133,10 +132,6 @@ function buildResponse(ctx, user, packetId, req) {
       );
     case 2621:
       return updateDefenceDeckAck(user, req.raw);
-    case 4117:
-      user.pvp = user.pvp && typeof user.pvp === "object" ? user.pvp : {};
-      user.pvp.privateLobbyDeckIndex = req.deckIndex;
-      return ack(4118, writeSignedVarInt(0), `deckType=${req.deckIndex.deckType} index=${req.deckIndex.index}`);
     default:
       return ack(packetId + 1, writeSignedVarInt(0));
   }
@@ -675,8 +670,6 @@ function decodeRequest(ctx, packetId, encryptedPayload) {
       case 1666:
       case 2621:
         return { raw: payload };
-      case 4117:
-        return { deckIndex: reader.deckIndex() };
       default:
         return {};
     }
@@ -723,10 +716,6 @@ function createReader(payload) {
       const read = readString(payload, offset);
       offset = read.offset;
       return read.value;
-    },
-    deckIndex() {
-      if (!this.bool()) return { deckType: 0, index: 0 };
-      return { deckType: this.int(), index: this.byte() };
     },
   };
 }

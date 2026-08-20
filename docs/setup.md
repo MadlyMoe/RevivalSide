@@ -335,6 +335,34 @@ Good startup signs:
 
 Keep this PowerShell window open. This window is now the local server log. The command does not patch or launch the client.
 
+### Host A Private PvP Match
+
+Private PvP uses the stock CounterSide room and battle packets. Both players run their own frozen client and local RevivalSide listener, while the hosting player's listener and CombatHost own the room and authoritative battle simulation. Use the same frozen client/content version on both computers.
+
+On the host, set a LAN or Tailscale address that the guest can reach:
+
+```dotenv
+CS_PRIVATE_PVP=1
+CS_PVP_PUBLIC_HOST=100.64.0.10
+CS_GAME_LISTEN_HOST=0.0.0.0
+CS_HTTP_LISTEN_HOST=0.0.0.0
+```
+
+On the guest, point the local listener at the host's HTTP endpoint:
+
+```dotenv
+CS_PRIVATE_PVP=1
+CS_PVP_HOST_URL=http://100.64.0.10:8088
+```
+
+Allow inbound TCP `22000` and `8088` to the host on that private network. Start both listeners and clients. In CounterSide, the host creates a Friendly/Private PvP room and shares the eight-character room code; the guest chooses join by code. The guest first contacts its own listener, which exchanges the code for a short-lived game ticket and lets the stock client reconnect to the host automatically.
+
+The `/private-pvp/join` endpoint exposes no account database or login token. The room code is the join secret, so share it only with the intended opponent and do not expose these ports directly to the public internet. `CS_PVP_MAP_ID` defaults to the client-authored PvP map `1002`.
+
+For public-internet play, do not port-forward the listener. Use the launcher's [one-click encrypted relay setup](relay-server.md); it keeps both local TCP and HTTP listeners on loopback and carries the match through outbound TLS connections.
+
+The usable mode is the standard two-player private match. Equipment-stat on/off is honored; max-level, ban/up, draft-ban, and observers remain disabled until their additional draft and spectator packet flows are implemented.
+
 ### Edit Local User Profiles
 
 While the listener is running, open:

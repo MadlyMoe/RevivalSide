@@ -6,10 +6,18 @@ const os = require('os');
 const path = require('path');
 const {
   FROZEN_CLIENT_PATCH_REQUIREMENTS,
+  applyClientSettings,
+  buildListenerEnvironment,
   createListenerReadinessGate,
   estimateModSideRequiredBytes,
+  isTailscaleIpv4,
   normalizeExistingManagedDir,
+  normalizeTailscaleGuestAddress,
   progressFromLine,
+  relayUrlFromSettings,
+  settingsToClient,
+  validatePrivatePvpSettings,
+  validateRelayDeployment,
   verifyGameplayCacheSource,
 } = require('./revivalside-launcher-backend');
 const { findCounterSideScriptBundleRoots } = require('../modules/counterside-install');
@@ -133,6 +141,10 @@ function checkGameplayCacheRelocation() {
 }
 
 async function main() {
+  const launcherSettingsPath = path.join(__dirname, '..', 'launcher-settings.json');
+  const hadLauncherSettings = fs.existsSync(launcherSettingsPath);
+  const launcherSettingsBackup = hadLauncherSettings ? fs.readFileSync(launcherSettingsPath) : null;
+  try {
   const backgrounds = getLoginBackgroundCatalog({ rootDir: path.join(__dirname, '..') });
   assert.strictEqual(resolveLoginBackgroundItem(backgrounds, {
     seedEntries: [{ source: { category: 'profile' }, intervalTags: ['DATE_GLOBAL_CLASSIFIED_CONTRACT_BORDER_HORSE'] }],
@@ -148,6 +160,108 @@ async function main() {
   assert.strictEqual(estimateModSideRequiredBytes(10 * 1024 ** 3), 45 * 1024 ** 3);
   assert.strictEqual(progressFromLine('[50/100] bundle', 5, 95), 53);
   assert.strictEqual(progressFromLine('not progress', 5, 95), null);
+  assert.strictEqual(isTailscaleIpv4('100.64.0.10'), true);
+  assert.strictEqual(isTailscaleIpv4('100.127.255.254'), true);
+  assert.strictEqual(isTailscaleIpv4('100.128.0.1'), false);
+  assert.deepStrictEqual(
+    normalizeTailscaleGuestAddress('100.64.0.10', 8088),
+    { hostname: '100.64.0.10', hostUrl: 'http://100.64.0.10:8088' },
+  );
+  assert.deepStrictEqual(
+    normalizeTailscaleGuestAddress('http://host.example-tailnet.ts.net:9000'),
+    { hostname: 'host.example-tailnet.ts.net', hostUrl: 'http://host.example-tailnet.ts.net:9000' },
+  );
+  assert.throws(() => normalizeTailscaleGuestAddress('203.0.113.10'), /100.x Tailscale code/);
+  assert.throws(() => normalizeTailscaleGuestAddress('http://100.64.0.10:8088/path'), /without credentials or a path/);
+  const pvpSettings = applyClientSettings({
+    GamePort: 22000,
+    HttpPort: 8088,
+    WikiPort: 5174,
+    ModSidePort: 5175,
+  }, {
+    privatePvpMode: 'legacy-host',
+    privatePvpPublicHost: ' 100.64.0.10 ',
+  });
+  assert.deepStrictEqual(
+    {
+      privatePvpMode: settingsToClient(pvpSettings).privatePvpMode,
+      privatePvpPublicHost: settingsToClient(pvpSettings).privatePvpPublicHost,
+    },
+    { privatePvpMode: 'legacy-host', privatePvpPublicHost: '100.64.0.10' },
+  );
+  const hostEnvironment = buildListenerEnvironment(pvpSettings);
+  assert.strictEqual(hostEnvironment.CS_PRIVATE_PVP, '1');
+  assert.strictEqual(hostEnvironment.CS_PVP_PUBLIC_HOST, '100.64.0.10');
+  assert.strictEqual(hostEnvironment.CS_PVP_HOST_URL, '');
+  assert.strictEqual(hostEnvironment.CS_GAME_LISTEN_HOST, '127.0.0.1');
+  assert.strictEqual(hostEnvironment.CS_HTTP_LISTEN_HOST, '127.0.0.1');
+  assert.strictEqual(hostEnvironment.CS_PVP_LISTEN_HOST, '100.64.0.10');
+  const joinEnvironment = buildListenerEnvironment({
+    ...pvpSettings,
+    PrivatePvpMode: 'legacy-join',
+    PrivatePvpHostUrl: 'http://100.64.0.10:8088',
+  });
+  assert.strictEqual(joinEnvironment.CS_PVP_PUBLIC_HOST, '');
+  assert.strictEqual(joinEnvironment.CS_PVP_HOST_URL, 'http://100.64.0.10:8088');
+  assert.strictEqual(joinEnvironment.CS_GAME_LISTEN_HOST, '127.0.0.1');
+  assert.strictEqual(joinEnvironment.CS_HTTP_LISTEN_HOST, '127.0.0.1');
+  assert.strictEqual(joinEnvironment.CS_PVP_LISTEN_HOST, '');
+  const legacyWithStaleRelay = buildListenerEnvironment({
+    ...pvpSettings,
+    PrivatePvpRelayUrl: 'https://relay.example.com',
+    PrivatePvpRelaySecret: 'a'.repeat(43),
+    PrivatePvpRelayHostId: 'host-12345678',
+  });
+  assert.strictEqual(legacyWithStaleRelay.CS_PVP_RELAY_URL, '');
+  assert.strictEqual(legacyWithStaleRelay.CS_PVP_RELAY_ROLE, 'off');
+  assert.strictEqual(legacyWithStaleRelay.CS_GAME_LISTEN_HOST, '127.0.0.1');
+  assert.strictEqual(legacyWithStaleRelay.CS_PVP_LISTEN_HOST, '100.64.0.10');
+  const disabledEnvironment = buildListenerEnvironment({ ...pvpSettings, PrivatePvpMode: 'off' });
+  assert.strictEqual(disabledEnvironment.CS_PRIVATE_PVP, '0');
+  assert.strictEqual(disabledEnvironment.CS_PVP_PUBLIC_HOST, '');
+  assert.strictEqual(disabledEnvironment.CS_PVP_HOST_URL, '');
+  const relayEnvironment = buildListenerEnvironment({
+    ...pvpSettings,
+    PrivatePvpMode: 'host',
+    PrivatePvpRelayUrl: 'https://relay.example.com',
+    PrivatePvpRelaySecret: 'a'.repeat(43),
+    PrivatePvpRelayHostId: 'host-12345678',
+  });
+  assert.strictEqual(relayEnvironment.CS_PVP_RELAY_ROLE, 'host');
+  assert.strictEqual(relayEnvironment.CS_PVP_RELAY_URL, 'https://relay.example.com');
+  assert.strictEqual(relayEnvironment.CS_PVP_RELAY_SECRET, 'a'.repeat(43));
+  assert.strictEqual(relayEnvironment.CS_PVP_RELAY_HOST_ID, 'host-12345678');
+  assert.strictEqual(relayEnvironment.CS_GAME_LISTEN_HOST, '127.0.0.1');
+  assert.strictEqual(relayEnvironment.CS_HTTP_LISTEN_HOST, '127.0.0.1');
+  assert.strictEqual(relayEnvironment.CS_PVP_PUBLIC_HOST, '127.0.0.1');
+  assert.strictEqual(relayEnvironment.CS_PVP_LISTEN_HOST, '');
+  assert.doesNotThrow(() => validatePrivatePvpSettings(pvpSettings));
+  assert.doesNotThrow(() => validatePrivatePvpSettings({
+    ...pvpSettings,
+    PrivatePvpMode: 'legacy-join',
+    PrivatePvpHostUrl: 'http://100.64.0.10:8088',
+  }));
+  assert.doesNotThrow(() => validatePrivatePvpSettings({
+    ...pvpSettings,
+    PrivatePvpMode: 'host',
+    PrivatePvpRelayUrl: 'https://relay.example.com',
+    PrivatePvpRelaySecret: 'a'.repeat(43),
+    PrivatePvpRelayHostId: 'host-12345678',
+  }));
+  assert.throws(() => validatePrivatePvpSettings({ ...pvpSettings, PrivatePvpMode: 'host' }), /HTTPS relay URL/);
+  assert.throws(() => validatePrivatePvpSettings({
+    ...pvpSettings,
+    PrivatePvpMode: 'legacy-join',
+    PrivatePvpHostUrl: 'ftp://100.64.0.10',
+  }), /HTTP or HTTPS/);
+  assert.strictEqual(relayUrlFromSettings({ RelayHostname: 'relay.example.com', RelayPort: 443 }), 'https://relay.example.com');
+  assert.strictEqual(relayUrlFromSettings({ RelayHostname: 'relay.example.com', RelayPort: 8443 }), 'https://relay.example.com:8443');
+  assert.throws(() => validateRelayDeployment({
+    RelaySshHost: 'relay.example.com', RelaySshPort: 22, RelaySshUser: 'deploy', RelaySshKeyPath: 'missing',
+    RelaySshHostKeyFingerprint: 'accept-new', RelayHostname: 'relay.example.com', RelayPort: 443,
+    RelayTlsCertificatePath: 'missing', RelayTlsPrivateKeyPath: 'missing', RelayInstallPath: '/opt/revivalside-relay',
+    PrivatePvpRelaySecret: 'a'.repeat(43),
+  }), /fingerprint/);
   checkGameRootAssetbundlesDiscovery();
   checkMissingClientMigration();
   checkFrozenGameplayCacheSource();
@@ -157,12 +271,14 @@ async function main() {
   assert(FROZEN_CLIENT_PATCH_REQUIREMENTS.includes('mod-string-loader=True'));
   assert(FROZEN_CLIENT_PATCH_REQUIREMENTS.includes('mod-asset-bundle-loader=True'));
   assert(FROZEN_CLIENT_PATCH_REQUIREMENTS.includes('mod-episode-ui=True'));
+  assert(FROZEN_CLIENT_PATCH_REQUIREMENTS.includes('friendly-pvp-ui-fix=True'));
   const settings = { GamePort: 22000, HttpPort: 8088 };
   const gate = createListenerReadinessGate(settings, 1000);
   let resolved = false;
   gate.ready.then(() => { resolved = true; });
 
-  gate.observe('[+] Listening on port 22000');
+  gate.observe('[+] Listening on 127.0.0.1:22000');
+  gate.observe('[+] HTTP services listening on 127.0.0.1:8088');
   gate.observe('[+] Captured HTTP mirror listening on http://127.0.0.1:8088');
   gate.observe('[+] Captured HTTP mirror fixtureDir=C:\\RevivalSide\\server-data\\captured-flows');
   await new Promise((resolve) => setImmediate(resolve));
@@ -170,11 +286,27 @@ async function main() {
 
   gate.observe('[+] User manager listening on http://127.0.0.1:8088/user-manager');
   await gate.ready;
-  assert.strictEqual(resolved, true, 'all four readiness signals should resolve the gate');
+  assert.strictEqual(resolved, true, 'all readiness signals should resolve the gate');
 
   const timeoutGate = createListenerReadinessGate(settings, 20);
-  timeoutGate.observe('[+] Listening on port 22000');
-  await assert.rejects(timeoutGate.ready, /Missing: captured HTTP mirror, captured fixture directory, User Manager/);
+  timeoutGate.observe('[+] Listening on 127.0.0.1:22000');
+  await assert.rejects(timeoutGate.ready, /Missing: HTTP services 127\.0\.0\.1, captured HTTP mirror/);
+
+  const tailscaleGate = createListenerReadinessGate(settings, 1000, {
+    CS_GAME_LISTEN_HOST: '127.0.0.1',
+    CS_HTTP_LISTEN_HOST: '127.0.0.1',
+    CS_PVP_LISTEN_HOST: '100.64.0.10',
+  });
+  for (const line of [
+    '[+] Listening on 127.0.0.1:22000',
+    '[+] Listening on 100.64.0.10:22000',
+    '[+] HTTP services listening on 127.0.0.1:8088',
+    '[+] HTTP services listening on 100.64.0.10:8088',
+    '[+] Captured HTTP mirror listening on http://127.0.0.1:8088',
+    '[+] Captured HTTP mirror fixtureDir=C:\\RevivalSide\\server-data\\captured-flows',
+    '[+] User manager listening on http://127.0.0.1:8088/user-manager',
+  ]) tailscaleGate.observe(line);
+  await tailscaleGate.ready;
 
   const backendSource = fs.readFileSync(require.resolve('./revivalside-launcher-backend'), 'utf8');
   assert.match(backendSource, /function snapshot\(\) \{[\s\S]*?ensureRuntimeLayout\(settings\)/);
@@ -193,7 +325,11 @@ async function main() {
   assert.match(launcherHome, /!!snapshot\?\.frozenClientRoot/);
   assert.match(fs.readFileSync(path.join(__dirname, '..', 'launcher', 'src', 'games', 'revivalside', 'pages', 'Home', 'ActionButton.tsx'), 'utf8'), /disabled=\{disabled\}/);
   assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', 'server', 'listener.js'), 'utf8'), /createAssetViewer|assetViewer\.handle/);
-  console.log('[launcher-backend] PASS login backgrounds, clean client-table audit, game-root bundles, missing-client handling, independent Mod:Side, Combat:Side lifecycle, and four-service readiness');
+    console.log('[launcher-backend] PASS launcher settings, private PvP environment mapping, login backgrounds, client handling, service lifecycle, and readiness');
+  } finally {
+    if (hadLauncherSettings) fs.writeFileSync(launcherSettingsPath, launcherSettingsBackup);
+    else fs.rmSync(launcherSettingsPath, { force: true });
+  }
 }
 
 main().catch((error) => {

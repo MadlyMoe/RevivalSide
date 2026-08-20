@@ -2599,6 +2599,7 @@ internal sealed class LauncherWindow : Window
             "mod-string-loader=True",
             "mod-asset-bundle-loader=True",
             "mod-episode-ui=True",
+            "friendly-pvp-ui-fix=True",
             "steam-local-login=True",
             "steam-standalone=True",
             "steam-runtime-isolated=True",

@@ -10,6 +10,7 @@ const { activateInstalledModRuntime } = require("../modules/mod-loader");
 const modRuntime = activateInstalledModRuntime({ rootDir: ROOT_DIR, env: process.env });
 const { loadPacketHandlers } = require("./packetHandlerLoader");
 const { createUserManager } = require("./userManager");
+const { createPrivatePvpManager, PRIVATE_PVP_OPEN_TAGS } = require("../modules/private-pvp");
 const { findCounterSideManagedDir } = require("../modules/counterside-install");
 const {
   applyActiveUserSelection,
@@ -81,6 +82,7 @@ const {
   addUnitExp,
   addOperatorExp,
   grantUnit,
+  buildPlayerDeckForGameLoad,
 } = require("../modules/unit");
 const { INVENTORY_TYPES, getInventoryCapacity } = require("../modules/inventory-capacity");
 const {
@@ -258,6 +260,9 @@ function uniqueMissionTabs(tabIds) {
 
 const PORT = Number(process.env.CS_PORT || 22000);
 const HTTP_MIRROR_PORT = Number(process.env.CS_HTTP_MIRROR_PORT || 8088);
+const GAME_LISTEN_HOST = String(process.env.CS_GAME_LISTEN_HOST || "127.0.0.1").trim();
+const HTTP_LISTEN_HOST = String(process.env.CS_HTTP_LISTEN_HOST || "127.0.0.1").trim();
+const PRIVATE_PVP_LISTEN_HOST = String(process.env.CS_PVP_LISTEN_HOST || "").trim();
 const DEBUG_HEX = process.env.CS_DEBUG_HEX === "1";
 const VERBOSE_CAPTURE_LOGS = process.env.CS_VERBOSE_CAPTURE === "1" || DEBUG_HEX;
 const LOG_CONFIG_EACH_CONNECTION = process.env.CS_LOG_CONFIG_EACH_CONNECTION === "1";
@@ -472,6 +477,14 @@ const POST_TUTORIAL_GUIDE_REQUIREMENT_STAGE_IDS = Object.freeze({
 
 const GAME_SERVER_IP = process.env.CS_GAME_SERVER_IP || "127.0.0.1";
 const GAME_SERVER_PORT = Number(process.env.CS_GAME_SERVER_PORT || PORT);
+const PRIVATE_PVP_ENABLED = process.env.CS_PRIVATE_PVP !== "0";
+const PRIVATE_PVP_PUBLIC_HOST = process.env.CS_PVP_PUBLIC_HOST || GAME_SERVER_IP;
+const PRIVATE_PVP_HOST_URL = process.env.CS_PVP_HOST_URL || "";
+const PRIVATE_PVP_RELAY_URL = String(process.env.CS_PVP_RELAY_URL || "").trim();
+const PRIVATE_PVP_RELAY_SECRET = String(process.env.CS_PVP_RELAY_SECRET || "");
+const PRIVATE_PVP_RELAY_HOST_ID = String(process.env.CS_PVP_RELAY_HOST_ID || "").trim();
+const PRIVATE_PVP_RELAY_ROLE = String(process.env.CS_PVP_RELAY_ROLE || "off").trim().toLowerCase();
+const PRIVATE_PVP_MAP_ID = Math.max(1, Number(process.env.CS_PVP_MAP_ID || 1002) || 1002);
 const FROZEN_SOURCE_CONTENTS_VERSION =
   String(process.env.CS_FROZEN_SOURCE_CONTENTS_VERSION || "").trim() ||
   (FROZEN_CLIENT_PATCH_STATE && FROZEN_CLIENT_PATCH_STATE.isFrozenClient
@@ -510,13 +523,33 @@ const CONTENTS_TAGS = mergeTags(
   ),
   REQUIRED_CONTENTS_TAGS
 );
-const OPEN_TAGS = mergeTags(EXPLICIT_OPEN_TAGS, REQUIRED_STORY_OPEN_TAGS);
+const OPEN_TAGS = mergeTags(
+  EXPLICIT_OPEN_TAGS,
+  REQUIRED_STORY_OPEN_TAGS,
+  PRIVATE_PVP_ENABLED ? PRIVATE_PVP_OPEN_TAGS : []
+);
 const eventManager = createEventManager({ rootDir: ROOT_DIR, env: process.env });
 const serverTime = createServerTime({
   rootDir: ROOT_DIR,
   statePath: SERVER_TIME_STATE_PATH,
   defaultDate: eventManager.config && eventManager.config.eventDate,
   logger: (message) => console.log(message),
+});
+const privatePvp = createPrivatePvpManager({
+  enabled: PRIVATE_PVP_ENABLED,
+  publicHost: PRIVATE_PVP_PUBLIC_HOST,
+  publicPort: GAME_SERVER_PORT,
+  peerHostUrl: PRIVATE_PVP_HOST_URL,
+  relayUrl: PRIVATE_PVP_RELAY_URL,
+  relaySecret: PRIVATE_PVP_RELAY_SECRET,
+  relayHostId: PRIVATE_PVP_RELAY_HOST_ID,
+  relayRole: PRIVATE_PVP_RELAY_ROLE,
+  localGamePort: PORT,
+  allowInsecureRelayLoopback: process.env.CS_PVP_RELAY_ALLOW_INSECURE_LOOPBACK === "1",
+  logger: (message) => console.log(message),
+  onRoomChanged(room) {
+    privatePvp.broadcastState(room, createPacketContext());
+  },
 });
 const runtimeEventManager = createRuntimeEventManager(eventManager);
 const LOGIN_BACKGROUND_MODE = String(process.env.CS_LOGIN_BACKGROUND || loginBackground.AUTO).trim();
@@ -675,7 +708,7 @@ startTcpServer();
 startHttpMirror();
 
 function startTcpServer() {
-  const server = net.createServer((socket) => {
+  const onConnection = (socket) => {
     // The Unity client reacts poorly to tiny TCP write stalls during load.
     // Send framed server packets immediately and batch deliberate bursts below.
     socket.setNoDelay(true);
@@ -684,6 +717,7 @@ function startTcpServer() {
       user: null,
       steamLogin: null,
       gameReplay: createGameReplayState(),
+      nextServerSequence: 1,
     };
     lastSteamAccessToken = "";
 
@@ -697,13 +731,21 @@ function startTcpServer() {
 
     socket.on("end", () => console.log("[*] Client ended socket"));
     socket.on("close", (hadError) => {
+      const privatePvpRoom = privatePvp.getRoom(socket);
       stopGameSyncTimers(socket);
+      privatePvp.handleSocketClose(socket, createPacketContext());
+      if (privatePvpRoom && privatePvpRoom.battleStarted && !privatePvpRoom.replay.dynamicBattleResultSent) {
+        const survivor = privatePvpRoom.members.find((entry) => entry.socket && !entry.socket.destroyed);
+        if (survivor) startDynamicBattleManager(survivor.socket, "private-pvp-peer-disconnect");
+      }
       console.log(`[-] Client disconnected hadError=${hadError}`);
     });
     socket.on("error", (err) => console.log(`[!] Socket error: ${err.message}`));
-  });
+  };
 
-  server.listen(PORT, () => console.log(`[+] Listening on port ${PORT}`));
+  for (const host of [...new Set([GAME_LISTEN_HOST, PRIVATE_PVP_LISTEN_HOST].filter(Boolean))]) {
+    net.createServer(onConnection).listen(PORT, host, () => console.log(`[+] Listening on ${host}:${PORT}`));
+  }
 }
 
 function logRuntimeConfig() {
@@ -794,6 +836,9 @@ function logRuntimeConfig() {
     );
   }
   console.log(`[cfg] gameServer=${GAME_SERVER_IP}:${GAME_SERVER_PORT}`);
+  console.log(
+    `[cfg] privatePvp=${PRIVATE_PVP_ENABLED ? "on" : "off"} public=${PRIVATE_PVP_PUBLIC_HOST}:${GAME_SERVER_PORT} peerHost=${PRIVATE_PVP_HOST_URL || "(local-host)"} relay=${PRIVATE_PVP_RELAY_URL ? PRIVATE_PVP_RELAY_ROLE : "off"} map=${PRIVATE_PVP_MAP_ID}`
+  );
   console.log(`[cfg] accessTokenSource=${USE_STEAM_TOKEN_AS_ACCESS_TOKEN ? "steam" : "server-issued"}`);
   console.log(
     `[cfg] newAccountRosterMode=${NEW_ACCOUNT_ROSTER_MODE} trophies=${
@@ -845,15 +890,15 @@ function logRuntimeConfig() {
 }
 
 function startHttpMirror() {
-  if (!capturedFlowMirror && !userManager && !ANDROID_CLIENT_UPDATE_STATE) {
+  if (!capturedFlowMirror && !userManager && !ANDROID_CLIENT_UPDATE_STATE && !PRIVATE_PVP_ENABLED) {
     console.log(`[mirror] disabled; no manifest at ${path.join(CAPTURED_FLOW_DIR, "manifest.json")}`);
     return;
   }
 
-  http
-    .createServer(async (req, res) => {
+  const onRequest = async (req, res) => {
       try {
         if (await serveLauncherApi(req, res)) return;
+        if (PRIVATE_PVP_ENABLED && (await privatePvp.handleHttpJoin(req, res))) return;
         if (userManager && (await userManager.handle(req, res))) return;
         if (serveEventManagerDiagnostics(req, res)) return;
         if (serveFrozenClientPatchMetadata(req, res)) return;
@@ -867,8 +912,13 @@ function startHttpMirror() {
         res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
         res.end(`HTTP server error: ${err.message}\n`);
       }
-    })
-    .listen(HTTP_MIRROR_PORT, () => {
+    };
+  let reportedServices = false;
+  for (const host of [...new Set([HTTP_LISTEN_HOST, PRIVATE_PVP_LISTEN_HOST].filter(Boolean))]) {
+    http.createServer(onRequest).listen(HTTP_MIRROR_PORT, host, () => {
+      console.log(`[+] HTTP services listening on ${host}:${HTTP_MIRROR_PORT}`);
+      if (reportedServices) return;
+      reportedServices = true;
       if (capturedFlowMirror) {
         console.log(`[+] Captured HTTP mirror listening on ${MIRROR_PUBLIC_BASE_URL}`);
         console.log(`[+] Captured HTTP mirror fixtureDir=${CAPTURED_FLOW_DIR}`);
@@ -878,7 +928,11 @@ function startHttpMirror() {
       if (userManager) {
         console.log(`[+] User manager listening on ${MIRROR_PUBLIC_BASE_URL}${userManager.basePath}`);
       }
+      if (PRIVATE_PVP_ENABLED) {
+        console.log(`[+] Private PvP join endpoint listening on ${MIRROR_PUBLIC_BASE_URL}/private-pvp/join`);
+      }
     });
+  }
 }
 
 function serveFrozenClientPatchMetadata(req, res) {
@@ -1417,6 +1471,7 @@ function sendGameResponse(socket, packet, packetId, payload, label) {
 
 function createPacketContext() {
   return {
+    privatePvp,
     constants: {
       LOGIN_ACK,
       JOIN_LOBBY_REQ,
@@ -1532,6 +1587,9 @@ function createPacketContext() {
     handleDynamicBattlePause,
     handleDynamicBattleUnitSkill,
     handleDynamicBattleShipSkill,
+    startPrivatePvpMatch,
+    finishPrivatePvpGiveup,
+    resetPrivatePvpMatch,
     applyCombatControls,
     sendManagedOrImmediatePacket,
     sendManagedOrImmediatePackets,
@@ -2716,7 +2774,10 @@ function startOfficialCombatReplay(socket, label) {
 
 function sendServerGamePacket(socket, packetId, payload, label) {
   const replay = socket.session.gameReplay;
-  const sequence = replay.nextServerSequence;
+  const room = privatePvp.getRoom(socket);
+  const sequence = room && room.matchStarted
+    ? Number(socket.session.nextServerSequence || 1)
+    : Math.max(Number(socket.session.nextServerSequence || 1), Number(replay.nextServerSequence || 1));
   const packet = buildEncryptedPacket(sequence, packetId, payload);
   socket.write(packet);
   const parsed = parsePacket(packet);
@@ -2732,6 +2793,7 @@ function sendServerGamePacket(socket, packetId, payload, label) {
   }
   if (DEBUG_HEX) printHex(packet);
   replay.nextServerSequence = Math.max(replay.nextServerSequence, Number(sequence) + 1);
+  socket.session.nextServerSequence = Number(sequence) + 1;
 }
 
 function refreshTimedStamina(user, options = {}) {
@@ -2773,10 +2835,24 @@ function sendManagedOrImmediatePackets(socket, packets) {
     maybeRecordDynamicBattleClear(socket);
     sendRaidStateDataForSocket(socket, "managed-raid-end");
     stopGameSyncTimers(socket);
+    markPrivatePvpMatchFinished(socket);
   }
 }
 
 function sendManagedOrImmediatePacket(socket, packetId, payload, label, meta = {}) {
+  const room = privatePvp.getRoom(socket);
+  if (room && room.matchStarted) {
+    for (const member of room.members) {
+      if (!member.socket || member.socket.destroyed) continue;
+      sendServerGamePacket(
+        member.socket,
+        packetId,
+        normalizeManagedCombatPayload(member.socket, packetId, payload, label, meta),
+        label
+      );
+    }
+    return;
+  }
   sendServerGamePacket(socket, packetId, normalizeManagedCombatPayload(socket, packetId, payload, label, meta), label);
 }
 
@@ -2813,6 +2889,18 @@ function normalizeManagedCombatPayload(socket, packetId, payload, label, meta = 
   if (packetId !== GAME_END_NOT) return payload;
   const replay = socket.session && socket.session.gameReplay;
   if (!replay || !replay.dynamicGame) return payload;
+  const privatePvpRoom = privatePvp.getRoom(socket);
+  const privatePvpMember = privatePvp.getMember(socket);
+  if (privatePvpRoom && privatePvpMember && Number(replay.dynamicGame.gameType || 0) === 18) {
+    const battleState = replay.battleState || {};
+    let winTeam = Number(
+      meta.battleWinTeam ?? meta.BattleWinTeam ?? meta.managedBattleWinTeam ?? meta.ManagedBattleWinTeam ??
+      (battleState.gameState && (battleState.gameState.winTeam ?? battleState.gameState.WinTeam)) ?? 0
+    );
+    const managedWin = extractManagedBattleWin(meta);
+    if (winTeam !== 1 && winTeam !== 3 && typeof managedWin === "boolean") winTeam = managedWin ? 1 : 3;
+    return buildPrivatePvpGameEndNotPayload(replay, privatePvpMember, winTeam, meta);
+  }
   const managedBattleRecords = extractManagedBattleRecords(meta);
   const managedBattleWin = extractManagedBattleWin(meta);
   const managedBattlePlayTime = extractManagedBattlePlayTime(meta);
@@ -2978,6 +3066,7 @@ function startDynamicBattleManager(socket, label) {
       sendManagedOrImmediatePacket(socket, packetId, payload, label, meta);
     },
     onGameEndPacketSent(socket) {
+      markPrivatePvpMatchFinished(socket);
       maybeRecordDynamicBattleClear(socket);
       sendRaidStateDataForSocket(socket, "managed-raid-end");
     },
@@ -3006,7 +3095,7 @@ function sendDynamicFinishStateSync(socket, finishedState = null, label = "dynam
   const replay = socket && socket.session && socket.session.gameReplay;
   const payload = buildDynamicFinishStateSyncPayload(replay, finishedState);
   if (!payload) return false;
-  sendServerGamePacket(socket, NPT_GAME_SYNC_DATA_PACK_NOT, payload, label);
+  sendManagedOrImmediatePacket(socket, NPT_GAME_SYNC_DATA_PACK_NOT, payload, label);
   return true;
 }
 
@@ -3067,7 +3156,10 @@ function applyCombatControls(socket, controls = {}, options = {}) {
   if (Object.prototype.hasOwnProperty.call(controls, "autoSkillType")) {
     const autoSkillType = clampCombatControlEnum(controls.autoSkillType, 0, 1);
     replay.autoSkillType = autoSkillType;
-    if (dynamicGame) dynamicGame.autoSkillType = autoSkillType;
+    if (dynamicGame) {
+      if (Number(socket.session.privatePvpTeamType || 1) === 3) dynamicGame.autoSkillTypeB = autoSkillType;
+      else dynamicGame.autoSkillType = autoSkillType;
+    }
     if (battleState) battleState.autoSkillType = autoSkillType;
     applied.autoSkillType = autoSkillType;
   }
@@ -3075,7 +3167,10 @@ function applyCombatControls(socket, controls = {}, options = {}) {
   if (Object.prototype.hasOwnProperty.call(controls, "autoRespawnEnabled")) {
     const autoRespawnEnabled = Boolean(controls.autoRespawnEnabled);
     replay.autoRespawnEnabled = autoRespawnEnabled;
-    if (dynamicGame) dynamicGame.autoRespawnEnabled = autoRespawnEnabled;
+    if (dynamicGame) {
+      if (Number(socket.session.privatePvpTeamType || 1) === 3) dynamicGame.autoRespawnEnabledB = autoRespawnEnabled;
+      else dynamicGame.autoRespawnEnabled = autoRespawnEnabled;
+    }
     if (battleState) battleState.autoRespawnEnabled = autoRespawnEnabled;
     applied.autoRespawnEnabled = autoRespawnEnabled;
   }
@@ -3179,7 +3274,7 @@ function buildDynamicGameLoadPayload(socket, req, stage) {
     String(activeStage.miscMode || "").toLowerCase() === "fierce" ||
     Number(activeStage.gameType || 0) === NGT_FIERCE ||
     positiveInt(req.fierceBossId || req.fierceBossID || req.bossId) > 0;
-  const seedGameLoadTemplate = !nativeTutorialLoad && (!usesEventDeck || fierceLoad);
+  const seedGameLoadTemplate = !activeStage.ignoreGameLoadTemplate && !nativeTutorialLoad && (!usesEventDeck || fierceLoad);
   const battleConditionIds = resolveGameLoadBattleConditionIds(activeStage, req, user);
   const fierceScorePlan = buildFierceScorePlanForStage(activeStage, req, user);
   const stageForBattle = {
@@ -3270,10 +3365,135 @@ function sendDynamicGameLoadAck(socket, req, stage) {
   return true;
 }
 
+function startPrivatePvpMatch(room) {
+  if (!room || room.matchStarted) return false;
+  const players = room.members.filter((entry) => !entry.observer);
+  if (players.length !== 2 || players.some((entry) => !entry.socket || entry.socket.destroyed)) {
+    console.log(`[private-pvp] room=${room && room.code || "?"} cannot start until both players are connected`);
+    return false;
+  }
+  const playerA = players.find((entry) => Number(entry.teamType) === 1) || players[0];
+  const playerB = players.find((entry) => Number(entry.teamType) === 3) || players[1];
+  const playerDeck = buildPlayerDeckForGameLoad(playerA.user, { selectDeckIndex: playerA.deckIndex.index });
+  const playerDeckB = buildPlayerDeckForGameLoad(playerB.user, { selectDeckIndex: playerB.deckIndex.index });
+  if (!playerDeck || !playerDeckB) {
+    console.log(`[private-pvp] room=${room.code} missing a playable deck`);
+    return false;
+  }
+  if (!room.config.applyEquipStat) {
+    for (const deck of [playerDeck, playerDeckB]) {
+      deck.equipItems = [];
+      for (const unit of deck.units || []) unit.equipItemUids = [];
+    }
+  }
+
+  const replay = createGameReplayState();
+  replay.inGameFlow = true;
+  replay.privatePvpRoomCode = room.code;
+  privatePvp.setReplay(room, replay);
+  room.state = 7;
+  for (const member of players) {
+    member.playerState = 4;
+    member.loaded = false;
+  }
+  privatePvp.broadcastState(room, createPacketContext());
+
+  const req = { stageID: 0, dungeonID: 0, gameType: 18, selectDeckIndex: playerA.deckIndex.index };
+  const stage = {
+    stageId: 0,
+    dungeonID: 0,
+    mapID: PRIVATE_PVP_MAP_ID,
+    gameType: 18,
+    miscMode: "private-pvp",
+    initialRemainGameTime: 180,
+    respawnCostA1: 10,
+    respawnCostB1: 10,
+    playerDeck,
+    playerDeckB,
+    ignoreGameLoadTemplate: true,
+  };
+  const result = buildDynamicGameLoadPayload(playerA.socket, req, stage);
+  if (!result || !result.replay || !result.replay.dynamicGame || !result.replay.dynamicGame.managedCombat) {
+    room.state = 6;
+    for (const member of players) member.playerState = 1;
+    privatePvp.broadcastState(room, createPacketContext());
+    console.log(`[private-pvp] room=${room.code} CombatHost failed to create the authoritative match`);
+    return false;
+  }
+  room.replay = result.replay;
+  room.gameDataPayload = extractNullableGameDataFromGameLoadAckPayload(result.payload);
+  room.matchStarted = true;
+  for (const member of players) member.playerState = 2;
+  privatePvp.broadcast(room, createPacketContext(), 2604, room.gameDataPayload, "private-pvp-match-complete");
+  console.log(
+    `[private-pvp] started room=${room.code} gameUID=${String(result.replay.dynamicGame.gameUID || 0)} map=${PRIVATE_PVP_MAP_ID} A=${playerA.user.userUid} B=${playerB.user.userUid}`
+  );
+  return true;
+}
+
+function finishPrivatePvpGiveup(socket) {
+  const room = privatePvp.getRoom(socket);
+  const member = privatePvp.getMember(socket);
+  const replay = socket && socket.session && socket.session.gameReplay;
+  if (!room || !member || !room.matchStarted || !replay) return false;
+  const winTeam = Number(member.teamType) === 1 ? 3 : 1;
+  replay.battleState = replay.battleState || {};
+  replay.battleState.finished = true;
+  replay.battleState.win = winTeam === 1;
+  replay.battleState.gameState = { ...(replay.battleState.gameState || {}), state: 4, winTeam };
+  sendDynamicFinishStateSync(socket, replay.battleState, "private-pvp-giveup-finish");
+  for (const viewer of room.members) {
+    if (!viewer.socket || viewer.socket.destroyed) continue;
+    sendServerGamePacket(
+      viewer.socket,
+      GAME_END_NOT,
+      buildPrivatePvpGameEndNotPayload(replay, viewer, winTeam, { battleWinTeam: winTeam }),
+      "private-pvp-giveup-end"
+    );
+  }
+  markPrivatePvpMatchFinished(socket);
+  return true;
+}
+
+function markPrivatePvpMatchFinished(socket) {
+  const room = privatePvp.getRoom(socket);
+  if (!room || !room.matchStarted || room.matchFinished) return false;
+  room.matchFinished = true;
+  room.battleStarted = false;
+  if (room.replay) {
+    room.replay.dynamicBattleResultSent = true;
+    combatHandler.disposeBattle(room.replay);
+  }
+  console.log(`[private-pvp] finished room=${room.code}`);
+  return true;
+}
+
+function resetPrivatePvpMatch(room) {
+  if (!room || !room.matchFinished) return false;
+  room.state = 6;
+  room.matchStarted = false;
+  room.matchFinished = false;
+  room.battleStarted = false;
+  room.gameDataPayload = null;
+  room.replay = null;
+  for (const member of room.members) {
+    member.ready = false;
+    member.loaded = false;
+    member.playerState = 1;
+    if (member.socket) {
+      const lobbyReplay = createGameReplayState();
+      lobbyReplay.inGameFlow = true;
+      member.socket.session.gameReplay = lobbyReplay;
+    }
+  }
+  privatePvp.broadcastState(room, createPacketContext());
+  return true;
+}
+
 function handleDynamicBattleRespawn(socket, req) {
   const replay = socket.session && socket.session.gameReplay;
   if (!replay || !DYNAMIC_BATTLE_MANAGER || !req) return false;
-  const result = combatHandler.handleDeploy({ replay, req });
+  const result = combatHandler.handleDeploy({ replay, req, teamType: socket.session.privatePvpTeamType || 1 });
   if (!result || !result.handled) return false;
   if (result.mode === "managed-local-server") {
     const packets = Array.isArray(result.packets) ? result.packets : [];
@@ -3339,7 +3559,7 @@ function handleDynamicBattlePause(socket, req) {
 function handleDynamicBattleUnitSkill(socket, req) {
   const replay = socket.session && socket.session.gameReplay;
   if (!replay || !DYNAMIC_BATTLE_MANAGER || !req) return false;
-  const result = combatHandler.handleUnitSkill({ replay, req });
+  const result = combatHandler.handleUnitSkill({ replay, req, teamType: socket.session.privatePvpTeamType || 1 });
   if (result && result.handled) {
     sendManagedOrImmediatePackets(socket, result.packets);
     console.log(
@@ -3359,7 +3579,7 @@ function handleDynamicBattleUnitSkill(socket, req) {
 function handleDynamicBattleShipSkill(socket, req) {
   const replay = socket.session && socket.session.gameReplay;
   if (!replay || !DYNAMIC_BATTLE_MANAGER || !req) return false;
-  const result = combatHandler.handleShipSkill({ replay, req });
+  const result = combatHandler.handleShipSkill({ replay, req, teamType: socket.session.privatePvpTeamType || 1 });
   if (result && result.handled) {
     sendManagedOrImmediatePackets(socket, result.packets);
     console.log(
@@ -4220,6 +4440,51 @@ function buildDynamicGameEndNotPayload(replay, override = {}) {
     writeNullObject(), // explore
     writeNullObject(), // exploreSquad
     writeSignedVarInt(0), // exploreEnhancePoint
+  ]);
+}
+
+function buildPrivatePvpGameEndNotPayload(replay, member, winTeam, meta = {}) {
+  const battleState = replay && replay.battleState || {};
+  const teamType = Number(member && member.teamType || 1);
+  const resolvedWinTeam = winTeam === 1 || winTeam === 3 ? winTeam : 0;
+  const win = resolvedWinTeam > 0 && teamType === resolvedWinTeam;
+  const result = resolvedWinTeam === 0 ? 2 : win ? 0 : 1;
+  const playTime = extractManagedBattlePlayTime(meta) || getBattlePlayTime(battleState);
+  return Buffer.concat([
+    writeBool(win),
+    writeBool(false),
+    writeBool(false),
+    writeNullObject(), // dungeonClearData
+    writeNullObject(), // phaseClearData
+    writeNullObject(), // episodeCompleteData
+    writeNullableObject(buildBattleDeckIndexData(replay)),
+    writeNullObject(), // warfareSyncData
+    writeNullableObject(Buffer.concat([
+      writeSignedVarInt(result),
+      writeNullObject(), // myInfo
+      writeNullObject(), // history
+      writeNullObject(), // pvpPoint
+      writeInt64LE(dateTimeBinaryNow()),
+      writeBool(false),
+      writeBool(false),
+      writeObjectList([]), // pvpChargePoint
+    ])),
+    writeNullObject(), // diveSyncData
+    writeNullableObject(buildRaidBossResultData()),
+    writeNullableObject(buildBattleGameRecordData(replay, battleState, { playTime })),
+    writeObjectList([]), // updatedUnits
+    writeObjectList([]), // costItemDataList
+    writeNullObject(), // stagePlayData
+    writeNullableObject(buildShadowGameResultData(replay.dynamicGame, battleState)),
+    writeNullableObject(buildFierceResultData()),
+    writeNullObject(), // phaseModeState
+    writeSignedVarLong(0n),
+    writeNullObject(), // killCountData
+    writeNullObject(), // trimModeState
+    writeFloatLE(playTime),
+    writeNullObject(),
+    writeNullObject(),
+    writeSignedVarInt(0),
   ]);
 }
 
@@ -8743,6 +9008,7 @@ function getEffectiveOpenTags(baseTags) {
         getFrozenClientOpenTags(),
         EXPLICIT_OPEN_TAGS,
         REQUIRED_STORY_OPEN_TAGS,
+        PRIVATE_PVP_ENABLED ? PRIVATE_PVP_OPEN_TAGS : [],
         activeEventState.openTags,
         EVENT_SHOP_OPEN_TAGS_ENABLED ? getActiveEventShopTags().openTags : [],
         getCurrentFierceSeasonTags().openTags
@@ -8940,7 +9206,7 @@ function readIntervalDataStrKey(payload) {
   }
 }
 
-function buildMinimalJoinLobbyPayload(user) {
+function buildMinimalJoinLobbyPayload(user, options = {}) {
   const scrubbedTutorialClears = scrubTutorialEpisodeClearProgress(user);
   if (scrubbedTutorialClears && USE_LOCAL_USER_DB) saveUserDb();
   ensureMainStoryState(user);
@@ -8987,8 +9253,8 @@ function buildMinimalJoinLobbyPayload(user) {
     writeSignedVarInt(0), // errorCode
     writeSignedVarLong(friendCode),
     writeNullableObject(userData),
-    writeNullObject(), // lobbyData
-    writeNullObject(), // gameData
+    options.lobbyDataPayload ? writeNullableObject(options.lobbyDataPayload) : writeNullObject(), // lobbyData
+    options.gameDataPayload || writeNullObject(), // gameData (payload already includes nullable marker)
     writeNullableObject(buildWarfareGameData()), // warfareGameData
     now, // utcTime
     writeInt64LE(0n), // utcOffset
@@ -9050,8 +9316,8 @@ function buildMinimalJoinLobbyPayload(user) {
   ]);
 }
 
-function buildJoinLobbyAckPayload(user) {
-  const localPayload = buildMinimalJoinLobbyPayload(user);
+function buildJoinLobbyAckPayload(user, options = {}) {
+  const localPayload = buildMinimalJoinLobbyPayload(user, options);
   const officialPayload = getCapturedServerPayloadTemplate(JOIN_LOBBY_ACK);
   const localIntervalData = buildJoinLobbyIntervalDataList(user);
   const hasGeneratedLobbyIntervals = localIntervalData.length > 0;
@@ -10501,7 +10767,12 @@ function ensureUserDefaults(user) {
     REQUIRED_CONTENTS_TAGS
   );
   user.openTags = filterSuppressedOpenTags(
-    mergeTags(Array.isArray(user.openTags) && user.openTags.length ? user.openTags : OPEN_TAGS, EXPLICIT_OPEN_TAGS, REQUIRED_STORY_OPEN_TAGS)
+    mergeTags(
+      Array.isArray(user.openTags) && user.openTags.length ? user.openTags : OPEN_TAGS,
+      EXPLICIT_OPEN_TAGS,
+      REQUIRED_STORY_OPEN_TAGS,
+      PRIVATE_PVP_ENABLED ? PRIVATE_PVP_OPEN_TAGS : []
+    )
   );
   user.dungeonClear = user.dungeonClear && typeof user.dungeonClear === "object" ? user.dungeonClear : {};
   user.completedMissions =

@@ -36,6 +36,9 @@ const specialistOwners = new Map([
   [3008, "modules\\event-pass\\handlers\\"],
   [3600, "modules\\office\\handlers\\"],
   [3800, "modules\\admin\\handlers\\"],
+  [4100, "modules\\private-pvp\\handlers\\"],
+  [4117, "modules\\private-pvp\\handlers\\"],
+  [4123, "modules\\private-pvp\\handlers\\"],
 ]);
 
 for (const [packetId, expectedPrefix] of specialistOwners) {

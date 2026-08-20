@@ -14,6 +14,20 @@ if (!File.Exists(assemblyPath))
 var backupPath = assemblyPath + ".revivalside-counterpass.bak";
 var options = PatchOptions.Parse(args);
 
+var clientInspectIndex = Array.FindIndex(args, arg => arg.Equals("--inspect-client", StringComparison.OrdinalIgnoreCase));
+if (clientInspectIndex >= 0)
+{
+    if (clientInspectIndex + 1 >= args.Length)
+    {
+        Console.Error.WriteLine("--inspect-client requires one or more comma-separated type-name terms.");
+        return 2;
+    }
+    return PrintClientInspection(
+        assemblyPath,
+        args[clientInspectIndex + 1].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+        args.Any(arg => arg.Equals("--inspect-client-il", StringComparison.OrdinalIgnoreCase)));
+}
+
 if (args.Any(arg => arg.Equals("--inspect-updater", StringComparison.OrdinalIgnoreCase)))
 {
     return PrintUpdaterInspection(assemblyPath);
@@ -98,6 +112,7 @@ if (options.ApplyGearInventoryOkBindFix && PatchGearInventoryOkBindFix(module)) 
 if (options.ApplyGearInventoryStateRepair && PatchGearInventoryStateRepair(module)) patches.Add("gear-inventory-state-repair");
 if (options.ApplyEpisodeProgressDifficultyFix && PatchEpisodeProgressDifficultyFix(module)) patches.Add("episode-progress-difficulty-fix");
 if (options.ApplyOperatorContractCategoryFix && PatchOperatorContractCategoryFix(module)) patches.Add("operator-contract-category-fix");
+if (options.ApplyFriendlyPvpUiFix && PatchFriendlyPvpUiFix(module)) patches.Add("friendly-pvp-ui-fix");
 if (options.ApplySteamLocalLogin && PatchSteamLocalLogin(module)) patches.Add("steam-local-login");
 if (options.ApplyFrozenOfficialUpdateBypass && PatchFrozenOfficialUpdateBypass(module, options.FrozenServerInfoUrl)) patches.Add("frozen-official-update-bypass");
 var changed = patches.Count > 0;
@@ -177,6 +192,7 @@ static int PrintStatus(string assemblyPath, string backupPath)
     Console.WriteLine($"[counter-pass-patch] gear-inventory-state-repair={HasGearInventoryStateRepair(module)}");
     Console.WriteLine($"[counter-pass-patch] episode-progress-difficulty-fix={HasEpisodeProgressDifficultyFix(module)}");
     Console.WriteLine($"[counter-pass-patch] operator-contract-category-fix={HasOperatorContractCategoryFix(module)}");
+    Console.WriteLine($"[counter-pass-patch] friendly-pvp-ui-fix={HasFriendlyPvpUiFix(module)}");
     Console.WriteLine($"[counter-pass-patch] steam-local-login={HasSteamLocalLoginPatch(module)}");
     Console.WriteLine($"[counter-pass-patch] steam-standalone={HasSteamStandalonePatch(module)}");
     Console.WriteLine($"[counter-pass-patch] steam-runtime-isolated={HasSteamRuntimeIsolationPatch(module)}");
@@ -239,6 +255,53 @@ static int PrintUpdaterInspection(string assemblyPath)
         }
     }
     return 0;
+}
+
+static int PrintClientInspection(string assemblyPath, string[] terms, bool includeIl)
+{
+    if (terms.Length == 0)
+    {
+        Console.Error.WriteLine("No client inspection terms were provided.");
+        return 2;
+    }
+
+    using var module = ModuleDefinition.ReadModule(assemblyPath, new ReaderParameters { InMemory = true });
+    var matchingTypes = AllTypes(module)
+        .Where(type => terms.Any(term => type.FullName.Contains(term, StringComparison.OrdinalIgnoreCase)))
+        .OrderBy(type => type.FullName)
+        .ToArray();
+    Console.WriteLine($"[client-inspect] terms={string.Join(',', terms)} types={matchingTypes.Length}");
+    foreach (var type in matchingTypes)
+    {
+        Console.WriteLine($"[client-inspect] type={type.FullName} base={type.BaseType?.FullName ?? "(none)"}");
+        foreach (var field in type.Fields)
+        {
+            var constant = field.HasConstant ? $" value={field.Constant}" : string.Empty;
+            Console.WriteLine($"[client-inspect] field={field.FieldType.FullName} {field.Name}{constant}");
+        }
+        foreach (var method in type.Methods)
+        {
+            var parameters = string.Join(',', method.Parameters.Select(parameter => $"{parameter.ParameterType.FullName} {parameter.Name}"));
+            Console.WriteLine($"[client-inspect] method={method.ReturnType.FullName} {method.Name}({parameters})");
+            if (includeIl) PrintClientMethodIl(method);
+        }
+    }
+    return 0;
+}
+
+static void PrintClientMethodIl(MethodDefinition method)
+{
+    if (!method.HasBody) return;
+    foreach (var instruction in method.Body.Instructions)
+    {
+        var operand = instruction.Operand switch
+        {
+            Instruction target => $"IL_{target.Offset:x4}",
+            Instruction[] targets => string.Join(',', targets.Select(target => $"IL_{target.Offset:x4}")),
+            _ => instruction.Operand?.ToString() ?? string.Empty,
+        };
+        Console.WriteLine($"[client-il] {method.FullName} IL_{instruction.Offset:x4}: {instruction.OpCode} {operand}");
+    }
 }
 
 static int PrintUpdaterIl(string assemblyPath)
@@ -441,6 +504,99 @@ static bool IsValidEnvKey(string key)
     if (string.IsNullOrWhiteSpace(key)) return false;
     if (!char.IsLetter(key[0]) && key[0] != '_') return false;
     return key.All(ch => char.IsLetterOrDigit(ch) || ch == '_');
+}
+
+static bool PatchFriendlyPvpUiFix(ModuleDefinition module)
+{
+    var type = FindTypeDefinition(module, "NKC.UI.Gauntlet.NKCUIGauntletPrivateRoom")
+        ?? throw new InvalidOperationException("NKCUIGauntletPrivateRoom was not found.");
+    var refreshRoomCode = type.Methods.FirstOrDefault(method => method.Name == "RefreshRoomCode" && method.HasBody && method.Parameters.Count == 0)
+        ?? throw new InvalidOperationException("NKCUIGauntletPrivateRoom.RefreshRoomCode() was not found.");
+    var open = type.Methods.FirstOrDefault(method => method.Name == "Open" && method.HasBody && method.Parameters.Count == 0)
+        ?? throw new InvalidOperationException("NKCUIGauntletPrivateRoom.Open() was not found.");
+    if (HasFriendlyPvpUiFix(module)) return false;
+
+    var revealField = type.Fields.FirstOrDefault(field => field.Name == "m_revealRoomCode")
+        ?? throw new InvalidOperationException("NKCUIGauntletPrivateRoom.m_revealRoomCode was not found.");
+    var labelField = type.Fields.FirstOrDefault(field => field.Name == "m_lbRoomCode")
+        ?? throw new InvalidOperationException("NKCUIGauntletPrivateRoom.m_lbRoomCode was not found.");
+    var lobbyGetter = refreshRoomCode.Body.Instructions
+        .Select(instruction => instruction.Operand)
+        .OfType<MethodReference>()
+        .FirstOrDefault(method => method.DeclaringType.FullName == "NKC.NKCPrivatePVPRoomMgr" && method.Name == "get_LobbyData")
+        ?? throw new InvalidOperationException("NKCPrivatePVPRoomMgr.LobbyData getter was not found.");
+    var lobbyCodeField = refreshRoomCode.Body.Instructions
+        .Select(instruction => instruction.Operand)
+        .OfType<FieldReference>()
+        .FirstOrDefault(field => field.DeclaringType.FullName == "ClientPacket.Lobby.NKMLobbyData" && field.Name == "lobbyCode")
+        ?? throw new InvalidOperationException("NKMLobbyData.lobbyCode was not found.");
+    var setLabelText = refreshRoomCode.Body.Instructions
+        .Select(instruction => instruction.Operand)
+        .OfType<MethodReference>()
+        .FirstOrDefault(method => method.DeclaringType.FullName == "NKC.NKCUtil" && method.Name == "SetLabelText" && method.Parameters.Count == 2)
+        ?? throw new InvalidOperationException("NKCUtil.SetLabelText for the room code was not found.");
+
+    ClearMethodBody(refreshRoomCode, initLocals: false);
+    var il = refreshRoomCode.Body.GetILProcessor();
+    var showMasked = il.Create(OpCodes.Ldarg_0);
+    il.Append(il.Create(OpCodes.Ldarg_0));
+    il.Append(il.Create(OpCodes.Ldfld, module.ImportReference(revealField)));
+    il.Append(il.Create(OpCodes.Brfalse_S, showMasked));
+    il.Append(il.Create(OpCodes.Ldarg_0));
+    il.Append(il.Create(OpCodes.Ldfld, module.ImportReference(labelField)));
+    il.Append(il.Create(OpCodes.Call, module.ImportReference(lobbyGetter)));
+    il.Append(il.Create(OpCodes.Ldfld, module.ImportReference(lobbyCodeField)));
+    il.Append(il.Create(OpCodes.Call, module.ImportReference(setLabelText)));
+    il.Append(il.Create(OpCodes.Ret));
+    il.Append(showMasked);
+    il.Append(il.Create(OpCodes.Ldfld, module.ImportReference(labelField)));
+    il.Append(il.Create(OpCodes.Ldstr, "********"));
+    il.Append(il.Create(OpCodes.Call, module.ImportReference(setLabelText)));
+    il.Append(il.Create(OpCodes.Ret));
+
+    var openInstructions = open.Body.Instructions;
+    for (var index = 1; index < openInstructions.Count; index += 1)
+    {
+        if (openInstructions[index].OpCode.Code != Code.Stfld
+            || openInstructions[index].Operand is not FieldReference field
+            || field.Name != revealField.Name
+            || field.DeclaringType.FullName != revealField.DeclaringType.FullName)
+        {
+            continue;
+        }
+        openInstructions[index - 1].OpCode = OpCodes.Ldc_I4_1;
+        openInstructions[index - 1].Operand = null;
+        return true;
+    }
+    throw new InvalidOperationException("NKCUIGauntletPrivateRoom.Open() room-code initialization was not found.");
+}
+
+static bool HasFriendlyPvpUiFix(ModuleDefinition module)
+{
+    var type = FindTypeDefinition(module, "NKC.UI.Gauntlet.NKCUIGauntletPrivateRoom");
+    var refreshRoomCode = type?.Methods.FirstOrDefault(method => method.Name == "RefreshRoomCode" && method.HasBody && method.Parameters.Count == 0);
+    var open = type?.Methods.FirstOrDefault(method => method.Name == "Open" && method.HasBody && method.Parameters.Count == 0);
+    if (type == null || refreshRoomCode == null || open == null) return false;
+    var revealField = type.Fields.FirstOrDefault(field => field.Name == "m_revealRoomCode");
+    if (revealField == null) return false;
+    var bypassesHostMask = !refreshRoomCode.Body.Instructions.Any(instruction =>
+        instruction.Operand is MethodReference method
+        && method.DeclaringType.FullName == "NKC.NKCPrivatePVPRoomMgr"
+        && method.Name == "IsHost");
+    var startsRevealed = false;
+    for (var index = 1; index < open.Body.Instructions.Count; index += 1)
+    {
+        var instruction = open.Body.Instructions[index];
+        if (instruction.OpCode.Code == Code.Stfld
+            && instruction.Operand is FieldReference field
+            && field.Name == revealField.Name
+            && field.DeclaringType.FullName == revealField.DeclaringType.FullName)
+        {
+            startsRevealed = IsLoadInt(open.Body.Instructions[index - 1], 1);
+            break;
+        }
+    }
+    return bypassesHostMask && startsRevealed;
 }
 
 static bool PatchEpisodeProgressDifficultyFix(ModuleDefinition module)
@@ -3715,6 +3871,7 @@ sealed record PatchOptions(
     bool ApplyGearInventoryStateRepair,
     bool ApplyEpisodeProgressDifficultyFix,
     bool ApplyOperatorContractCategoryFix,
+    bool ApplyFriendlyPvpUiFix,
     bool ApplySteamLocalLogin,
     bool ApplyFrozenOfficialUpdateBypass,
     string FrozenServerInfoUrl)
@@ -3758,6 +3915,7 @@ sealed record PatchOptions(
                 && !HasArg(args, "--no-gear-inventory-state-repair"),
             ApplyEpisodeProgressDifficultyFix: !HasArg(args, "--no-episode-progress-difficulty-fix"),
             ApplyOperatorContractCategoryFix: !HasArg(args, "--no-operator-contract-category-fix"),
+            ApplyFriendlyPvpUiFix: !HasArg(args, "--no-friendly-pvp-ui-fix"),
             ApplySteamLocalLogin: (envSteamLocalLoginEnabled == true || HasArg(args, "--include-steam-local-login"))
                 && !HasArg(args, "--no-steam-local-login"),
             ApplyFrozenOfficialUpdateBypass: (envFrozenOfficialUpdateBypassEnabled == true || HasArg(args, "--include-frozen-official-update-bypass"))

@@ -13,7 +13,36 @@ module.exports = {
   name: "JOIN_LOBBY_REQ",
   handle(ctx, socket, packet) {
     const joinReq = ctx.decodeJoinLobbyReq(packet.payload);
+    const privatePvpTicket = ctx.privatePvp && ctx.privatePvp.consumeJoinTicket(joinReq.accessToken, socket);
+    if (privatePvpTicket) {
+      const user = privatePvpTicket.member.user;
+      const room = privatePvpTicket.room;
+      socket.session.user = user;
+      const payload = ctx.buildJoinLobbyAckPayload(user, {
+        lobbyDataPayload: ctx.privatePvp.buildLobbyData(room),
+        gameDataPayload: room.matchStarted && room.gameDataPayload ? room.gameDataPayload : null,
+      });
+      ctx.sendGameResponse(socket, packet, ctx.constants.JOIN_LOBBY_ACK, payload, "private-pvp-join-lobby");
+      socket.session.gameReplay.inGameFlow = true;
+      socket.session.nextServerSequence = Math.max(Number(socket.session.nextServerSequence || 1), Number(packet.sequence || 0) + 1);
+      ctx.privatePvp.broadcastState(room, ctx);
+      console.log(`[private-pvp] joined room=${room.code} uid=${user.userUid} team=${privatePvpTicket.member.teamType}`);
+      return true;
+    }
     const user = ctx.findUserByAccessToken(joinReq.accessToken) || socket.session.user || ctx.createEphemeralUser();
+    const privatePvpReconnect = ctx.privatePvp && ctx.privatePvp.reattachUser(user, socket);
+    if (privatePvpReconnect) {
+      const room = privatePvpReconnect.room;
+      socket.session.user = privatePvpReconnect.member.user;
+      const payload = ctx.buildJoinLobbyAckPayload(socket.session.user, {
+        lobbyDataPayload: ctx.privatePvp.buildLobbyData(room),
+        gameDataPayload: room.matchStarted && room.gameDataPayload ? room.gameDataPayload : null,
+      });
+      ctx.sendGameResponse(socket, packet, ctx.constants.JOIN_LOBBY_ACK, payload, "private-pvp-reconnect");
+      socket.session.gameReplay.inGameFlow = true;
+      ctx.privatePvp.broadcastState(room, ctx);
+      return true;
+    }
     socket.session.user = user;
     if (ctx.config.USE_LOCAL_USER_DB && user.userUid && typeof ctx.prepareUserLobbySession === "function") {
       ctx.prepareUserLobbySession(user, { source: "join-lobby" });

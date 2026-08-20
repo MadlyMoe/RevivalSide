@@ -462,7 +462,9 @@ internal static class ManagedCombatBridge
             {
                 Ok = true,
                 PacketType = packet.GetType().FullName,
-                SerializedPayloadSize = Convert.FromBase64String(serialized.PayloadBase64).Length
+                SerializedPayloadSize = Convert.FromBase64String(serialized.PayloadBase64).Length,
+                PayloadBase64 = data.PacketId is 4101 or 4132 ? serialized.PayloadBase64 : null,
+                Summary = data.PacketId is 4101 or 4132 ? runtime.DescribePrivatePvpLobby(packet) : null
             };
             return true;
         }
@@ -1048,20 +1050,26 @@ internal static class ManagedCombatBridge
                 return false;
             }
             runtime.ApplyPlayerIdentityRuntimeData(runtimeData, data.Stage?.PlayerDeck);
+            runtime.ApplyPlayerIdentityRuntimeDataB(runtimeData, data.Stage?.PlayerDeckB);
             runtime.PrepareGameDataForLocalServer(gameData);
             if (!usesEventDeck && !usesTutorialEventDeck)
             {
                 runtime.ApplyPlayerDeckTeamA(gameData, data.Stage?.PlayerDeck, dynamicGame.StageID, dynamicGame.DungeonID);
             }
+            runtime.ApplyPlayerDeckTeamB(gameData, data.Stage?.PlayerDeckB, dynamicGame.StageID, dynamicGame.DungeonID);
             runtime.RefreshTutorialTeamADeck(gameData, dynamicGame.StageID, dynamicGame.DungeonID);
             runtime.ApplyPlayerIdentityTeamA(gameData, data.Stage?.PlayerDeck);
+            runtime.ApplyPlayerIdentityTeamB(gameData, data.Stage?.PlayerDeckB);
             runtime.ApplyGameType(gameData, dynamicGame);
             runtime.ApplyTeamAStartingRespawnCost(gameData, runtimeData);
+            runtime.ApplyTeamBStartingRespawnCost(gameData, runtimeData);
             runtime.Invoke(server, "SetGameData", gameData);
             if (runtimeData != null)
             {
                 runtime.ApplyPlayerIdentityRuntimeData(runtimeData, data.Stage?.PlayerDeck);
+                runtime.ApplyPlayerIdentityRuntimeDataB(runtimeData, data.Stage?.PlayerDeckB);
                 runtime.ApplyTeamAStartingRespawnCost(gameData, runtimeData);
+                runtime.ApplyTeamBStartingRespawnCost(gameData, runtimeData);
                 runtime.Invoke(server, "SetGameRuntimeData", runtimeData);
             }
             if (usesTutorialEventDeck)
@@ -1069,7 +1077,9 @@ internal static class ManagedCombatBridge
                 runtime.SuppressPlayerDynamicRespawns(server, gameData);
             }
             runtime.ApplyPlayerIdentityTeamA(gameData, data.Stage?.PlayerDeck);
+            runtime.ApplyPlayerIdentityTeamB(gameData, data.Stage?.PlayerDeckB);
             runtime.ClearTeamAUnitOwnersForGameLoadAck(gameData, data.Stage?.PlayerDeck);
+            runtime.ClearTeamBUnitOwnersForGameLoadAck(gameData, data.Stage?.PlayerDeckB);
             runtime.ApplyGameType(gameData, dynamicGame);
             runtime.ApplyBattleConditionIds(gameData, dynamicGame.BattleConditionIds);
             // The Unity client builds its unit pool from GAME_LOAD_ACK. Send the
@@ -1093,6 +1103,23 @@ internal static class ManagedCombatBridge
             Sessions[sessionId] = session;
             dynamicGame.ManagedSessionId = sessionId;
             dynamicGame.ManagedCombat = true;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.ToString();
+            return false;
+        }
+    }
+
+    public static bool TryDispose(DynamicGameState? dynamicGame, out string? error)
+    {
+        error = null;
+        if (dynamicGame == null || string.IsNullOrWhiteSpace(dynamicGame.ManagedSessionId)) return true;
+        if (!Sessions.Remove(dynamicGame.ManagedSessionId, out var session)) return true;
+        try
+        {
+            session.Dispose();
             return true;
         }
         catch (Exception ex)
@@ -1203,7 +1230,7 @@ internal static class ManagedCombatBridge
             session.RememberBattleState(data.BattleState);
             session.ApplyRuntimeControls(data.DynamicGame);
             session.EnsureStarted();
-            var packets = session.HandleDeploy(data.Req);
+            var packets = session.HandleDeploy(data.Req, data.TeamType);
             response = new HostResponse
             {
                 Ok = true,
@@ -1286,7 +1313,7 @@ internal static class ManagedCombatBridge
         {
             session.RememberBattleState(data.BattleState);
             session.EnsureStarted();
-            var packets = session.HandleUnitSkill(data.Req);
+            var packets = session.HandleUnitSkill(data.Req, data.TeamType);
             response = new HostResponse
             {
                 Ok = true,
@@ -1325,7 +1352,7 @@ internal static class ManagedCombatBridge
         {
             session.RememberBattleState(data.BattleState);
             session.EnsureStarted();
-            var packets = session.HandleShipSkill(data.Req);
+            var packets = session.HandleShipSkill(data.Req, data.TeamType);
             response = new HostResponse
             {
                 Ok = true,
@@ -1540,6 +1567,18 @@ internal static class ManagedCombatBridge
             {
                 runtime.SetField(runtimeTeamA, "m_bAutoRespawn", dynamicGame.AutoRespawnEnabled.Value);
             }
+            var runtimeTeamB = runtime.GetField(runtimeData, "m_NKMGameRuntimeTeamDataB");
+            if (runtimeTeamB != null)
+            {
+                if (dynamicGame.AutoSkillTypeB.HasValue)
+                {
+                    runtime.SetField(runtimeTeamB, "m_NKM_GAME_AUTO_SKILL_TYPE", ClampControlEnum(dynamicGame.AutoSkillTypeB.Value, 0, 1));
+                }
+                if (dynamicGame.AutoRespawnEnabledB.HasValue)
+                {
+                    runtime.SetField(runtimeTeamB, "m_bAutoRespawn", dynamicGame.AutoRespawnEnabledB.Value);
+                }
+            }
         }
 
         private static int ClampControlEnum(int value, int min, int max)
@@ -1564,6 +1603,11 @@ internal static class ManagedCombatBridge
             Started = true;
         }
 
+        public void Dispose()
+        {
+            runtime.Invoke(server, "EndGame");
+        }
+
         public List<HostPacket> DrainSetupPackets()
         {
             if (setupPackets.Count == 0) return [];
@@ -1585,7 +1629,7 @@ internal static class ManagedCombatBridge
             }
         }
 
-        public List<HostPacket> HandleDeploy(RespawnReq req)
+        public List<HostPacket> HandleDeploy(RespawnReq req, int teamTypeValue)
         {
             var request = runtime.Create("ClientPacket.Game.NKMPacket_GAME_RESPAWN_REQ");
             var requestedUnitUid = ParseLong(req.UnitUID);
@@ -1599,10 +1643,12 @@ internal static class ManagedCombatBridge
                 server.GetType(),
                 "OnRecv",
                 runtime.GetType("ClientPacket.Game.NKMPacket_GAME_RESPAWN_REQ"),
+                runtime.GetType("NKM.NKM_TEAM_TYPE"),
                 typeof(long).MakeByRefType());
-            var args = new object[] { request, respawnUnitUid };
+            var teamType = runtime.GetType("NKM.NKM_TEAM_TYPE");
+            var args = new object[] { request, Enum.ToObject(teamType, NormalizePlayerTeamType(teamTypeValue)), respawnUnitUid };
             var errorCode = method.Invoke(server, args);
-            respawnUnitUid = Convert.ToInt64(args[1], CultureInfo.InvariantCulture);
+            respawnUnitUid = Convert.ToInt64(args[2], CultureInfo.InvariantCulture);
             if (respawnUnitUid <= 0) respawnUnitUid = requestedUnitUid;
 
             var ack = runtime.Create("ClientPacket.Game.NKMPacket_GAME_RESPAWN_ACK");
@@ -1638,7 +1684,7 @@ internal static class ManagedCombatBridge
             return [runtime.SerializePacket(ack, GamePauseAck, "managed-pause")];
         }
 
-        public List<HostPacket> HandleUnitSkill(UnitSkillReq req)
+        public List<HostPacket> HandleUnitSkill(UnitSkillReq req, int teamTypeValue)
         {
             var request = runtime.Create("ClientPacket.Game.NKMPacket_GAME_USE_UNIT_SKILL_REQ");
             runtime.SetField(request, "gameUnitUID", req.GameUnitUID);
@@ -1653,7 +1699,7 @@ internal static class ManagedCombatBridge
                 typeof(byte).MakeByRefType(),
                 userDataType);
             var skillStateId = (byte)0;
-            var args = new object?[] { request, Enum.ToObject(teamType, 1), skillStateId, null };
+            var args = new object?[] { request, Enum.ToObject(teamType, NormalizePlayerTeamType(teamTypeValue)), skillStateId, null };
             var errorCode = method.Invoke(server, args);
             skillStateId = Convert.ToByte(args[2], CultureInfo.InvariantCulture);
 
@@ -1670,7 +1716,7 @@ internal static class ManagedCombatBridge
             return packets;
         }
 
-        public List<HostPacket> HandleShipSkill(ShipSkillReq req)
+        public List<HostPacket> HandleShipSkill(ShipSkillReq req, int teamTypeValue)
         {
             var request = runtime.Create("ClientPacket.Game.NKMPacket_GAME_SHIP_SKILL_REQ");
             runtime.SetField(request, "gameUnitUID", req.GameUnitUID);
@@ -1686,8 +1732,9 @@ internal static class ManagedCombatBridge
                 server.GetType(),
                 "OnRecv",
                 runtime.GetType("ClientPacket.Game.NKMPacket_GAME_SHIP_SKILL_REQ"),
-                runtime.GetType("ClientPacket.Game.NKMPacket_GAME_SHIP_SKILL_ACK"));
-            var errorCode = method.Invoke(server, [request, ack]);
+                runtime.GetType("NKM.NKM_TEAM_TYPE"));
+            var teamType = runtime.GetType("NKM.NKM_TEAM_TYPE");
+            var errorCode = method.Invoke(server, [request, Enum.ToObject(teamType, NormalizePlayerTeamType(teamTypeValue))]);
             runtime.SetField(ack, "errorCode", errorCode);
 
             var packets = new List<HostPacket>
@@ -1696,6 +1743,11 @@ internal static class ManagedCombatBridge
             };
             packets.AddRange(UpdateAndDrainUntilResponsive(ManagedActionPrimeFrames));
             return packets;
+        }
+
+        private static int NormalizePlayerTeamType(int value)
+        {
+            return value == 3 ? 3 : 1;
         }
 
         private List<HostPacket> UpdateAndDrainUntilResponsive(int maxFrames)
@@ -3964,6 +4016,7 @@ internal static class ManagedCombatBridge
                 13 => "NGT_SHADOW_PALACE",
                 14 => "NGT_FIERCE",
                 15 => "NGT_PHASE",
+                18 => "NGT_PVP_PRIVATE",
                 23 => "NGT_TRIM",
                 26 => "NGT_PVE_DEFENCE",
                 29 => "NGT_EXPLORE",
@@ -4024,14 +4077,31 @@ internal static class ManagedCombatBridge
 
         public void ApplyPlayerDeckTeamA(object gameData, PlayerDeckData? playerDeck, int stageId, int dungeonId)
         {
-            if (playerDeck == null || playerDeck.Units.Count == 0) return;
-            if (IsTutorialDungeon(dungeonId) || stageId is 11211 or 11212 or 11213 or 11214) return;
+            ApplyPlayerDeck(gameData, playerDeck, stageId, dungeonId, "m_NKMGameTeamDataA", "NTT_A1", true);
+        }
 
-            var teamA = GetField(gameData, "m_NKMGameTeamDataA");
+        public void ApplyPlayerDeckTeamB(object gameData, PlayerDeckData? playerDeck, int stageId, int dungeonId)
+        {
+            ApplyPlayerDeck(gameData, playerDeck, stageId, dungeonId, "m_NKMGameTeamDataB", "NTT_B1", false);
+        }
+
+        private void ApplyPlayerDeck(
+            object gameData,
+            PlayerDeckData? playerDeck,
+            int stageId,
+            int dungeonId,
+            string teamField,
+            string teamTypeName,
+            bool excludeTutorial)
+        {
+            if (playerDeck == null || playerDeck.Units.Count == 0) return;
+            if (excludeTutorial && (IsTutorialDungeon(dungeonId) || stageId is 11211 or 11212 or 11213 or 11214)) return;
+
+            var teamA = GetField(gameData, teamField);
             if (teamA == null) return;
 
             var userUid = ParseLong(playerDeck.UserUid);
-            SetField(teamA, "m_eNKM_TEAM_TYPE", Enum.Parse(GetType("NKM.NKM_TEAM_TYPE"), "NTT_A1"));
+            SetField(teamA, "m_eNKM_TEAM_TYPE", Enum.Parse(GetType("NKM.NKM_TEAM_TYPE"), teamTypeName));
             SetField(teamA, "m_user_uid", userUid);
             SetField(teamA, "m_UserLevel", Math.Max(1, playerDeck.UserLevel));
             SetField(teamA, "m_UserNickname", playerDeck.Nickname ?? "");
@@ -4283,14 +4353,24 @@ internal static class ManagedCombatBridge
 
         public void ApplyPlayerIdentityTeamA(object gameData, PlayerDeckData? playerDeck)
         {
+            ApplyPlayerIdentityTeam(gameData, playerDeck, "m_NKMGameTeamDataA", "NTT_A1");
+        }
+
+        public void ApplyPlayerIdentityTeamB(object gameData, PlayerDeckData? playerDeck)
+        {
+            ApplyPlayerIdentityTeam(gameData, playerDeck, "m_NKMGameTeamDataB", "NTT_B1");
+        }
+
+        private void ApplyPlayerIdentityTeam(object gameData, PlayerDeckData? playerDeck, string teamField, string teamTypeName)
+        {
             if (playerDeck == null) return;
             var userUid = ParseLong(playerDeck.UserUid);
             if (userUid <= 0) return;
 
-            var teamA = GetField(gameData, "m_NKMGameTeamDataA");
+            var teamA = GetField(gameData, teamField);
             if (teamA == null) return;
 
-            SetField(teamA, "m_eNKM_TEAM_TYPE", Enum.Parse(GetType("NKM.NKM_TEAM_TYPE"), "NTT_A1"));
+            SetField(teamA, "m_eNKM_TEAM_TYPE", Enum.Parse(GetType("NKM.NKM_TEAM_TYPE"), teamTypeName));
             SetField(teamA, "m_user_uid", userUid);
             SetField(teamA, "m_UserLevel", Math.Max(1, playerDeck.UserLevel));
             SetField(teamA, "m_UserNickname", playerDeck.Nickname ?? "");
@@ -4298,12 +4378,22 @@ internal static class ManagedCombatBridge
 
         public void ApplyPlayerIdentityRuntimeData(object? runtimeData, PlayerDeckData? playerDeck)
         {
+            ApplyPlayerIdentityRuntimeTeam(runtimeData, playerDeck, "m_NKMGameRuntimeTeamDataA");
+        }
+
+        public void ApplyPlayerIdentityRuntimeDataB(object? runtimeData, PlayerDeckData? playerDeck)
+        {
+            ApplyPlayerIdentityRuntimeTeam(runtimeData, playerDeck, "m_NKMGameRuntimeTeamDataB");
+        }
+
+        private void ApplyPlayerIdentityRuntimeTeam(object? runtimeData, PlayerDeckData? playerDeck, string runtimeTeamField)
+        {
             if (runtimeData == null || playerDeck == null) return;
             var userUid = ParseLong(playerDeck.UserUid);
             if (userUid <= 0) return;
 
             SetField(runtimeData, "m_NKM_GAME_SPEED_TYPE", 0);
-            var runtimeTeamA = GetField(runtimeData, "m_NKMGameRuntimeTeamDataA");
+            var runtimeTeamA = GetField(runtimeData, runtimeTeamField);
             if (runtimeTeamA == null) return;
             SetField(runtimeTeamA, "m_UserUID", userUid);
             SetField(runtimeTeamA, "m_bAutoRespawn", false);
@@ -4312,23 +4402,33 @@ internal static class ManagedCombatBridge
 
         public void ApplyTeamAStartingRespawnCost(object gameData, object? runtimeData)
         {
+            ApplyTeamStartingRespawnCost(gameData, runtimeData, "m_NKMGameRuntimeTeamDataA", "m_NKMGameTeamDataA");
+        }
+
+        public void ApplyTeamBStartingRespawnCost(object gameData, object? runtimeData)
+        {
+            ApplyTeamStartingRespawnCost(gameData, runtimeData, "m_NKMGameRuntimeTeamDataB", "m_NKMGameTeamDataB");
+        }
+
+        private void ApplyTeamStartingRespawnCost(object gameData, object? runtimeData, string runtimeTeamField, string gameTeamField)
+        {
             if (runtimeData == null) return;
-            var runtimeTeamA = GetField(runtimeData, "m_NKMGameRuntimeTeamDataA");
+            var runtimeTeamA = GetField(runtimeData, runtimeTeamField);
             if (runtimeTeamA == null) return;
 
-            var startCost = CalculateTeamAStartingRespawnCost(gameData);
+            var startCost = CalculateStartingRespawnCost(gameData, gameTeamField);
             if (startCost.HasValue)
             {
                 SetField(runtimeTeamA, "m_fRespawnCost", startCost.Value);
             }
         }
 
-        private float? CalculateTeamAStartingRespawnCost(object gameData)
+        private float? CalculateStartingRespawnCost(object gameData, string gameTeamField)
         {
             var teamSupply = Convert.ToInt32(GetField(gameData, "m_TeamASupply") ?? 0, CultureInfo.InvariantCulture);
             if (teamSupply <= 0) return 0f;
 
-            var teamA = GetField(gameData, "m_NKMGameTeamDataA");
+            var teamA = GetField(gameData, gameTeamField);
             if (teamA == null) return null;
 
             var ship = GetField(teamA, "m_MainShip");
@@ -4383,7 +4483,17 @@ internal static class ManagedCombatBridge
 
         public void ClearTeamAUnitOwnersForGameLoadAck(object gameData, PlayerDeckData? playerDeck)
         {
-            var teamA = GetField(gameData, "m_NKMGameTeamDataA");
+            ClearTeamUnitOwnersForGameLoadAck(gameData, playerDeck, "m_NKMGameTeamDataA");
+        }
+
+        public void ClearTeamBUnitOwnersForGameLoadAck(object gameData, PlayerDeckData? playerDeck)
+        {
+            ClearTeamUnitOwnersForGameLoadAck(gameData, playerDeck, "m_NKMGameTeamDataB");
+        }
+
+        private void ClearTeamUnitOwnersForGameLoadAck(object gameData, PlayerDeckData? playerDeck, string teamField)
+        {
+            var teamA = GetField(gameData, teamField);
             if (teamA == null) return;
 
             var playerUnitUids = GetPlayerDeckUnitUids(playerDeck);
@@ -4463,6 +4573,7 @@ internal static class ManagedCombatBridge
             {
                 ApplyPlayerDeckTeamA(gameData, data.Stage?.PlayerDeck, dynamicGame.StageID, dynamicGame.DungeonID);
             }
+            ApplyPlayerDeckTeamB(gameData, data.Stage?.PlayerDeckB, dynamicGame.StageID, dynamicGame.DungeonID);
 
             return gameData;
         }
@@ -5109,6 +5220,24 @@ internal static class ManagedCombatBridge
                 $"errorCode={GetField(packet, "errorCode")} isIntrude={GetField(packet, "isIntrude")} rewardMultiply={GetField(packet, "rewardMultiply")}",
                 DescribeRuntimeData(runtimeData)
             });
+        }
+
+        public string DescribePrivatePvpLobby(object packet)
+        {
+            var lobby = GetField(packet, "lobbyState") ?? GetField(packet, "lobbyData");
+            return $"state={GetField(lobby!, "lobbyState")} observerMode={GetField(lobby!, "isObserverMode")} config={DescribeObjectFields(GetField(lobby!, "config"))} users={DescribePrivatePvpUsers(GetField(lobby!, "users"))} observers={DescribePrivatePvpUsers(GetField(lobby!, "observers"))} code={GetField(lobby!, "lobbyCode")}";
+        }
+
+        private string DescribePrivatePvpUsers(object? value)
+        {
+            if (value is not IEnumerable users) return "0[]";
+            var entries = users.Cast<object?>().Select(user =>
+            {
+                if (user == null) return "null";
+                var profile = GetField(GetField(user, "profileData")!, "commonProfile");
+                return $"uid={GetField(profile!, "userUid")},friend={GetField(profile!, "friendCode")},ready={GetField(user, "isReady")},host={GetField(user, "isHost")},state={GetField(user, "playerState")}";
+            }).ToList();
+            return $"{entries.Count}[{string.Join(";", entries)}]";
         }
 
         public string DescribeJoinLobbyAck(object packet)
