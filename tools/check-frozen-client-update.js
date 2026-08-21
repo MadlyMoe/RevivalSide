@@ -31,6 +31,9 @@ try {
   const downloadedPatchInfo = Buffer.from("\u0002\u0002\u0000\u0000\u0000\u0007version\u0003\u0019STANDALONE_WINDOWS_335570\u0004data\u0001\u0000\u0000\u0000\u0000", "latin1");
   fs.writeFileSync(path.join(streamingAssetsDir, "PatchInfo.json"), patchInfo);
   fs.writeFileSync(path.join(downloadedAssetsDir, "PatchInfo.json"), downloadedPatchInfo);
+  const tutorialDungeonResources = Buffer.from('[{"dungeonId":1001}]\n', "utf8");
+  const tutorialDungeonResourcesPath = path.join(streamingAssetsDir, "tutorialDungeonResources.json");
+  fs.writeFileSync(tutorialDungeonResourcesPath, tutorialDungeonResources);
   fs.writeFileSync(
     path.join(streamingContentsVersionDir, "LUA_CONTENTS_VERSION.luac"),
     Buffer.from("\u001bLua\u0000ContentsVersion\u0000\u00059.2.b\u0000", "latin1")
@@ -47,6 +50,8 @@ try {
   assert.strictEqual(state.standaloneVersion, "STANDALONE_WINDOWS_335570");
   assert.strictEqual(state.extraAssetVersion, "ExtraAsset_335570");
   assert.strictEqual(state.patchInfoPath, path.join(downloadedAssetsDir, "PatchInfo.json"));
+  assert.strictEqual(state.tutorialDungeonResourcesPath, tutorialDungeonResourcesPath);
+  assert(state.tutorialDungeonResources.equals(tutorialDungeonResources));
   assert.strictEqual(state.contentsVersion, "9.2.c");
   fs.rmSync(downloadedContentsVersionPath);
   assert.strictEqual(readFrozenContentsVersion(gameplayTablesDir), "9.2.b");
@@ -61,6 +66,13 @@ try {
     state
   );
   assert(localPatch.body.equals(downloadedPatchInfo));
+  const tutorialResources = resolveFrozenClientPatchResponse(
+    "/patchfiles/StandaloneWindows64/STANDALONE_WINDOWS_335570/tutorialDungeonResources.json",
+    state
+  );
+  assert(tutorialResources.body.equals(tutorialDungeonResources));
+  assert.strictEqual(tutorialResources.contentType, "application/json; charset=utf-8");
+  assert.strictEqual(tutorialResources.label, "standalone-tutorial-dungeon-resources");
   assert.strictEqual(
     resolveFrozenClientPatchResponse("/patchfiles/StandaloneWindows64/STANDALONE_WINDOWS_335238/PatchInfo.json", state),
     null

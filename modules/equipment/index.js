@@ -367,7 +367,7 @@ function createEquipData(equipId, equipUid, options = {}) {
     precision2: precision2,
     setOptionId: Number(options.setOptionId || pickSetOptionId(templet, options.cursor || 0)),
     imprintUnitId: Number(options.imprintUnitId || 0),
-    potentialOptions: options.potentialOptions || buildDefaultPotentialOptions(templet),
+    potentialOptions: options.potentialOptions || buildDefaultPotentialOptions(templet, equipUid),
     regDate: String(options.regDate || dateTimeBinaryNow()),
   });
 }
@@ -629,7 +629,7 @@ function upgradeEquipItem(user, equipUid, consumeEquipUids = [], options = {}) {
   const previousStats = normalizeStats(equip.stats);
   equip.itemEquipId = Number(upgrade.UpgradeEquipID || equip.itemEquipId);
   equip.stats = migrateStatsForNewTemplet(previousStats, getEquipTemplet(equip.itemEquipId) || {}, equip);
-  equip.potentialOptions = buildDefaultPotentialOptions(getEquipTemplet(equip.itemEquipId) || {});
+  equip.potentialOptions = buildDefaultPotentialOptions(getEquipTemplet(equip.itemEquipId) || {}, equip.equipUid);
   ensureEquipInventory(user).equips[equip.equipUid] = equip;
   markInventoryTouched(user.inventory);
   return { equip, consumed, costItems };
@@ -1601,9 +1601,14 @@ function pickSetOptionId(templet, cursor = 0, exceptSetOptionId = 0) {
   return filtered[Math.abs(Number(cursor) || 0) % filtered.length];
 }
 
-function buildDefaultPotentialOptions(templet) {
+function buildDefaultPotentialOptions(templet, equipUid) {
   if (!templet || templet.m_bRelic !== true) return [];
-  return [buildDefaultPotentialOption({ itemEquipId: templet.m_ItemEquipID })];
+  return [
+    buildDefaultPotentialOption({
+      itemEquipId: templet.m_ItemEquipID,
+      equipUid,
+    }),
+  ];
 }
 
 function buildDefaultPotentialOption(equip) {

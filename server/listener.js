@@ -1598,6 +1598,8 @@ function createPacketContext() {
     buildShadowPalaceStartAckPayload,
     buildPhaseStartAckPayload,
     buildTrimStartAckPayload,
+    buildTrimEndAckPayload,
+    buildTrimIntervalInfoNotPayload,
     buildFierceDataAckPayload,
     buildFiercePenaltyAckPayload,
     buildFierceProfileAckPayload,
@@ -1633,6 +1635,9 @@ function createPacketContext() {
     repairPostTutorialGuideMissionsForSocket,
     readCutsceneDungeonReq,
     decryptCopy,
+    readVarInt,
+    readNkmEventDeckData,
+    readIntLongMap,
     safeReadString,
     safeReadSignedVarLong,
     writeSignedVarInt,
@@ -3160,6 +3165,17 @@ function buildDynamicGameLoadPayload(socket, req, stage) {
   if (!replay || !req) return null;
   const user = socket && socket.session && socket.session.user;
   const activeStage = stage || {};
+  
+  // Dimension Trimming Debug Logging
+  const isTrim = String(activeStage.miscMode || "").toLowerCase() === "trim" || Number(activeStage.gameType || 0) === NGT_TRIM;
+  if (isTrim) {
+    console.log(`[TRIM:buildDynamicGameLoadPayload] Building dynamic game load for trim`);
+    console.log(`[TRIM:buildDynamicGameLoadPayload] activeStage.playerDeck exists: ${!!activeStage.playerDeck}`);
+    if (activeStage.playerDeck) {
+      console.log(`[TRIM:buildDynamicGameLoadPayload] activeStage.playerDeck: deckType=${activeStage.playerDeck.deckType} deckIndex=${activeStage.playerDeck.deckIndex} unitCount=${activeStage.playerDeck.units ? activeStage.playerDeck.units.length : 0}`);
+    }
+  }
+  
   // Every tutorial phase is a new battle load on the same socket/session.
   // Reset per-battle gates here so heartbeats during phase 2+ loading cannot
   // start managed 822 sync before GAME_LOAD_COMPLETE_REQ (807) arrives.
@@ -3170,6 +3186,7 @@ function buildDynamicGameLoadPayload(socket, req, stage) {
   replay.tutorialClearRecorded = false;
   replay.stageClearLoot = null;
   replay.lastDynamicGameEndResult = null;
+  replay.diveBattleResult = null;
   replay.managedGameLoadAckPayload = null;
   const gameLoadAckTemplate = getCapturedServerPayloadTemplate(GAME_LOAD_ACK);
   const nativeTutorialLoad =
@@ -3209,7 +3226,17 @@ function buildDynamicGameLoadPayload(socket, req, stage) {
     if (raidUID > 0n) replay.dynamicGame.raidUID = String(raidUID);
     const gameType = Number(activeStage.gameType || (req && req.gameType) || replay.dynamicGame.gameType || 0);
     if (gameType) replay.dynamicGame.gameType = gameType;
-    if (activeStage.playerDeck) replay.dynamicGame.playerDeck = activeStage.playerDeck;
+    if (activeStage.playerDeck) {
+      replay.dynamicGame.playerDeck = activeStage.playerDeck;
+      
+      // Dimension Trimming Debug Logging
+      if (isTrim) {
+        console.log(`[TRIM:buildDynamicGameLoadPayload] Assigned playerDeck to replay.dynamicGame.playerDeck`);
+        console.log(`[TRIM:buildDynamicGameLoadPayload] replay.dynamicGame.playerDeck: deckType=${replay.dynamicGame.playerDeck.deckType} deckIndex=${replay.dynamicGame.playerDeck.deckIndex} unitCount=${replay.dynamicGame.playerDeck.units ? replay.dynamicGame.playerDeck.units.length : 0}`);
+      }
+    } else if (isTrim) {
+      console.log(`[TRIM:buildDynamicGameLoadPayload] WARNING: activeStage.playerDeck is null/undefined!`);
+    }
     if (activeStage.worldmapEventID) replay.dynamicGame.worldmapEventID = Number(activeStage.worldmapEventID || 0);
     if (activeStage.diveStageID || (req && req.diveStageID)) replay.dynamicGame.diveStageID = Number(activeStage.diveStageID || req.diveStageID || 0);
     if (activeStage.miscMode) replay.dynamicGame.miscMode = String(activeStage.miscMode || "");
@@ -3250,6 +3277,13 @@ function buildDynamicGameLoadPayload(socket, req, stage) {
 function sendDynamicGameLoadAck(socket, req, stage) {
   const result = buildDynamicGameLoadPayload(socket, req, stage);
   if (!result) return false;
+  
+  // Dimension Trimming Debug Logging
+  const isTrim = stage && (String(stage.miscMode || "").toLowerCase() === "trim" || Number(stage.gameType || 0) === NGT_TRIM);
+  if (isTrim) {
+    console.log(`[TRIM:sendDynamicGameLoadAck] Sending GAME_LOAD_ACK (802) payloadSize=${result.payload.length} managed=${result.managed}`);
+  }
+  
   const replay = result.replay;
   const payload = result.payload;
   const raidHpChanged = syncRaidCombatHpForReplay(socket, replay, "raid-game-load");
@@ -3953,6 +3987,15 @@ function recordMiscStageClearForUser(user, dungeonId, stageId, battleState = {})
       stageId: positiveInt(stageId),
       score: Math.max(1, 100000 - playTime),
     };
+    
+    // Advance phase index after clearing a dungeon
+    if (state.trim.current && state.trim.current.trimId === positiveInt(miscStage.trimId)) {
+      const eventDeckList = state.trim.current.eventDeckList || [];
+      const oldPhaseIndex = state.trim.current.currentPhaseIndex || 0;
+      state.trim.current.currentPhaseIndex = Math.min(oldPhaseIndex + 1, eventDeckList.length - 1);
+      console.log(`[recordGenericStageClear] Advanced trim phase from ${oldPhaseIndex} to ${state.trim.current.currentPhaseIndex}/${eventDeckList.length}`);
+    }
+    
     return true;
   }
   if (miscStage.mode === "defence") {
@@ -4149,8 +4192,33 @@ function buildDynamicGameEndNotPayload(replay, override = {}) {
   );
   const raidBattleResult = isRaidGame ? maybeRecordRaidBattleResultForReplay(replay, { ...override, battleState }, win) : null;
   const isDiveGame = !isRaidGame && (Number(dynamicGame.diveStageID || 0) > 0 || Number(dynamicGame.gameType || 0) === NGT_DIVE);
-  const diveBattleResult = isDiveGame ? worldMap.completeDiveBattle(override.user, dynamicGame, battleState, { win, now: dateTimeBinaryNow() }) : null;
-  const stageLoot = !isRaidGame && !isDiveGame && win ? getOrGrantStageClearLoot(replay, override.user, dungeonId, stageId, { save: false }) : null;
+  let diveBattleResult = null;
+  if (isDiveGame) {
+    const diveBattleKey = String(dynamicGame.gameUID || dynamicGame.gameUid || `${dungeonId}:${stageId}`);
+    const cachedDiveResult =
+      replay &&
+      replay.diveBattleResult &&
+      String(replay.diveBattleResult.battleKey || "") === diveBattleKey
+        ? replay.diveBattleResult.result
+        : null;
+    diveBattleResult =
+      cachedDiveResult ||
+      worldMap.completeDiveBattle(override.user, dynamicGame, battleState, {
+        win,
+        now: dateTimeBinaryNow(),
+      });
+    if (diveBattleResult && replay) {
+      replay.diveBattleResult = { battleKey: diveBattleKey, result: diveBattleResult };
+      if (!cachedDiveResult && USE_LOCAL_USER_DB) saveUserDb();
+    } else if (!diveBattleResult) {
+      console.log(
+        `[dynamic-game-end:dive] unresolved diveStageID=${Number(dynamicGame.diveStageID || 0)} gameType=${Number(
+          dynamicGame.gameType || 0
+        )} dungeonID=${dungeonId}`
+      );
+    }
+  }
+  const stageLoot = !isRaidGame && !isDiveGame && win ? getOrGrantStageClearLoot(replay, override.user, dungeonId, stageId) : null;
   const costItems = isRaidGame
     ? (raidBattleResult && raidBattleResult.costItems) || []
     : isDiveGame
@@ -4166,11 +4234,13 @@ function buildDynamicGameEndNotPayload(replay, override = {}) {
     fiercePoint: override.fiercePoint ?? override.managedFiercePoint,
     fiercePenaltyPoint: override.fiercePenaltyPoint ?? override.managedFiercePenaltyPoint,
   });
+  const isTrimGame = Number(dynamicGame.gameType || 0) === NGT_TRIM || String(dynamicGame.miscMode || "") === "trim";
+  const trimResult = isTrimGame ? buildTrimResultState(override.user, dynamicGame, dungeonId, stageId, win) : null;
   return Buffer.concat([
     writeBool(win), // win
     writeBool(Boolean(override.giveup || false)), // giveup
     writeBool(Boolean(override.restart || false)), // restart
-    !isRaidGame && !isDiveGame && dungeonId
+    !isRaidGame && dungeonId && (!isDiveGame || win)
       ? writeNullableObject(
           buildDungeonClearData(dungeonId, {
             stageId,
@@ -4215,7 +4285,7 @@ function buildDynamicGameEndNotPayload(replay, override = {}) {
       : writeNullObject(), // phaseModeState
     writeSignedVarLong(0n), // killCountDelta
     writeNullObject(), // killCountData
-    writeNullObject(), // trimModeState
+    trimResult && trimResult.trimModeState ? writeNullableObject(trimResult.trimModeState) : writeNullObject(), // trimModeState
     writeFloatLE(playTime), // totalPlayTime
     writeNullObject(), // explore
     writeNullObject(), // exploreSquad
@@ -4614,10 +4684,14 @@ function buildGameLoadAck(data = {}) {
     if (data.raidUID != null && spans.raidUID) {
       replacements.push({ ...spans.raidUID, payload: writeSignedVarLong(toBigInt(data.raidUID || 0)) });
     }
+    const hasExplicitTeamBLevelAdd = data.teamBLevelAdd != null && spans.teamBLevelAdd;
+    if (hasExplicitTeamBLevelAdd) {
+      replacements.push({ ...spans.teamBLevelAdd, payload: writeSignedVarInt(Number(data.teamBLevelAdd) || 0) });
+    }
     const teamBLevelFix = Number(data.teamBLevelFix || data.raidLevel || 0);
     if (teamBLevelFix > 0 && spans.teamBLevelFix) {
       replacements.push({ ...spans.teamBLevelFix, payload: writeSignedVarInt(teamBLevelFix) });
-      if (spans.teamBLevelAdd) {
+      if (spans.teamBLevelAdd && !hasExplicitTeamBLevelAdd) {
         replacements.push({ ...spans.teamBLevelAdd, payload: writeSignedVarInt(0) });
       }
     }
@@ -5156,6 +5230,7 @@ function loadMiscStageCatalog() {
     fierceRankRewardsByGroup: new Map(),
     battleConditionByStrId: new Map(),
     trimById: new Map(),
+    trimRewardByKey: new Map(),
     trimDungeonsByTrimId: new Map(),
     trimDungeonByDungeonId: new Map(),
     defenceById: new Map(),
@@ -5257,6 +5332,11 @@ function loadMiscStageCatalog() {
   for (const row of readMiscStageRecords("LUA_TRIM_TEMPLET.json")) {
     const trimId = positiveInt(row && row.TrimID);
     if (trimId) catalog.trimById.set(trimId, row);
+  }
+  for (const row of readMiscStageRecords("LUA_TRIM_REWARD_CL.json")) {
+    const trimId = positiveInt(row && row.TrimID);
+    const trimLevel = positiveInt(row && row.TrimLevel);
+    if (trimId && trimLevel) catalog.trimRewardByKey.set(`${trimId}:${trimLevel}`, row);
   }
   for (const row of readMiscStageRecords("LUA_TRIM_DUNGEON.json")) {
     const trimId = positiveInt(row && row.TrimID);
@@ -7835,7 +7915,13 @@ function buildPhaseModeState(stageId, phaseIndex, dungeonId, totalPlayTime, supp
 function buildTrimStartAckPayload(req = {}, user = null) {
   const trimId = positiveInt(req.trimId || req.TrimID);
   const trimLevel = Math.max(1, positiveInt(req.trimLevel || req.TrimLevel) || 1);
+  const eventDeckList = Array.isArray(req.eventDeckList) ? req.eventDeckList : [];
+  
+  console.log(`[buildTrimStartAckPayload] trimId=${trimId} trimLevel=${trimLevel} eventDeckCount=${eventDeckList.length}`);
+  
   const stage = getGenericStageForRequest({ trimId, trimLevel });
+  console.log(`[buildTrimStartAckPayload] stage resolved: stageId=${stage ? stage.stageId : 'null'} dungeonID=${stage ? stage.dungeonID : 'null'} gameType=${stage ? stage.gameType : 'null'} trimStageListLength=${stage && stage.trimStageList ? stage.trimStageList.length : 0}`);
+  
   const state = ensureMiscStageState(user);
   if (state && trimId) {
     state.trim = state.trim && typeof state.trim === "object" ? state.trim : {};
@@ -7843,9 +7929,13 @@ function buildTrimStartAckPayload(req = {}, user = null) {
       trimId,
       trimLevel,
       nextDungeonId: positiveInt(stage && stage.dungeonID),
+      eventDeckList,
+      currentPhaseIndex: 0,
     };
+    console.log(`[buildTrimStartAckPayload] saved trim state with ${eventDeckList.length} event decks, nextDungeonId=${state.trim.current.nextDungeonId}`);
     if (USE_LOCAL_USER_DB) saveUserDb();
   }
+  
   return Buffer.concat([
     writeSignedVarInt(0),
     writeNullableObject(buildTrimModeState(stage || { trimId, trimLevel })),
@@ -7855,10 +7945,19 @@ function buildTrimStartAckPayload(req = {}, user = null) {
 function buildTrimModeState(stage = {}) {
   const trimId = positiveInt(stage.trimId);
   const trimLevel = Math.max(1, positiveInt(stage.trimLevel) || 1);
-  const stageRows = Array.isArray(stage.trimStageList) && stage.trimStageList.length
+  const allStageRows = Array.isArray(stage.trimStageList) && stage.trimStageList.length
     ? stage.trimStageList
     : loadMiscStageCatalog().trimDungeonsByTrimId.get(trimId) || [];
+  
+  // Filter stages to only those matching the requested trim level
+  const stageRows = allStageRows.filter(row => {
+    const levelLow = Math.max(1, positiveInt(row && row.TrimLevel_Low) || 1);
+    const levelHigh = Math.max(1, positiveInt(row && row.TrimLevel_High) || trimLevel);
+    return trimLevel >= levelLow && trimLevel <= levelHigh;
+  });
+  
   const nextDungeonId = positiveInt(stage.dungeonID) || positiveInt((stageRows[0] || {}).DungeonID);
+  console.log(`[buildTrimModeState] trimId=${trimId} trimLevel=${trimLevel} nextDungeonId=${nextDungeonId} totalStages=${allStageRows.length} filteredStages=${stageRows.length}`);
   return Buffer.concat([
     writeSignedVarInt(trimId),
     writeSignedVarInt(trimLevel),
@@ -7879,6 +7978,286 @@ function buildTrimStageData(index, dungeonId, score, isWin) {
     writeSignedVarInt(Math.max(0, Number(score || 0) || 0)),
     writeBool(Boolean(isWin)),
   ]);
+}
+
+function buildTrimResultState(user, dynamicGame, dungeonId, stageId, win) {
+  if (!user || !dynamicGame) return null;
+  
+  const state = ensureMiscStageState(user);
+  if (!state || !state.trim || !state.trim.current) {
+    console.log(`[buildTrimResultState] No active trim state found`);
+    return null;
+  }
+  
+  const trimState = state.trim.current;
+  const trimId = positiveInt(trimState.trimId);
+  const trimLevel = Math.max(1, positiveInt(trimState.trimLevel) || 1);
+  const eventDeckCount = Array.isArray(trimState.eventDeckList) ? trimState.eventDeckList.length : 0;
+  const currentPhaseIndex = Math.max(0, Number(trimState.currentPhaseIndex || 0) || 0);
+  
+  if (!trimId) {
+    console.log(`[buildTrimResultState] Invalid trimId in state`);
+    return null;
+  }
+  
+  // Load the full list of dungeons for this trim and filter by level
+  const catalog = loadMiscStageCatalog();
+  const allStageRows = catalog.trimDungeonsByTrimId.get(trimId) || [];
+  const stageRows = allStageRows.filter(row => {
+    const levelLow = Math.max(1, positiveInt(row && row.TrimLevel_Low) || 1);
+    const levelHigh = Math.max(1, positiveInt(row && row.TrimLevel_High) || trimLevel);
+    return trimLevel >= levelLow && trimLevel <= levelHigh;
+  });
+  
+  if (stageRows.length === 0) {
+    console.log(`[buildTrimResultState] No stages found for trimId=${trimId} trimLevel=${trimLevel}`);
+    return null;
+  }
+  
+  console.log(`[buildTrimResultState] trimId=${trimId} trimLevel=${trimLevel} eventDeckCount=${eventDeckCount} currentPhaseIndex=${currentPhaseIndex} filteredStageCount=${stageRows.length}`);
+  
+  // Find the current dungeon index
+  const currentIndex = stageRows.findIndex(row => positiveInt(row && row.DungeonID) === positiveInt(dungeonId));
+  
+  if (currentIndex < 0) {
+    console.log(`[buildTrimResultState] Current dungeonId=${dungeonId} not found in trim stageList`);
+    return null;
+  }
+  
+  // Initialize stage progress if not exists
+  if (!Array.isArray(trimState.stageProgress)) {
+    trimState.stageProgress = [];
+  }
+  
+  // Update stage progress for the current stage
+  trimState.stageProgress[currentIndex] = {
+    index: currentIndex,
+    dungeonId: positiveInt(dungeonId),
+    score: 0, // TODO: Calculate score based on battle performance
+    isWin: Boolean(win)
+  };
+  
+  // Determine next dungeon
+  // Key logic: Limit to the number of event decks provided
+  let nextDungeonId = 0;
+  let hasMoreStages = false;
+  
+  const maxStages = Math.min(stageRows.length, eventDeckCount);
+  
+  if (win && currentIndex + 1 < maxStages) {
+    // Move to next stage if won AND we have more event decks
+    nextDungeonId = positiveInt(stageRows[currentIndex + 1] && stageRows[currentIndex + 1].DungeonID);
+    hasMoreStages = true;
+    console.log(`[buildTrimResultState] Win: advancing from stage ${currentIndex}/${maxStages} to ${currentIndex + 1}, nextDungeonId=${nextDungeonId}`);
+  } else if (!win) {
+    // If lost, session should end (nextDungeonId = 0)
+    nextDungeonId = 0;
+    hasMoreStages = false;
+    console.log(`[buildTrimResultState] Loss: ending trim session at stage ${currentIndex}/${maxStages}`);
+  } else {
+    // Won and completed all available stages (either all stages or all event decks)
+    nextDungeonId = 0;
+    hasMoreStages = false;
+    if (currentIndex + 1 >= stageRows.length) {
+      console.log(`[buildTrimResultState] Completed all stages (${stageRows.length}/${stageRows.length})`);
+    } else {
+      console.log(`[buildTrimResultState] Completed all event decks (${currentIndex + 1}/${maxStages} stages, ${stageRows.length} total)`);
+    }
+  }
+  
+  // Update trim state
+  trimState.nextDungeonId = nextDungeonId;
+  trimState.lastClearStage = win ? {
+    index: currentIndex,
+    dungeonId: positiveInt(dungeonId),
+    score: 0,
+    isWin: true
+  } : null;
+  
+  if (USE_LOCAL_USER_DB) saveUserDb();
+  
+  // Build the trimStageList with updated progress
+  const stageList = stageRows.map((row, idx) => {
+    const progress = trimState.stageProgress[idx];
+    if (progress) {
+      return buildTrimStageData(idx, progress.dungeonId, progress.score, progress.isWin);
+    }
+    return buildTrimStageData(idx, positiveInt(row && row.DungeonID), 0, false);
+  });
+  
+  // Build TrimModeState
+  const trimModeState = Buffer.concat([
+    writeSignedVarInt(trimId),
+    writeSignedVarInt(trimLevel),
+    writeSignedVarInt(nextDungeonId),
+    trimState.lastClearStage 
+      ? writeNullableObject(buildTrimStageData(
+          trimState.lastClearStage.index,
+          trimState.lastClearStage.dungeonId,
+          trimState.lastClearStage.score,
+          trimState.lastClearStage.isWin
+        ))
+      : writeNullableObject(buildTrimStageData(0, 0, 0, false)),
+    writeObjectList(stageList.map(stage => writeNullableObject(stage))),
+  ]);
+  
+  console.log(`[buildTrimResultState] Built TrimModeState: trimId=${trimId} trimLevel=${trimLevel} nextDungeonId=${nextDungeonId} hasMoreStages=${hasMoreStages}`);
+  
+  return {
+    trimModeState,
+    hasMoreStages,
+    isComplete: !hasMoreStages && win
+  };
+}
+
+function buildTrimEndAckPayload(req = {}, user = null) {
+  const requestedTrimId = positiveInt(req.trimId || req.TrimID);
+  const state = ensureMiscStageState(user);
+  const trimState = state && state.trim && state.trim.current;
+  const trimId = positiveInt(trimState && trimState.trimId);
+  const trimLevel = Math.max(1, positiveInt(trimState && trimState.trimLevel) || 1);
+
+  if (!trimState || !trimId || (requestedTrimId && requestedTrimId !== trimId)) {
+    console.log(`[buildTrimEndAckPayload] rejected trimId=${requestedTrimId}; active=${trimId || 0}`);
+    return buildTrimEndAckPayloadData(1, false, 0, null, null);
+  }
+
+  const selectedPhaseCount = Array.isArray(trimState.eventDeckList) && trimState.eventDeckList.length > 0
+    ? trimState.eventDeckList.length
+    : Array.isArray(trimState.stageProgress)
+      ? trimState.stageProgress.length
+      : 0;
+  const completed = selectedPhaseCount > 0 && Array.from({ length: selectedPhaseCount }).every((_, index) => {
+    const progress = Array.isArray(trimState.stageProgress) ? trimState.stageProgress[index] : null;
+    return progress && progress.isWin === true;
+  });
+
+  if (!completed) {
+    console.log(`[buildTrimEndAckPayload] rejected incomplete trimId=${trimId} phases=${selectedPhaseCount}`);
+    return buildTrimEndAckPayloadData(1, false, 0, buildTrimResultModeState(trimState, 0), null);
+  }
+
+  const score = (trimState.stageProgress || []).slice(0, selectedPhaseCount)
+    .reduce((total, progress) => total + Math.max(0, Number(progress && progress.score) || 0), 0);
+  state.trim.history = state.trim.history && typeof state.trim.history === "object" ? state.trim.history : {};
+  const historyKey = `${trimId}:${trimLevel}`;
+  const previous = state.trim.history[historyKey] && typeof state.trim.history[historyKey] === "object"
+    ? state.trim.history[historyKey]
+    : null;
+  const bestScore = Math.max(score, Number(previous && previous.bestScore) || 0);
+  const isFirst = !previous || previous.rewardGranted !== true;
+  const reward = previous && previous.rewardGranted === true && trimState.completionReward && typeof trimState.completionReward === "object"
+    ? trimState.completionReward
+    : grantTrimCompletionReward(user, trimId, trimLevel, isFirst);
+
+  trimState.nextDungeonId = 0;
+  trimState.completed = true;
+  trimState.completedAt = new Date().toISOString();
+  trimState.completionReward = reward;
+  state.trim.history[historyKey] = {
+    trimId,
+    trimLevel,
+    bestScore,
+    score,
+    isWin: true,
+    rewardGranted: true,
+    completedAt: trimState.completedAt,
+  };
+  if (USE_LOCAL_USER_DB) saveUserDb();
+
+  console.log(`[buildTrimEndAckPayload] completed trimId=${trimId} level=${trimLevel} phases=${selectedPhaseCount} score=${score} best=${bestScore}`);
+  return buildTrimEndAckPayloadData(
+    0,
+    isFirst,
+    bestScore,
+    buildTrimResultModeState(trimState, 0),
+    Buffer.concat([
+      writeBool(true),
+      writeSignedVarInt(trimId),
+      writeSignedVarInt(trimLevel),
+      writeSignedVarInt(score),
+      writeNullableObject(buildSerializedRewardData(reward)),
+    ])
+  );
+}
+
+function buildTrimEndAckPayloadData(errorCode, isFirst, bestScore, trimModeState, trimClearData) {
+  return Buffer.concat([
+    writeSignedVarInt(errorCode),
+    writeBool(isFirst),
+    writeSignedVarInt(bestScore),
+    trimModeState ? writeNullableObject(trimModeState) : writeNullObject(),
+    trimClearData ? writeNullableObject(trimClearData) : writeNullObject(),
+    writeObjectList([]),
+  ]);
+}
+
+function buildTrimResultModeState(trimState, nextDungeonId) {
+  const trimId = positiveInt(trimState && trimState.trimId);
+  const trimLevel = Math.max(1, positiveInt(trimState && trimState.trimLevel) || 1);
+  const rows = (loadMiscStageCatalog().trimDungeonsByTrimId.get(trimId) || []).filter((row) => {
+    const low = Math.max(1, positiveInt(row && row.TrimLevel_Low) || 1);
+    const high = Math.max(1, positiveInt(row && row.TrimLevel_High) || trimLevel);
+    return trimLevel >= low && trimLevel <= high;
+  });
+  const progress = Array.isArray(trimState && trimState.stageProgress) ? trimState.stageProgress : [];
+  const last = trimState && trimState.lastClearStage;
+  return Buffer.concat([
+    writeSignedVarInt(trimId),
+    writeSignedVarInt(trimLevel),
+    writeSignedVarInt(positiveInt(nextDungeonId)),
+    last ? writeNullableObject(buildTrimStageData(last.index, last.dungeonId, last.score, last.isWin)) : writeNullObject(),
+    writeObjectList(rows.map((row, index) => {
+      const stage = progress[index];
+      return writeNullableObject(buildTrimStageData(
+        index,
+        stage ? stage.dungeonId : positiveInt(row && row.DungeonID),
+        stage ? stage.score : 0,
+        Boolean(stage && stage.isWin)
+      ));
+    })),
+  ]);
+}
+
+function grantTrimCompletionReward(user, trimId, trimLevel, isFirst) {
+  const reward = createEmptyReward();
+  const row = loadMiscStageCatalog().trimRewardByKey.get(`${trimId}:${trimLevel}`);
+  if (!row || !user) return reward;
+
+  const ctx = { dateTimeBinaryNow };
+  const regDate = dateTimeBinaryNow();
+  const creditMin = Math.max(0, Number(row.m_RewardCredit_Min) || 0);
+  const creditMax = Math.max(creditMin, Number(row.m_RewardCredit_Max) || creditMin);
+  const credits = pickDungeonRewardQuantity(user, `trim-credit:${trimId}:${trimLevel}`, creditMin, creditMax);
+  if (credits > 0) {
+    mergeReward(reward, grantRewardByType(ctx, user, "RT_MISC", RESOURCE_ITEM_IDS.CREDIT, credits, credits, 0, { regDate, expandPackages: false }));
+  }
+
+  const fixedType = String(row.FixRewardType || "");
+  const fixedId = positiveInt(row.FixRewardID);
+  if (fixedType && fixedType !== "RT_NONE" && fixedId) {
+    mergeReward(reward, grantRewardByType(ctx, user, fixedType, fixedId, 1, 1, 0, { regDate }));
+  }
+  if (isFirst) {
+    const firstType = String(row.FirstClearRewardType || "");
+    const firstId = positiveInt(row.FirstClearRewardID);
+    const firstValue = Math.max(1, Number(row.FirstClearRewardValue) || 1);
+    if (firstType && firstType !== "RT_NONE" && firstId) {
+      mergeReward(reward, grantRewardByType(ctx, user, firstType, firstId, firstValue, firstValue, 0, { regDate }));
+    }
+  }
+
+  for (let index = 1; index <= 4; index += 1) {
+    const groupId = positiveInt(row[`m_RewardGroupID_${index}`]);
+    if (!groupId) continue;
+    const records = getRewardGroupRecords(groupId);
+    if (!stageRewardGroupChancePass(user, groupId, records)) continue;
+    const record = pickStageRewardRecord(records, user, `trim:${trimId}:${trimLevel}:${groupId}`);
+    if (record) mergeReward(reward, grantRewardRecord(ctx, user, record, { regDate }));
+  }
+  reward.userExp = Math.max(0, Number(row.m_RewardUserEXP) || 0);
+  console.log(`[trim-loot] trimId=${trimId} level=${trimLevel} first=${isFirst ? 1 : 0} credits=${credits} misc=${reward.miscItems.length} units=${reward.units.length} equips=${reward.equips.length}`);
+  return reward;
 }
 
 function buildFierceDataAckPayload(user = null) {
@@ -9034,7 +9413,7 @@ function buildMinimalJoinLobbyPayload(user) {
     writeObjectList([]), // consumerPackages
     writeNullObject(), // npcPvpData
     writeNullableObject(buildTrimIntervalData()), // trimIntervalData
-    writeObjectList([]), // trimClearList
+    writeObjectList(buildTrimClearDataList(user).map(writeNullableObject)), // trimClearList
     writeNullableObject(buildShipModuleCandidateData()), // shipSlotCandidate
     writeNullObject(), // trimModeState
     writeBool(false), // enableAccountLink
@@ -9663,6 +10042,33 @@ function buildBackgroundInfoData(user) {
 
 function buildTrimIntervalData() {
   return Buffer.concat([writeSignedVarInt(0), writeSignedVarInt(0), writeSignedVarInt(0)]);
+}
+
+function buildTrimClearDataList(user = null) {
+  const history = user && user.miscStages && user.miscStages.trim && user.miscStages.trim.history;
+  if (!history || typeof history !== "object") return [];
+  return Object.values(history)
+    .filter((entry) => entry && entry.isWin === true && positiveInt(entry.trimId) && positiveInt(entry.trimLevel))
+    .sort((left, right) => positiveInt(left.trimId) - positiveInt(right.trimId) || positiveInt(left.trimLevel) - positiveInt(right.trimLevel))
+    .map((entry) => buildTrimClearData(entry));
+}
+
+function buildTrimClearData(entry = {}) {
+  return Buffer.concat([
+    writeBool(entry.isWin === true),
+    writeSignedVarInt(positiveInt(entry.trimId)),
+    writeSignedVarInt(Math.max(1, positiveInt(entry.trimLevel) || 1)),
+    writeSignedVarInt(Math.max(0, Number(entry.score) || 0)),
+    writeNullableObject(buildSerializedRewardData(entry.reward || createEmptyReward())),
+  ]);
+}
+
+function buildTrimIntervalInfoNotPayload(user = null) {
+  return Buffer.concat([
+    writeSignedVarInt(0),
+    writeNullableObject(buildTrimIntervalData()),
+    writeObjectList(buildTrimClearDataList(user).map(writeNullableObject)),
+  ]);
 }
 
 function buildSelectableContractStateData(user, ctx) {
