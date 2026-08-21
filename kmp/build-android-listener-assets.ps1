@@ -9,7 +9,13 @@ param(
   [string]$AndroidDotnetRuntimeDir = "",
   [string]$AndroidScriptBundle = "",
   [string]$AndroidPatchInfo = "",
-  [string]$PayloadZip = "",
+  [string]$AndroidLuaCacheZip = "",
+  [string]$AndroidLuaCacheManifest = "",
+  [string]$AndroidClientPayloadManifest = "",
+  [string]$AndroidClientCdnBaseUrl = "",
+  [string]$AndroidClientPayloadManifestUrl = "",
+  [switch]$AllowAdbLoopbackCdn,
+  [string[]]$PayloadZip = @(),
   [string]$PayloadManifest = ""
 )
 
@@ -22,14 +28,18 @@ $assetRootFull = [System.IO.Path]::GetFullPath($assetRoot)
 $expectedPrefix = [System.IO.Path]::GetFullPath((Join-Path $kmpRoot "app\src\main\assets"))
 $payloadAssetZip = Join-Path $expectedPrefix "revivalside-payload.zip"
 $payloadAssetManifest = Join-Path $expectedPrefix "revivalside-payload-manifest.json"
+$platformAssetManifest = Join-Path $expectedPrefix "revivalside-platform-manifest.json"
+$androidClientContract = Join-Path $expectedPrefix "revivalside-android-client-contract.json"
+$androidLuaCacheAssetZip = Join-Path $expectedPrefix "revivalside-android-lua-cache.zip"
 $gameplayTablesAssetZip = Join-Path $expectedPrefix "revivalside-gameplay-tables.zip"
 $gameplayTablesAssetManifest = Join-Path $expectedPrefix "revivalside-gameplay-tables-manifest.json"
 $legacyClientAssetRoot = Join-Path $expectedPrefix "revivalside-client-assets"
 $scriptBundle = ""
 $androidPatchInfoPath = ""
-$includeManagedCombatHostAssets = $IncludeSteamManagedCombatHost -or [bool]$PayloadZip
-$includeAndroidDotnetRuntimeAssets = $IncludeAndroidDotnetRuntime -or [bool]$PayloadZip
-$includeGameplayTablesAssets = $IncludeGameplayTables -or [bool]$PayloadZip
+$hasPayload = $PayloadZip.Count -gt 0
+$includeManagedCombatHostAssets = $IncludeSteamManagedCombatHost -or $hasPayload
+$includeAndroidDotnetRuntimeAssets = $IncludeAndroidDotnetRuntime -or $hasPayload
+$includeGameplayTablesAssets = $IncludeGameplayTables -or $hasPayload
 $androidCombatRuntimes = @(
   [pscustomobject]@{ Rid = "android-arm64"; Abi = "arm64-v8a"; Clang = "aarch64-linux-android26-clang.cmd"; HostLibrary = "libhostfxr.so" },
   [pscustomobject]@{ Rid = "android-arm"; Abi = "armeabi-v7a"; Clang = "armv7a-linux-androideabi26-clang.cmd"; HostLibrary = "libmonosgen-2.0.so" }
@@ -39,49 +49,60 @@ if (-not $assetRootFull.StartsWith($expectedPrefix, [System.StringComparison]::O
   throw "Refusing to write outside Android assets: $assetRootFull"
 }
 
-function Write-AndroidPayloadArchive([string]$SourcePath, [string]$DestinationPath) {
+function Write-AndroidPayloadArchive([string[]]$SourcePaths, [string]$DestinationPath) {
   Add-Type -AssemblyName System.IO.Compression
   Add-Type -AssemblyName System.IO.Compression.FileSystem
-  $source = [System.IO.Compression.ZipFile]::OpenRead($SourcePath)
   $destinationStream = [System.IO.File]::Open($DestinationPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
   $copied = 0
+  $entryNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
   try {
     $destination = New-Object System.IO.Compression.ZipArchive($destinationStream, [System.IO.Compression.ZipArchiveMode]::Create)
     try {
-      foreach ($entry in $source.Entries) {
-        if ([string]::IsNullOrEmpty($entry.Name) -or
-            -not $entry.FullName.StartsWith("payload/app/", [System.StringComparison]::OrdinalIgnoreCase) -or
-            $entry.FullName.Equals("payload/app/.env", [System.StringComparison]::OrdinalIgnoreCase)) {
-          continue
-        }
-        $outputEntry = $destination.CreateEntry($entry.FullName, [System.IO.Compression.CompressionLevel]::Optimal)
-        $outputEntry.LastWriteTime = $entry.LastWriteTime
-        $input = $entry.Open()
+      foreach ($sourcePath in $SourcePaths) {
+        $source = [System.IO.Compression.ZipFile]::OpenRead($sourcePath)
         try {
-          $output = $outputEntry.Open()
-          try { $input.CopyTo($output) } finally { $output.Dispose() }
+          foreach ($entry in $source.Entries) {
+            if ([string]::IsNullOrEmpty($entry.Name) -or
+                -not $entry.FullName.StartsWith("payload/app/", [System.StringComparison]::OrdinalIgnoreCase) -or
+                $entry.FullName.Equals("payload/app/.env", [System.StringComparison]::OrdinalIgnoreCase)) {
+              continue
+            }
+            if (-not $entryNames.Add($entry.FullName)) {
+              throw "Duplicate Android payload entry $($entry.FullName) in $sourcePath"
+            }
+            $outputEntry = $destination.CreateEntry($entry.FullName, [System.IO.Compression.CompressionLevel]::Optimal)
+            $outputEntry.LastWriteTime = $entry.LastWriteTime
+            $input = $entry.Open()
+            try {
+              $output = $outputEntry.Open()
+              try { $input.CopyTo($output) } finally { $output.Dispose() }
+            } finally {
+              $input.Dispose()
+            }
+            $copied += 1
+          }
         } finally {
-          $input.Dispose()
+          $source.Dispose()
         }
-        $copied += 1
       }
     } finally {
       $destination.Dispose()
     }
   } finally {
     $destinationStream.Dispose()
-    $source.Dispose()
   }
   if ($copied -eq 0) {
-    throw "Payload archive does not contain payload/app files: $SourcePath"
+    throw "Payload archives do not contain payload/app files: $($SourcePaths -join ', ')"
   }
   return $copied
 }
 
 Remove-Item -LiteralPath $payloadAssetZip -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $payloadAssetManifest -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $platformAssetManifest -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $gameplayTablesAssetZip -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $gameplayTablesAssetManifest -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $androidLuaCacheAssetZip -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $legacyClientAssetRoot -Recurse -Force -ErrorAction SilentlyContinue
 if ($AndroidScriptBundle -or $AndroidPatchInfo) {
   if (-not $AndroidScriptBundle -or -not $AndroidPatchInfo) {
@@ -94,44 +115,122 @@ if ($AndroidScriptBundle -or $AndroidPatchInfo) {
   }
 }
 
-if ($PayloadZip) {
-  $payloadZipPath = (Resolve-Path -LiteralPath $PayloadZip).Path
-  $manifestSource = $PayloadManifest
-  if (-not $manifestSource) {
-    $candidate = Join-Path (Split-Path -Parent $payloadZipPath) "RevivalSidePayloadManifest.json"
-    if (Test-Path -LiteralPath $candidate) {
-      $manifestSource = $candidate
-    }
-  }
-  $sourceManifest = if ($manifestSource) { Get-Content -LiteralPath (Resolve-Path -LiteralPath $manifestSource).Path -Raw | ConvertFrom-Json } else { $null }
-  $copiedPayloadFiles = Write-AndroidPayloadArchive $payloadZipPath $payloadAssetZip
-  $payloadHash = (Get-FileHash -LiteralPath $payloadAssetZip -Algorithm SHA256).Hash.ToLowerInvariant()
-  $payloadSize = (Get-Item -LiteralPath $payloadAssetZip).Length
-  $payloadId = if ($sourceManifest -and $sourceManifest.payloadId) { "$($sourceManifest.payloadId)-android" } else { "revivalside-android-$($payloadHash.Substring(0, 12))" }
-  [ordered]@{
-    schemaVersion = 1
-    payloadId = $payloadId
-    archiveName = "revivalside-payload.zip"
-    archiveSize = $payloadSize
-    archiveSha256 = $payloadHash
-  } | ConvertTo-Json | Set-Content -LiteralPath $payloadAssetManifest -Encoding UTF8
-  Write-Host "Android-only payload archive staged at $payloadAssetZip ($copiedPayloadFiles files, $payloadSize bytes)."
+if (-not $hasPayload) {
+  throw "Android builds require the PC release core and game-data component archives via -PayloadZip, plus -PayloadManifest."
 }
+
+if (-not $PayloadManifest) {
+  throw "PayloadManifest is required so Android cannot ship with a listener version different from the PC release."
+}
+
+if (-not $AndroidClientPayloadManifest -or -not $AndroidClientCdnBaseUrl) {
+  throw "AndroidClientPayloadManifest and AndroidClientCdnBaseUrl are required so the patched client and hosted assets stay version-aligned."
+}
+if (-not $AndroidLuaCacheZip -or -not $AndroidLuaCacheManifest) {
+  throw "AndroidLuaCacheZip and AndroidLuaCacheManifest are required to avoid repeated Lua bundle loads during initialization."
+}
+$androidLuaCacheZipPath = (Resolve-Path -LiteralPath $AndroidLuaCacheZip).Path
+$androidLuaCacheManifestPath = (Resolve-Path -LiteralPath $AndroidLuaCacheManifest).Path
+$androidLuaCache = Get-Content -LiteralPath $androidLuaCacheManifestPath -Raw | ConvertFrom-Json
+if ($androidLuaCache.schemaVersion -ne 1 -or
+    $androidLuaCache.version -notmatch '^ExtraAsset_\d+$' -or
+    @($androidLuaCache.files).Count -eq 0 -or
+    "counter-pass-always-unlocked" -notin @($androidLuaCache.clientParityPatches) -or
+    "operator-contract-category" -notin @($androidLuaCache.clientParityPatches)) {
+  throw "Android Lua cache manifest is missing its compatibility contract: $androidLuaCacheManifestPath"
+}
+$clientPayloadManifestPath = (Resolve-Path -LiteralPath $AndroidClientPayloadManifest).Path
+$clientPayloadManifest = Get-Content -LiteralPath $clientPayloadManifestPath -Raw | ConvertFrom-Json
+if ($clientPayloadManifest.schemaVersion -ne 1 -or
+    -not $clientPayloadManifest.id -or
+    -not $clientPayloadManifest.packageName -or
+    -not $clientPayloadManifest.versionName -or
+    -not $clientPayloadManifest.versionCode -or
+    -not $clientPayloadManifest.patchVersion -or
+    [long]$clientPayloadManifest.fileCount -le 0 -or
+    [long]$clientPayloadManifest.totalBytes -le 0) {
+  throw "Android client payload manifest is missing its compatibility contract: $clientPayloadManifestPath"
+}
+$clientCdn = $AndroidClientCdnBaseUrl.TrimEnd('/') + '/'
+if ($clientCdn -notmatch '^https?://') { throw "AndroidClientCdnBaseUrl must be an HTTP(S) URL." }
+$clientCdnUri = [Uri]$clientCdn
+if ($clientCdnUri.IsLoopback -and $clientCdnUri.Port -ne 8088 -and -not $AllowAdbLoopbackCdn) {
+  throw "Loopback AndroidClientCdnBaseUrl must use the embedded listener on port 8088, not $($clientCdnUri.Port)."
+}
+if (-not $AndroidClientPayloadManifestUrl) {
+  $clientRootPath = $clientCdnUri.AbsolutePath -replace '/(?:android-)?patchfiles/?$', '/'
+  $AndroidClientPayloadManifestUrl = ([Uri]::new($clientCdnUri, $clientRootPath + 'android-client/payload-manifest.json')).AbsoluteUri
+}
+$officialServerInfoBase = "https://ctsglobal-cdndown.sbside.com/server_config/live/"
+$patchedServerInfoBase = "http://127.0.0.1:8088/revivalsideapk/server_config/live/"
+if ($officialServerInfoBase.Length -ne $patchedServerInfoBase.Length) { throw "Android client endpoint patch is not fixed-width." }
+$clientContractValue = [ordered]@{
+  schemaVersion = 1
+  packageName = "$($clientPayloadManifest.packageName)"
+  versionName = "$($clientPayloadManifest.versionName)"
+  versionCode = [long]$clientPayloadManifest.versionCode
+  patchVersion = "$($clientPayloadManifest.patchVersion)"
+  localHttpPort = 8088
+  metadataEntry = "assets/bin/Data/Managed/Metadata/global-metadata.dat"
+  originalServerInfoBaseUrl = $officialServerInfoBase
+  patchedServerInfoBaseUrl = $patchedServerInfoBase
+  assetCdnBaseUrl = $clientCdn
+  payloadManifestUrl = $AndroidClientPayloadManifestUrl
+  payloadManifestSha256 = (Get-FileHash -LiteralPath $clientPayloadManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  payloadId = "$($clientPayloadManifest.id)"
+  payloadFileCount = [long]$clientPayloadManifest.fileCount
+  payloadTotalBytes = [long]$clientPayloadManifest.totalBytes
+}
+$clientContractJson = $clientContractValue | ConvertTo-Json
+[System.IO.File]::WriteAllText($androidClientContract, $clientContractJson + "`n", [System.Text.UTF8Encoding]::new($false))
+Write-Host "Android client contract staged for $($clientContractValue.versionName) / $($clientContractValue.patchVersion) at $clientCdn"
+
+$payloadZipPaths = @($PayloadZip | ForEach-Object { (Resolve-Path -LiteralPath $_).Path })
+$manifestPath = (Resolve-Path -LiteralPath $PayloadManifest).Path
+$sourceManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+$packageVersion = (Get-Content -LiteralPath (Join-Path $repoRoot "package.json") -Raw | ConvertFrom-Json).version
+if ($sourceManifest.releaseTag -ne "v$packageVersion" -or $sourceManifest.payloadId -ne "revivalside-v$packageVersion") {
+  throw "PC payload version mismatch: package=$packageVersion releaseTag=$($sourceManifest.releaseTag) payloadId=$($sourceManifest.payloadId)"
+}
+$manifestComponents = @($sourceManifest.components.PSObject.Properties.Value | ForEach-Object { $_ })
+foreach ($payloadZipPath in $payloadZipPaths) {
+  $component = $manifestComponents | Where-Object name -eq (Split-Path -Leaf $payloadZipPath) | Select-Object -First 1
+  if (-not $component) { throw "Payload archive is not listed in ${manifestPath}: $payloadZipPath" }
+  $actualHash = (Get-FileHash -LiteralPath $payloadZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($actualHash -ne "$($component.sha256)".ToLowerInvariant()) {
+    throw "PC component hash mismatch for $payloadZipPath"
+  }
+}
+
+$selectedComponentIds = @($payloadZipPaths | ForEach-Object {
+  $name = Split-Path -Leaf $_
+  ($manifestComponents | Where-Object name -eq $name | Select-Object -First 1).id
+})
+foreach ($componentId in @("core", "game-data")) {
+  if ($componentId -notin $selectedComponentIds) {
+    throw "Android payload requires the exact PC $componentId component from $manifestPath"
+  }
+}
+
+$copiedPayloadFiles = Write-AndroidPayloadArchive $payloadZipPaths $payloadAssetZip
+$payloadHash = (Get-FileHash -LiteralPath $payloadAssetZip -Algorithm SHA256).Hash.ToLowerInvariant()
+$payloadSize = (Get-Item -LiteralPath $payloadAssetZip).Length
+$payloadId = "$($sourceManifest.payloadId)-android"
+[ordered]@{
+  schemaVersion = 1
+  payloadId = $payloadId
+  sourcePayloadId = "$($sourceManifest.payloadId)"
+  releaseTag = "$($sourceManifest.releaseTag)"
+  archiveName = "revivalside-payload.zip"
+  archiveSize = $payloadSize
+  archiveSha256 = $payloadHash
+} | ConvertTo-Json | Set-Content -LiteralPath $payloadAssetManifest -Encoding UTF8
+Write-Host "Android payload staged from the exact PC core + game-data components at $payloadAssetZip ($copiedPayloadFiles files, $payloadSize bytes)."
 
 if (Test-Path -LiteralPath $assetRootFull) {
   Remove-Item -LiteralPath $assetRootFull -Recurse -Force
 }
 New-Item -ItemType Directory -Path $assetRootFull -Force | Out-Null
-
-function Copy-FileIntoAssets([string]$RelativePath) {
-  $source = Join-Path $repoRoot $RelativePath
-  if (-not (Test-Path -LiteralPath $source)) {
-    throw "Missing required listener file: $source"
-  }
-  $destination = Join-Path $assetRootFull $RelativePath
-  New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
-  Copy-Item -LiteralPath $source -Destination $destination -Force
-}
 
 function Get-RepoRelativePath([string]$FullName) {
   $full = [System.IO.Path]::GetFullPath($FullName)
@@ -143,67 +242,6 @@ function Get-RepoRelativePath([string]$FullName) {
     throw "Path is outside repo root: $full"
   }
   return $full.Substring($root.Length)
-}
-
-function Should-SkipPath([System.IO.FileSystemInfo]$Item) {
-  $relative = (Get-RepoRelativePath $Item.FullName).Replace('\', '/')
-  if ($relative -match '(^|/)node_modules($|/)') { return $true }
-  if ($relative -match '(^|/)logs($|/)') { return $true }
-  if ($relative -match '(^|/)captures($|/)') { return $true }
-  if ($relative -match '(^|/)exports($|/)') { return $true }
-  if ($relative -match '(^|/)users\.json$') { return $true }
-  if ($relative -match '(^|/)users-[0-9].*\.json$') { return $true }
-  if ($relative -match '(^|/)server-time\.json$') { return $true }
-  if ($relative -match '(^|/)combat-host/bin/host-cache($|/)') { return $true }
-  if ($relative -match '(^|/)combat-host/bin/Debug($|/)') { return $true }
-  if ($relative -match '(^|/)combat-host/bin/Release/net8\.0/(android|linux|osx|win)-[^/]+($|/)') { return $true }
-  if ($relative -match '(^|/)combat-host/obj($|/)') { return $true }
-  if ($relative -match '(^|/)patched-managed($|/)') { return $true }
-  return $false
-}
-
-function Copy-DirectoryIntoAssets([string]$RelativePath) {
-  $sourceRoot = Join-Path $repoRoot $RelativePath
-  if (-not (Test-Path -LiteralPath $sourceRoot)) {
-    throw "Missing required listener directory: $sourceRoot"
-  }
-  Get-ChildItem -LiteralPath $sourceRoot -Recurse -Force | ForEach-Object {
-    if (-not (Should-SkipPath $_)) {
-      $relative = Get-RepoRelativePath $_.FullName
-      $destination = Join-Path $assetRootFull $relative
-      if ($_.PSIsContainer) {
-        New-Item -ItemType Directory -Path $destination -Force | Out-Null
-      } else {
-        New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
-        Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
-      }
-    }
-  }
-}
-
-function Copy-ServerDataIntoAssets {
-  $serverDataFiles = @(
-    ".gitkeep",
-    "README.md",
-    "dungeons.json",
-    "items.json",
-    "starter-users.json",
-    "table_catalog.json",
-    "units.json",
-    "warfare.json",
-    "new-account-defaults.json"
-  )
-  foreach ($fileName in $serverDataFiles) {
-    $relative = Join-Path "server-data" $fileName
-    $source = Join-Path $repoRoot $relative
-    if (Test-Path -LiteralPath $source) {
-      Copy-FileIntoAssets $relative
-    }
-  }
-
-  if ($IncludeLargeServerData) {
-    Copy-FileIntoAssets "server-data\strings.json"
-  }
 }
 
 function Resolve-CounterSideManagedDir {
@@ -333,17 +371,26 @@ function Copy-AndroidDotnetRuntime {
     $copied = 0
     $copiedNative = 0
     $bytes = 0L
+    $nativeLibraries = [System.Collections.Generic.List[string]]::new()
     Get-ChildItem -LiteralPath $runtimeSource -File -Force | Where-Object {
       $_.Extension -notin @(".a", ".pdb")
     } | ForEach-Object {
-      Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $runtimeDestination $_.Name) -Force
-      $copied += 1
-      $bytes += $_.Length
       if ($_.Extension -ieq ".so") {
         Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $nativeRuntimeDestination $_.Name) -Force
+        $nativeLibraries.Add($_.Name)
         $copiedNative += 1
+      } else {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $runtimeDestination $_.Name) -Force
+        $copied += 1
+        $bytes += $_.Length
       }
     }
+    $nativeManifest = Join-Path $runtimeDestination "native-libraries.txt"
+    [System.IO.File]::WriteAllText(
+      $nativeManifest,
+      ((@($nativeLibraries | Sort-Object) -join "`n") + "`n"),
+      [System.Text.UTF8Encoding]::new($false)
+    )
 
     Write-Host "$($runtime.Rid) dotnet combat runtime staged from $runtimeSource ($copied files, $bytes bytes)."
     Write-Host "$($runtime.Abi) dotnet native libraries staged at $nativeRuntimeDestination ($copiedNative shared libraries)."
@@ -394,7 +441,7 @@ function Ensure-AndroidLuaLibraries {
     foreach ($runtime in $missing) {
       $destination = Join-Path $kmpRoot "app\src\main\jniLibs\$($runtime.Abi)\liblua54.so"
       New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
-      & (Join-Path $clangRoot $runtime.Clang) -fPIC -O2 -shared -DLUA_USE_LINUX '-Wl,-soname,liblua54.so' -o $destination @luaSources -lm -ldl
+      & (Join-Path $clangRoot $runtime.Clang) -fPIC -O2 -shared -DLUA_USE_LINUX '-Wl,-soname,liblua54.so' '-Wl,-z,max-page-size=16384' '-Wl,-z,common-page-size=16384' -o $destination @luaSources -lm -ldl
       if ($LASTEXITCODE -ne 0) { throw "Lua 5.4.4 build for $($runtime.Abi) failed with exit code $LASTEXITCODE" }
     }
   }
@@ -446,6 +493,31 @@ function Write-GameplayTablesArchive {
     }
   }
 
+  $contentsVersion = ""
+  foreach ($relativeVersionPath in @(
+    "Assetbundles\ab_script\luac\LUA_CONTENTS_VERSION.luac",
+    "StreamingAssets\ab_script\luac\LUA_CONTENTS_VERSION.luac"
+  )) {
+    $versionPath = Join-Path $sourceRoot $relativeVersionPath
+    if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) { continue }
+    $versionBytes = [System.IO.File]::ReadAllBytes($versionPath)
+    $versionText = [System.Text.Encoding]::GetEncoding(28591).GetString($versionBytes)
+    $markerOffset = $versionText.IndexOf("ContentsVersion", [System.StringComparison]::Ordinal)
+    if ($markerOffset -lt 0) { continue }
+    $windowLength = [Math]::Min(128, $versionText.Length - $markerOffset)
+    $versionMatch = [regex]::Match(
+      $versionText.Substring($markerOffset, $windowLength),
+      '\b\d{1,4}\.\d{1,4}\.[A-Za-z0-9_-]{1,16}\b'
+    )
+    if ($versionMatch.Success) {
+      $contentsVersion = $versionMatch.Value
+      break
+    }
+  }
+  if (-not $contentsVersion) {
+    throw "gameplay-tables does not contain a readable LUA_CONTENTS_VERSION.luac"
+  }
+
   Add-Type -AssemblyName System.IO.Compression
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   $zipStream = [System.IO.File]::Open($gameplayTablesAssetZip, [System.IO.FileMode]::Create, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
@@ -472,55 +544,109 @@ function Write-GameplayTablesArchive {
   $sha256 = (Get-FileHash -LiteralPath $gameplayTablesAssetZip -Algorithm SHA256).Hash.ToLowerInvariant()
   $manifest = [ordered]@{
     payloadId = "revivalside-gameplay-tables"
+    contentsVersion = $contentsVersion
     archiveSha256 = $sha256
     files = $copied
     uncompressedBytes = $bytes
     requiredFile = "gameplay-tables/StreamingAssets/ab_script/luac/LUA_STAGE_TEMPLET.luac"
   } | ConvertTo-Json
   Set-Content -LiteralPath $gameplayTablesAssetManifest -Value ($manifest + "`n") -Encoding UTF8
-  Write-Host "Android gameplay table bytecode archive staged at $gameplayTablesAssetZip ($copied files, $bytes bytes, sha256=$sha256)."
+  Write-Host "Android gameplay table bytecode archive staged at $gameplayTablesAssetZip ($copied files, $bytes bytes, contents=$contentsVersion, sha256=$sha256)."
 }
 
-Copy-FileIntoAssets "cs-listener.js"
-Copy-FileIntoAssets "package.json"
-Copy-FileIntoAssets "packet-schema.json"
-Copy-DirectoryIntoAssets "server"
-Copy-DirectoryIntoAssets "modules"
-Copy-DirectoryIntoAssets "packet-handlers"
-Copy-DirectoryIntoAssets "combat-handler"
-Copy-DirectoryIntoAssets "combat-host"
-Copy-DirectoryIntoAssets "stages"
-Copy-ServerDataIntoAssets
+function Copy-CombatHostSourceIntoAssets {
+  $sourceRoot = Join-Path $repoRoot "combat-host"
+  $destinationRoot = Join-Path $assetRootFull "combat-host"
+  New-Item -ItemType Directory -Path $destinationRoot -Force | Out-Null
+  Get-ChildItem -LiteralPath $sourceRoot -File | Where-Object {
+    $_.Extension -ieq ".cs" -or $_.Extension -ieq ".csproj"
+  } | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $destinationRoot $_.Name) -Force
+  }
+}
+
+function Deduplicate-AndroidDotnetRuntimeAssets {
+  $arm = Join-Path $assetRootFull "combat-runtime\android-arm"
+  $arm64 = Join-Path $assetRootFull "combat-runtime\android-arm64"
+  $common = Join-Path $assetRootFull "combat-runtime\common"
+  New-Item -ItemType Directory -Path $common -Force | Out-Null
+  $deduplicated = 0
+  $bytes = 0L
+  Get-ChildItem -LiteralPath $arm64 -File -Force | ForEach-Object {
+    $other = Join-Path $arm $_.Name
+    if ((Test-Path -LiteralPath $other -PathType Leaf) -and
+        (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash -eq
+        (Get-FileHash -LiteralPath $other -Algorithm SHA256).Hash) {
+      Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $common $_.Name) -Force
+      Remove-Item -LiteralPath $_.FullName -Force
+      Remove-Item -LiteralPath $other -Force
+      $deduplicated += 1
+      $bytes += $_.Length
+    }
+  }
+  Write-Host "Shared Android dotnet runtime files deduplicated ($deduplicated files, $bytes bytes saved from the APK)."
+}
+
+function Write-PlatformManifest {
+  $records = Get-ChildItem -LiteralPath $assetRootFull -Recurse -File | Sort-Object FullName | ForEach-Object {
+    $relative = $_.FullName.Substring($assetRootFull.Length).TrimStart('\', '/').Replace('\', '/')
+    "$relative|$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())"
+  }
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes(($records -join "`n"))
+  $treeHash = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace("-", "").ToLowerInvariant()
+  [ordered]@{
+    schemaVersion = 1
+    platformId = "revivalside-android-platform-$($treeHash.Substring(0, 12))"
+    treeSha256 = $treeHash
+    requiredFile = "combat-managed/Data/Managed/Assembly-CSharp.dll"
+  } | ConvertTo-Json | Set-Content -LiteralPath $platformAssetManifest -Encoding UTF8
+  Write-Host "Android-only platform assets staged with tree sha256=$treeHash."
+}
+
+if ($IncludeGameplayJsons -or $IncludeLargeServerData) {
+  throw "Gameplay JSON and server-data diagnostics must be added to the shared PC payload; Android no longer accepts a second listener overlay."
+}
+
+Copy-CombatHostSourceIntoAssets
 if ($scriptBundle) {
   $clientAssetRoot = Join-Path $assetRootFull "server-data\android-client-update"
   New-Item -ItemType Directory -Path $clientAssetRoot -Force | Out-Null
   Copy-Item -LiteralPath $scriptBundle -Destination (Join-Path $clientAssetRoot "ab_script") -Force
   Copy-Item -LiteralPath $androidPatchInfoPath -Destination (Join-Path $clientAssetRoot "LatestPatchInfo.json") -Force
+  $tutorialResourcesPath = Join-Path (Split-Path -Parent $androidPatchInfoPath) "tutorialDungeonResources.json"
+  if (Test-Path -LiteralPath $tutorialResourcesPath -PathType Leaf) {
+    Copy-Item -LiteralPath $tutorialResourcesPath -Destination (Join-Path $clientAssetRoot "tutorialDungeonResources.json") -Force
+  }
+  $expectedLuaCacheVersion = "$($clientPayloadManifest.patchVersion)" -replace '^ANDROID_', 'ExtraAsset_'
+  if ($androidLuaCache.version -ne $expectedLuaCacheVersion) {
+    throw "Android Lua cache version mismatch: expected=$expectedLuaCacheVersion actual=$($androidLuaCache.version)"
+  }
+  Write-Host "Android Lua cache parity validated; the complete imported/external payload serves it without duplicating 285+ MB in the APK."
   Write-Host "CounterSide Android asset-manager update staged at $clientAssetRoot."
 }
-Copy-DirectoryIntoAssets "server-data\captured-tcp"
 Copy-SteamManagedCombatHost
 Ensure-AndroidLuaLibraries
 Copy-AndroidDotnetRuntime
+Deduplicate-AndroidDotnetRuntimeAssets
 Write-GameplayTablesArchive
 
-if ($PayloadZip) {
-  foreach ($requiredPath in @("combat-managed\Data\Managed\Assembly-CSharp.dll") + @($androidCombatRuntimes | ForEach-Object {
-    "combat-runtime\$($_.Rid)\CombatHost.dll"
-    "combat-runtime\$($_.Rid)\$($_.HostLibrary)"
-  })) {
-    if (-not (Test-Path -LiteralPath (Join-Path $assetRootFull $requiredPath) -PathType Leaf)) {
-      throw "Standalone Android payload is missing required managed combat asset: $requiredPath"
-    }
-  }
-  if (-not (Test-Path -LiteralPath $gameplayTablesAssetZip -PathType Leaf)) {
-    throw "Standalone Android payload is missing required managed combat asset: revivalside-gameplay-tables.zip"
+foreach ($requiredPath in @("combat-managed\Data\Managed\Assembly-CSharp.dll", "combat-host\CombatHost.csproj") + @($androidCombatRuntimes | ForEach-Object {
+  "combat-runtime\$($_.Rid)\CombatHost.dll"
+  "combat-runtime\$($_.Rid)\native-libraries.txt"
+})) {
+  if (-not (Test-Path -LiteralPath (Join-Path $assetRootFull $requiredPath) -PathType Leaf)) {
+    throw "Standalone Android payload is missing required platform asset: $requiredPath"
   }
 }
-
-if ($IncludeGameplayJsons) {
-  Copy-DirectoryIntoAssets "gameplay-jsons"
+foreach ($runtime in $androidCombatRuntimes) {
+  $nativeHost = Join-Path $kmpRoot "app\src\main\jniLibs\$($runtime.Abi)\$($runtime.HostLibrary)"
+  if (-not (Test-Path -LiteralPath $nativeHost -PathType Leaf)) {
+    throw "Standalone Android payload is missing required native combat host: $nativeHost"
+  }
 }
+if (-not (Test-Path -LiteralPath $gameplayTablesAssetZip -PathType Leaf)) {
+  throw "Standalone Android payload is missing required gameplay asset: revivalside-gameplay-tables.zip"
+}
+Write-PlatformManifest
 
-Write-Host "Android listener assets staged at $assetRootFull"
-Write-Host "Use -PayloadZip for the full standalone release payload with managed combat, -IncludeGameplayTables for combat tables, or -IncludeGameplayJsons / -IncludeLargeServerData only for oversized diagnostic APKs."
+Write-Host "Android platform assets staged at $assetRootFull"

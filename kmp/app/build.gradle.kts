@@ -16,13 +16,14 @@ kotlin {
 android {
     namespace = "dev.revivalside.officialprofilecapture"
     compileSdk = 36
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "dev.revivalside.officialprofilecapture"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.3.5a"
+        versionCode = 3
+        versionName = "0.4.0"
 
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a")
@@ -33,6 +34,22 @@ android {
                 arguments += "-DANDROID_STL=c++_shared"
             }
         }
+    }
+
+    val releaseKeystore = providers.environmentVariable("REVIVALSIDE_ANDROID_KEYSTORE").orNull
+    val releaseKeyAlias = providers.environmentVariable("REVIVALSIDE_ANDROID_KEY_ALIAS").orNull
+    val releaseStorePassword = providers.environmentVariable("REVIVALSIDE_ANDROID_KEYSTORE_PASSWORD").orNull
+    val releaseKeyPassword = providers.environmentVariable("REVIVALSIDE_ANDROID_KEY_PASSWORD").orNull
+    if (listOf(releaseKeystore, releaseKeyAlias, releaseStorePassword, releaseKeyPassword).all { !it.isNullOrBlank() }) {
+        signingConfigs {
+            create("release") {
+                storeFile = file(releaseKeystore!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+        buildTypes.getByName("release").signingConfig = signingConfigs.getByName("release")
     }
 
     compileOptions {

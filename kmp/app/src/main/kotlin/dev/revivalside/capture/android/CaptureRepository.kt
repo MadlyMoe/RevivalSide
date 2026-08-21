@@ -3,6 +3,7 @@ package dev.revivalside.capture.android
 import android.content.Context
 import dev.revivalside.capture.protocol.CapturedCounterSideFrame
 import dev.revivalside.capture.protocol.toLowerHex
+import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
 import java.time.Instant
@@ -93,6 +94,78 @@ internal object CaptureRepository {
         val path = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_LATEST_EXPORT, "") ?: ""
         val file = File(path)
         return file.takeIf { path.isNotBlank() && it.isFile }
+    }
+
+    @Synchronized
+    fun prepareCapturedGameFlow(context: Context, runtimeRoot: File): PreparedCapturedGameFlow {
+        val sourceDir = File(runtimeRoot, "server-data/captured-game-flow")
+        val sourceManifestFile = File(sourceDir, "manifest.json")
+        if (!sourceManifestFile.isFile) {
+            throw IllegalStateException("The shared PC payload is missing server-data/captured-game-flow/manifest.json.")
+        }
+
+        val targetDir = File(RevivalSideSettingsStore.serverDataDir(context), "captured-game-flow")
+        val capturedAck = readJoinLobbyAck(targetDir)
+        sourceDir.copyRecursively(targetDir, overwrite = true)
+
+        if (capturedAck == null) return PreparedCapturedGameFlow(targetDir, false)
+
+        val manifest = JSONObject(sourceManifestFile.readText(Charsets.UTF_8))
+        val server = manifest.getJSONArray("server")
+        val canonicalAck = (0 until server.length())
+            .mapNotNull(server::optJSONObject)
+            .firstOrNull { it.optInt("packetId") == JOIN_LOBBY_ACK }
+            ?: throw IllegalStateException("The shared PC captured flow has no JOIN_LOBBY_ACK template.")
+        val payloadFile = safeZipDestination(targetDir, canonicalAck.getString("payloadFile"))
+            ?: throw IllegalStateException("The shared PC JOIN_LOBBY_ACK payload path is invalid.")
+        val rawFile = safeZipDestination(targetDir, canonicalAck.getString("rawFile"))
+            ?: throw IllegalStateException("The shared PC JOIN_LOBBY_ACK packet path is invalid.")
+        payloadFile.writeBytes(capturedAck.payload)
+        rawFile.writeBytes(capturedAck.raw)
+        for (key in listOf("compressed", "payloadSize", "totalLength", "sourcePcap", "stream", "frame", "time", "sha256")) {
+            if (capturedAck.entry.has(key)) canonicalAck.put(key, capturedAck.entry.get(key))
+        }
+        manifest.put("androidJoinLobbyAckOverlay", true)
+        File(targetDir, "manifest.json").writeText(manifest.toString(2) + "\n", Charsets.UTF_8)
+        return PreparedCapturedGameFlow(targetDir, true)
+    }
+
+    @Synchronized
+    fun saveDiagnostics(context: Context): File {
+        val exportDir = File(context.filesDir, "exports").apply { mkdirs() }
+        val zipFile = File(exportDir, "revivalside-save-and-logs-${stampFormat.format(Instant.now())}.zip")
+        val appRoot = RevivalSideSettingsStore.appRoot(context)
+        val candidates = listOf(
+            "server-data/users.json",
+            "server-data/users.sqlite",
+            "server-data/active-user.json",
+            "server-data/server-time.json",
+            "logs/android-listener.log",
+            "logs/node-listener.log",
+        )
+        ZipOutputStream(zipFile.outputStream().buffered()).use { zip ->
+            zip.putNextEntry(ZipEntry("manifest.json"))
+            zip.write(
+                """{"schemaVersion":1,"createdAt":"${Instant.now()}","package":"${context.packageName}"}
+                """.trimIndent().toByteArray(Charsets.UTF_8),
+            )
+            zip.closeEntry()
+            for (relative in candidates) {
+                val file = File(appRoot, relative)
+                if (!file.isFile) continue
+                zip.putNextEntry(ZipEntry(relative))
+                file.inputStream().buffered().use { it.copyTo(zip) }
+                zip.closeEntry()
+            }
+            zip.putNextEntry(ZipEntry("revivalside-android-client-contract.json"))
+            context.assets.open("revivalside-android-client-contract.json").use { it.copyTo(zip) }
+            zip.closeEntry()
+        }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_LATEST_EXPORT, zipFile.absolutePath)
+            .apply()
+        return zipFile
     }
 
     @Synchronized
@@ -193,7 +266,35 @@ internal object CaptureRepository {
     private const val JOIN_LOBBY_ACK = 205
     private const val GAMEBASE_LOGIN_ACK = 230
     private const val CONTENTS_VERSION_ACK = 217
+
+    private fun readJoinLobbyAck(flowDir: File): CapturedJoinLobbyAck? {
+        val manifestFile = File(flowDir, "manifest.json")
+        if (!manifestFile.isFile) return null
+        return runCatching {
+            val manifest = JSONObject(manifestFile.readText(Charsets.UTF_8))
+            val server = manifest.optJSONArray("server") ?: return@runCatching null
+            val entry = (0 until server.length())
+                .mapNotNull(server::optJSONObject)
+                .firstOrNull { it.optInt("packetId") == JOIN_LOBBY_ACK }
+                ?: return@runCatching null
+            val payloadFile = safeZipDestination(flowDir, entry.getString("payloadFile")) ?: return@runCatching null
+            val rawFile = safeZipDestination(flowDir, entry.getString("rawFile")) ?: return@runCatching null
+            if (!payloadFile.isFile || !rawFile.isFile) return@runCatching null
+            CapturedJoinLobbyAck(entry, payloadFile.readBytes(), rawFile.readBytes())
+        }.getOrNull()
+    }
 }
+
+internal data class PreparedCapturedGameFlow(
+    val directory: File,
+    val overlaidCapturedAck: Boolean,
+)
+
+private data class CapturedJoinLobbyAck(
+    val entry: JSONObject,
+    val payload: ByteArray,
+    val raw: ByteArray,
+)
 
 internal data class ExtractedJoinLobbyAck(
     val exportFile: File,
