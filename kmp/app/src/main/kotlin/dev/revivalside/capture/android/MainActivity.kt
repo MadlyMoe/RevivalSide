@@ -1,6 +1,7 @@
 package dev.revivalside.capture.android
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -15,6 +16,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -23,6 +25,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.Space
 import android.widget.TextView
@@ -35,7 +38,10 @@ class MainActivity : Activity() {
     private lateinit var packageInput: EditText
     private lateinit var gamePortInput: EditText
     private lateinit var httpPortInput: EditText
+    private lateinit var assetCdnInput: EditText
     private lateinit var redirectPortsInput: EditText
+    private lateinit var eventDateInput: EditText
+    private lateinit var loginBackgroundInput: EditText
     private lateinit var joinLobbyAckInput: EditText
     private lateinit var nodePathInput: EditText
     private lateinit var dotnetPathInput: EditText
@@ -48,6 +54,9 @@ class MainActivity : Activity() {
     private lateinit var captureButton: Button
     private lateinit var extractButton: Button
     private lateinit var userManagerOpenButton: Button
+    private lateinit var payloadImportButton: Button
+    private lateinit var payloadStatusText: TextView
+    private lateinit var payloadProgress: ProgressBar
     private val timeFormat = DateTimeFormatter.ofPattern("HH:mm:ss")
     private val handler = Handler(Looper.getMainLooper())
     private var pendingVpnMode = CounterSideVpnService.MODE_CAPTURE
@@ -56,6 +65,7 @@ class MainActivity : Activity() {
     private var listenerReadyForLaunch = false
     private var vpnReadyForLaunch = false
     private var startFlowToken = 0
+    private var listenerProgressAtMs = 0L
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -72,8 +82,12 @@ class MainActivity : Activity() {
                     }
                     if (launchAfterCapture && message.startsWith("Recording")) {
                         launchAfterCapture = false
+                        setCaptureButtonBusy(false)
                         appendLog("Launching CounterSide for JOIN_LOBBY_ACK capture")
                         launchCounterSide()
+                    } else if (launchAfterCapture && message.startsWith("Failed")) {
+                        launchAfterCapture = false
+                        setCaptureButtonBusy(false)
                     }
                     val exportPath = intent.getStringExtra(CounterSideVpnService.EXTRA_EXPORT_PATH)
                     if (!exportPath.isNullOrBlank()) exportText.text = exportPath
@@ -81,6 +95,7 @@ class MainActivity : Activity() {
                 RevivalSideListenerService.ACTION_STATUS -> {
                     listenerStatusText.text = message
                     appendLog("Listener: $message")
+                    if (isListenerStartupProgress(message)) listenerProgressAtMs = SystemClock.elapsedRealtime()
                 }
             }
         }
@@ -104,10 +119,25 @@ class MainActivity : Activity() {
     @Deprecated("VPN permission result uses the platform callback for this no-dependency app.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == VPN_REQUEST && resultCode == RESULT_OK) {
+        if (requestCode == PAYLOAD_ZIP_REQUEST) {
+            if (resultCode == RESULT_OK && data?.data != null) {
+                val uri = data.data!!
+                runCatching {
+                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                importPayloadZip(uri)
+            } else {
+                setPayloadImportBusy(false)
+                appendLog("Payload ZIP selection cancelled")
+            }
+        } else if (requestCode == VPN_REQUEST && resultCode == RESULT_OK) {
             startVpnService(pendingVpnMode)
         } else if (requestCode == VPN_REQUEST && launchAfterStart) {
             failStartOperation("VPN permission was not granted")
+        } else if (requestCode == VPN_REQUEST && launchAfterCapture) {
+            launchAfterCapture = false
+            setCaptureButtonBusy(false)
+            appendLog("Official server capture needs VPN permission")
         }
     }
 
@@ -150,6 +180,24 @@ class MainActivity : Activity() {
             addView(userManagerButton(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(54)).apply {
                 topMargin = dp(12)
             })
+            payloadStatusText = mutedText(
+                if (AndroidPayloadCache.activeRoot(this@MainActivity) != null) "Android payload cache ready" else "Android payload ZIP not imported",
+                13f,
+            )
+            addView(payloadStatusText, fillWrap().apply { topMargin = dp(12) })
+            payloadProgress = ProgressBar(
+                this@MainActivity,
+                null,
+                android.R.attr.progressBarStyleHorizontal,
+            ).apply {
+                max = 1000
+                progress = 0
+                visibility = View.GONE
+            }
+            addView(payloadProgress, fillWrap().apply { topMargin = dp(6) })
+            addView(createPayloadImportButton(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(54)).apply {
+                topMargin = dp(8)
+            })
         }
         content.addView(statusPanel, fillWrapWithBottom(dp(14)))
 
@@ -169,9 +217,21 @@ class MainActivity : Activity() {
             portRow.addView(fieldColumn("HTTP", httpPortInput), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             addView(portRow)
 
+            assetCdnInput = singleLineInput(settings.assetCdnBaseUrl)
+            addView(label("Android asset CDN"))
+            addView(assetCdnInput, fillWrap())
+
             redirectPortsInput = singleLineInput(settings.redirectPortsText)
             addView(label("VPN ports"))
             addView(redirectPortsInput, fillWrap())
+
+            eventDateInput = singleLineInput(settings.eventDate)
+            addView(label("Event date (YYYY-MM-DD, blank = live clock)"))
+            addView(eventDateInput, fillWrap())
+
+            loginBackgroundInput = singleLineInput(settings.loginBackground)
+            addView(label("Login background (auto or ID)"))
+            addView(loginBackgroundInput, fillWrap())
 
             joinLobbyAckInput = singleLineInput(settings.joinLobbyAckMode)
             addView(label("JOIN_LOBBY_ACK"))
@@ -203,6 +263,10 @@ class MainActivity : Activity() {
             addView(eyebrow("Latest Export"))
             exportText = mutedText(CaptureRepository.latestExport(this@MainActivity)?.absolutePath ?: "No export yet", 13f)
             addView(exportText)
+            addView(Button(this@MainActivity).apply {
+                text = "EXPORT SAVE + LOGS"
+                setOnClickListener { exportSaveAndLogs() }
+            }, fillWrap().apply { topMargin = dp(10) })
         }
         content.addView(exportPanel, fillWrap())
 
@@ -230,7 +294,7 @@ class MainActivity : Activity() {
                     typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                     setTextColor(0xffffffff.toInt())
                 })
-                addView(mutedText("Local listener + VPN redirect", 12f))
+                addView(mutedText("Switchable RevivalSide / official server bridge", 12f))
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 bottomMargin = dp(10)
             })
@@ -241,8 +305,8 @@ class MainActivity : Activity() {
             }
 
             startButton = Button(this@MainActivity).apply {
-                text = "START"
-                textSize = 17f
+                text = "REVIVALSIDE"
+                textSize = 13f
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                 setTextColor(0xff06111f.toInt())
                 background = rounded(0xfff8fafc.toInt(), dp(10), 0xffffffff.toInt())
@@ -265,7 +329,7 @@ class MainActivity : Activity() {
                 setOnClickListener { stopOperation() }
             }
             captureButton = Button(this@MainActivity).apply {
-                text = "ACK JSON"
+                text = "OFFICIAL + ACK"
                 textSize = 13f
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                 setTextColor(0xffdbeafe.toInt())
@@ -301,30 +365,108 @@ class MainActivity : Activity() {
     private fun startOperation() {
         val settings = saveSettingsFromInputs()
         val token = ++startFlowToken
+        stopVpnService()
         setUserManagerButtonBusy(false)
         startButton.isEnabled = false
         startButton.text = "STARTING"
         launchAfterStart = true
         listenerReadyForLaunch = false
         vpnReadyForLaunch = false
-        appendLog("Start requested")
-        startListener(settings)
-        waitForListenerHealth(settings, token, attempt = 0)
+        appendLog("Validating patched Counter:Side client")
+        Thread {
+            val clientValidation = validateInstalledAndroidClient(applicationContext, settings.targetPackage, settings.httpPort)
+            val validation = if (clientValidation.ok) {
+                val importedPayload = AndroidPayloadCache.validate(applicationContext)
+                val payloadValidation = if (importedPayload.ok || settings.assetCdnBaseUrl.startsWith("http://127.0.0.1:${settings.httpPort}/")) {
+                    importedPayload
+                } else {
+                    validateAndroidPayloadHost(applicationContext, settings.assetCdnBaseUrl)
+                }
+                if (payloadValidation.ok) payloadValidation.copy(message = "${clientValidation.message}; ${payloadValidation.message}") else payloadValidation
+            } else {
+                clientValidation
+            }
+            runOnUiThread {
+                if (!launchAfterStart || token != startFlowToken) return@runOnUiThread
+                if (!validation.ok) {
+                    failStartOperation(validation.message)
+                    return@runOnUiThread
+                }
+                appendLog(validation.message)
+                vpnReadyForLaunch = true
+                startListener(settings)
+                waitForListenerHealth(settings, token, attempt = 0)
+            }
+        }.start()
+    }
+
+    private fun openPayloadZipPicker() {
+        startFlowToken += 1
+        launchAfterStart = false
+        launchAfterCapture = false
+        stopVpnService()
+        stopListener()
+        setPayloadImportBusy(true)
+        appendLog("Select the downloaded RevivalSide Android payload ZIP")
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/zip"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        runCatching { startActivityForResult(intent, PAYLOAD_ZIP_REQUEST) }
+            .onFailure {
+                setPayloadImportBusy(false)
+                appendLog("Could not open the Android file picker: ${it.message}")
+            }
+    }
+
+    private fun importPayloadZip(uri: Uri) {
+        setPayloadImportBusy(true)
+        payloadStatusText.text = "Checking payload manifest..."
+        payloadProgress.progress = 0
+        payloadProgress.visibility = View.VISIBLE
+        Thread {
+            val result = AndroidPayloadCache.importZip(applicationContext, uri) { current ->
+                runOnUiThread {
+                    val ratio = if (current.totalBytes > 0L) current.bytes.toDouble() / current.totalBytes else 0.0
+                    payloadProgress.progress = (ratio * payloadProgress.max).toInt().coerceIn(0, payloadProgress.max)
+                    payloadStatusText.text = "Importing ${current.files}/${current.totalFiles} (${(ratio * 100).toInt()}%) • ${current.currentPath.substringAfterLast('/')}"
+                }
+            }
+            runOnUiThread {
+                setPayloadImportBusy(false)
+                if (result.ok) {
+                    payloadProgress.progress = payloadProgress.max
+                    payloadStatusText.text = "Android payload cache ready"
+                    assetCdnInput.setText(AndroidPayloadCache.localCdnBaseUrl(RevivalSideSettingsStore.parsePort(httpPortInput.text.toString(), DEFAULT_HTTP_PORT)))
+                    saveSettingsFromInputs()
+                    appendLog(result.message)
+                } else {
+                    payloadProgress.visibility = View.GONE
+                    payloadStatusText.text = result.message
+                    appendLog(result.message)
+                }
+            }
+        }.start()
     }
 
     private fun startJoinLobbyAckCapture() {
-        startFlowToken += 1
+        val settings = saveSettingsFromInputs()
+        val token = ++startFlowToken
         launchAfterStart = false
-        launchAfterCapture = true
+        launchAfterCapture = false
         listenerReadyForLaunch = false
         vpnReadyForLaunch = false
         setUserManagerButtonBusy(false)
+        setCaptureButtonBusy(true)
         if (::startButton.isInitialized) {
             startButton.isEnabled = true
-            startButton.text = "START"
+            startButton.text = "REVIVALSIDE"
         }
-        appendLog("JOIN_LOBBY_ACK capture requested")
-        beginVpnFlow(CounterSideVpnService.MODE_CAPTURE)
+        appendLog("Switching to the official server for JOIN_LOBBY_ACK capture")
+        stopVpnService()
+        startListener(settings)
+        waitForOfficialServerBridge(settings, token, attempt = 0)
     }
 
     private fun extractAndCopyLatestJoinLobbyAck() {
@@ -367,8 +509,9 @@ class MainActivity : Activity() {
         setUserManagerButtonBusy(false)
         if (::startButton.isInitialized) {
             startButton.isEnabled = true
-            startButton.text = "START"
+            startButton.text = "REVIVALSIDE"
         }
+        setCaptureButtonBusy(false)
         setExtractButtonBusy(false)
         appendLog("Stop requested")
         stopVpnService()
@@ -386,7 +529,7 @@ class MainActivity : Activity() {
         launchAfterStart = false
         appendLog("Launching CounterSide")
         startButton.isEnabled = true
-        startButton.text = "START"
+        startButton.text = "REVIVALSIDE"
         launchCounterSide()
     }
 
@@ -397,7 +540,7 @@ class MainActivity : Activity() {
         appendLog(message)
         if (::startButton.isInitialized) {
             startButton.isEnabled = true
-            startButton.text = "START"
+            startButton.text = "REVIVALSIDE"
         }
     }
 
@@ -408,16 +551,20 @@ class MainActivity : Activity() {
             appendLog("Waiting for listener health on 127.0.0.1:${settings.httpPort}")
         }
         Thread {
-            val ready = isListenerHealthReady(settings)
+            val health = readListenerHealth(settings)
             runOnUiThread {
                 if (!launchAfterStart || token != startFlowToken) return@runOnUiThread
-                if (ready) {
+                if (health.ready) {
                     listenerStatusText.text = "Listener ready"
                     appendLog("Listener health ready")
-                    waitForListenerWarmup(settings, token)
+                    switchToRevivalSideAndWarmup(settings, token)
                     return@runOnUiThread
                 }
-                if (attempt >= LISTENER_HEALTH_MAX_ATTEMPTS) {
+                if (health.fatalMessage.isNotBlank()) {
+                    failStartOperation(health.fatalMessage)
+                    return@runOnUiThread
+                }
+                if (listenerHealthTimedOut()) {
                     failStartOperation("Listener health timed out")
                     return@runOnUiThread
                 }
@@ -426,6 +573,50 @@ class MainActivity : Activity() {
                 }
                 handler.postDelayed({
                     waitForListenerHealth(settings, token, attempt + 1)
+                }, LISTENER_HEALTH_INTERVAL_MS)
+            }
+        }.start()
+    }
+
+    private fun switchToRevivalSideAndWarmup(settings: RevivalSideSettings, token: Int) {
+        if (!launchAfterStart || token != startFlowToken) return
+        listenerStatusText.text = "Selecting RevivalSide server"
+        Thread {
+            val result = requestServerInfoMode(settings, SERVER_MODE_REVIVALSIDE)
+            runOnUiThread {
+                if (!launchAfterStart || token != startFlowToken) return@runOnUiThread
+                if (!result.ok) {
+                    failStartOperation("Could not select RevivalSide server${result.summary.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""}")
+                    return@runOnUiThread
+                }
+                appendLog("Server switched to RevivalSide")
+                waitForListenerWarmup(settings, token)
+            }
+        }.start()
+    }
+
+    private fun waitForOfficialServerBridge(settings: RevivalSideSettings, token: Int, attempt: Int) {
+        if (token != startFlowToken) return
+        if (attempt == 0) listenerStatusText.text = "Selecting official server"
+        Thread {
+            val result = requestServerInfoMode(settings, SERVER_MODE_OFFICIAL)
+            runOnUiThread {
+                if (token != startFlowToken) return@runOnUiThread
+                if (result.ok) {
+                    listenerStatusText.text = "Official server selected"
+                    appendLog("Official server bridge ready; starting ACK capture")
+                    launchAfterCapture = true
+                    beginVpnFlow(CounterSideVpnService.MODE_CAPTURE)
+                    return@runOnUiThread
+                }
+                if (listenerHealthTimedOut()) {
+                    setCaptureButtonBusy(false)
+                    appendLog("Official server bridge timed out${result.summary.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""}")
+                    return@runOnUiThread
+                }
+                if (attempt > 0 && attempt % 10 == 0) appendLog("Still waiting for official server bridge (${attempt}s)")
+                handler.postDelayed({
+                    waitForOfficialServerBridge(settings, token, attempt + 1)
                 }, LISTENER_HEALTH_INTERVAL_MS)
             }
         }.start()
@@ -443,7 +634,7 @@ class MainActivity : Activity() {
                     listenerReadyForLaunch = true
                     listenerStatusText.text = "Listener ready"
                     appendLog("Lobby warmup ready${result.summary.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""}")
-                    beginVpnFlow(CounterSideVpnService.MODE_LISTENER)
+                    tryLaunchAfterStart()
                 } else {
                     failStartOperation("Lobby warmup failed${result.summary.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""}")
                 }
@@ -466,7 +657,7 @@ class MainActivity : Activity() {
                     importLatestOfficialProfile(settings, token)
                     return@runOnUiThread
                 }
-                if (attempt >= LISTENER_HEALTH_MAX_ATTEMPTS) {
+                if (listenerHealthTimedOut()) {
                     appendLog("Listener import API timed out")
                     setExtractButtonBusy(false)
                     return@runOnUiThread
@@ -499,6 +690,10 @@ class MainActivity : Activity() {
     }
 
     private fun isListenerHealthReady(settings: RevivalSideSettings): Boolean {
+        return readListenerHealth(settings).ready
+    }
+
+    private fun readListenerHealth(settings: RevivalSideSettings): ListenerHealth {
         var connection: HttpURLConnection? = null
         return try {
             connection = (URL("http://127.0.0.1:${settings.httpPort}/launcher/api/health").openConnection() as HttpURLConnection).apply {
@@ -507,12 +702,19 @@ class MainActivity : Activity() {
                 requestMethod = "GET"
                 useCaches = false
             }
-            if (connection.responseCode !in 200..299) return false
+            if (connection.responseCode !in 200..299) return ListenerHealth(false)
             val body = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
             val compact = body.filterNot { it.isWhitespace() }
-            compact.contains("\"ok\":true") && compact.contains("\"port\":${settings.gamePort}")
+            val correctPort = compact.contains("\"port\":${settings.gamePort}")
+            if (correctPort && compact.contains("\"ok\":true")) {
+                ListenerHealth(true)
+            } else if (correctPort && compact.contains("\"combatHost\":{\"enabled\":") && compact.contains("\"ready\":false")) {
+                ListenerHealth(false, extractJsonString(compact, "error").ifBlank { "Managed combat host did not start; game launch was blocked." })
+            } else {
+                ListenerHealth(false)
+            }
         } catch (_: Exception) {
-            false
+            ListenerHealth(false)
         } finally {
             connection?.disconnect()
         }
@@ -538,6 +740,33 @@ class MainActivity : Activity() {
             }
         } catch (error: Exception) {
             WarmupResult(false, error.message.orEmpty())
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    private fun requestServerInfoMode(settings: RevivalSideSettings, mode: String): ServerInfoModeResult {
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = (URL("http://127.0.0.1:${settings.httpPort}/launcher/api/server-info-mode?mode=$mode").openConnection() as HttpURLConnection).apply {
+                connectTimeout = 1000
+                readTimeout = 2000
+                requestMethod = "POST"
+                useCaches = false
+            }
+            val status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            val response = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            val compact = response.filterNot { it.isWhitespace() }
+            if (status in 200..299 && compact.contains("\"ok\":true") && compact.contains("\"serverInfoMode\":\"$mode\"")) {
+                ServerInfoModeResult(true)
+            } else if (status == 404 && mode == SERVER_MODE_REVIVALSIDE) {
+                ServerInfoModeResult(true, "PC 0.4.0 default")
+            } else {
+                ServerInfoModeResult(false, extractJsonString(compact, "error").ifBlank { "HTTP $status" })
+            }
+        } catch (error: Exception) {
+            ServerInfoModeResult(false, error.message.orEmpty())
         } finally {
             connection?.disconnect()
         }
@@ -603,11 +832,25 @@ class MainActivity : Activity() {
     }
 
     private fun startListener(settings: RevivalSideSettings = saveSettingsFromInputs()) {
+        listenerProgressAtMs = SystemClock.elapsedRealtime()
         val service = Intent(this, RevivalSideListenerService::class.java).apply {
             action = RevivalSideListenerService.ACTION_START
         }
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
         appendLog("Starting listener on 127.0.0.1:${settings.httpPort}")
+    }
+
+    private fun listenerHealthTimedOut(): Boolean {
+        return SystemClock.elapsedRealtime() - listenerProgressAtMs >= LISTENER_HEALTH_TIMEOUT_MS
+    }
+
+    private fun isListenerStartupProgress(message: String): Boolean {
+        return message.startsWith("Preparing ") ||
+            message.startsWith("Installed ") ||
+            message.startsWith("Starting Android listener") ||
+            message.startsWith("Bundled combat host") ||
+            message.startsWith("Started embedded ") ||
+            message.startsWith("Started bundled ")
     }
 
     private fun stopListener() {
@@ -649,6 +892,12 @@ class MainActivity : Activity() {
         appendLog("Stopping VPN")
     }
 
+    private fun setCaptureButtonBusy(busy: Boolean) {
+        if (!::captureButton.isInitialized) return
+        captureButton.isEnabled = !busy
+        captureButton.text = if (busy) "SWITCHING" else "OFFICIAL + ACK"
+    }
+
     private fun openUserManager() {
         val settings = saveSettingsFromInputs()
         val token = ++startFlowToken
@@ -675,7 +924,7 @@ class MainActivity : Activity() {
                     openUrl(url)
                     return@runOnUiThread
                 }
-                if (attempt >= LISTENER_HEALTH_MAX_ATTEMPTS) {
+                if (listenerHealthTimedOut()) {
                     appendLog("User manager timed out")
                     setUserManagerButtonBusy(false)
                     return@runOnUiThread
@@ -726,6 +975,22 @@ class MainActivity : Activity() {
         startActivity(Intent.createChooser(share, "Share RevivalSide capture bundle"))
     }
 
+    private fun exportSaveAndLogs() {
+        appendLog("Exporting save and diagnostic logs")
+        Thread {
+            val result = runCatching { CaptureRepository.saveDiagnostics(applicationContext) }
+            runOnUiThread {
+                result.onSuccess { file ->
+                    exportText.text = file.absolutePath
+                    appendLog("Save and logs exported: ${file.name}")
+                    shareLatestExport()
+                }.onFailure { error ->
+                    appendLog("Save/log export failed: ${error.message}")
+                }
+            }
+        }.start()
+    }
+
     private fun userManagerUrl(settings: RevivalSideSettings): String {
         return "http://127.0.0.1:${settings.httpPort}/user-manager"
     }
@@ -743,6 +1008,7 @@ class MainActivity : Activity() {
         }
     }
 
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
     private fun registerStatusReceiver() {
         val filter = IntentFilter().apply {
             addAction(CounterSideVpnService.ACTION_STATUS)
@@ -752,7 +1018,7 @@ class MainActivity : Activity() {
             registerReceiver(statusReceiver, filter, RECEIVER_NOT_EXPORTED)
         } else {
             @Suppress("DEPRECATION")
-            registerReceiver(statusReceiver, filter)
+            registerReceiver(statusReceiver, filter, INTERNAL_BROADCAST_PERMISSION, null)
         }
     }
 
@@ -768,7 +1034,10 @@ class MainActivity : Activity() {
             targetPackage = packageInput.text.toString().trim().ifBlank { DEFAULT_COUNTERSIDE_PACKAGE },
             gamePort = gamePort,
             httpPort = RevivalSideSettingsStore.parsePort(httpPortInput.text.toString(), DEFAULT_HTTP_PORT),
+            assetCdnBaseUrl = RevivalSideSettingsStore.normalizeAssetCdnUrl(assetCdnInput.text.toString()),
             redirectPorts = RevivalSideSettingsStore.parsePorts(redirectPortsInput.text.toString(), setOf(gamePort)),
+            eventDate = eventDateInput.text.toString().trim(),
+            loginBackground = RevivalSideSettingsStore.normalizeLoginBackground(loginBackgroundInput.text.toString()),
             joinLobbyAckMode = RevivalSideSettingsStore.normalizeJoinLobbyAckMode(joinLobbyAckInput.text.toString()),
             nodePath = nodePathInput.text.toString().trim(),
             dotnetPath = dotnetPathInput.text.toString().trim(),
@@ -846,6 +1115,29 @@ class MainActivity : Activity() {
         }.also {
             userManagerOpenButton = it
         }
+    }
+
+    private fun createPayloadImportButton(): Button {
+        return Button(this).apply {
+            text = "IMPORT PAYLOAD ZIP"
+            textSize = 15f
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(0xffd1fae5.toInt())
+            background = rounded(0xff071a14.toInt(), dp(10), 0xff34d399.toInt())
+            setPadding(dp(14), 0, dp(14), 0)
+            minHeight = dp(54)
+            setOnClickListener { openPayloadZipPicker() }
+        }.also {
+            payloadImportButton = it
+        }
+    }
+
+    private fun setPayloadImportBusy(busy: Boolean) {
+        if (!::payloadImportButton.isInitialized) return
+        payloadImportButton.isEnabled = !busy
+        payloadImportButton.alpha = if (busy) 0.72f else 1f
+        payloadImportButton.text = if (busy) "IMPORTING..." else "IMPORT PAYLOAD ZIP"
+        if (::startButton.isInitialized) startButton.isEnabled = !busy
     }
 
     private fun setUserManagerButtonBusy(busy: Boolean) {
@@ -938,13 +1230,18 @@ class MainActivity : Activity() {
 
     private companion object {
         const val VPN_REQUEST = 100
-        const val LISTENER_HEALTH_MAX_ATTEMPTS = 240
+        const val PAYLOAD_ZIP_REQUEST = 101
+        const val LISTENER_HEALTH_TIMEOUT_MS = 240000L
         const val LISTENER_HEALTH_INTERVAL_MS = 1000L
         const val LISTENER_WARMUP_CONNECT_TIMEOUT_MS = 2000
         const val LISTENER_WARMUP_READ_TIMEOUT_MS = 240000
+        const val SERVER_MODE_REVIVALSIDE = "revivalside"
+        const val SERVER_MODE_OFFICIAL = "official"
     }
 
     private data class WarmupResult(val ok: Boolean, val summary: String = "")
+    private data class ListenerHealth(val ready: Boolean, val fatalMessage: String = "")
+    private data class ServerInfoModeResult(val ok: Boolean, val summary: String = "")
 
     private data class ImportResult(val ok: Boolean, val summary: String = "")
 }

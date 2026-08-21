@@ -408,7 +408,7 @@ class CounterSideVpnService : VpnService() {
             setPackage(packageName)
             putExtra(EXTRA_MESSAGE, message)
             if (export != null) putExtra(EXTRA_EXPORT_PATH, export.absolutePath)
-        })
+        }, INTERNAL_BROADCAST_PERMISSION)
     }
 
     private fun tryAddTargetApplication(builder: Builder, targetPackage: String): String {
