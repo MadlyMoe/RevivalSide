@@ -19,6 +19,13 @@ $settingsPath = Join-Path $PSScriptRoot "app\src\main\kotlin\dev\revivalside\cap
 $payloadCachePath = Join-Path $PSScriptRoot "app\src\main\kotlin\dev\revivalside\capture\android\AndroidPayloadCache.kt"
 $gradlePath = Join-Path $PSScriptRoot "app\build.gradle.kts"
 $listenerSourcePath = Join-Path $repo "server\listener.js"
+$officialBridgePatcher = Join-Path $repo "tools\patch-android-official-server-bridge.js"
+
+if (-not (Test-Path -LiteralPath $officialBridgePatcher -PathType Leaf)) {
+  throw "Android official-server bridge patcher is missing: $officialBridgePatcher"
+}
+& node $officialBridgePatcher --self-test | Write-Host
+if ($LASTEXITCODE -ne 0) { throw "Android official-server bridge patcher self-test failed." }
 
 $version = (Get-Content -Raw -LiteralPath (Join-Path $repo "package.json") | ConvertFrom-Json).version
 $gradle = Get-Content -Raw -LiteralPath $gradlePath
@@ -207,14 +214,29 @@ if ($ReleaseSnapshot) {
   if ($LASTEXITCODE -ne 0 -or $expectedBlob -notmatch '^[a-f0-9]{40}$') {
     throw "Could not resolve the immutable PC v$version listener blob."
   }
-  $listenerBytes = [System.Text.Encoding]::UTF8.GetBytes($packagedListenerSource)
-  $headerBytes = [System.Text.Encoding]::ASCII.GetBytes("blob $($listenerBytes.Length)`0")
-  $blobBytes = New-Object byte[] ($headerBytes.Length + $listenerBytes.Length)
-  [System.Buffer]::BlockCopy($headerBytes, 0, $blobBytes, 0, $headerBytes.Length)
-  [System.Buffer]::BlockCopy($listenerBytes, 0, $blobBytes, $headerBytes.Length, $listenerBytes.Length)
-  $packagedBlob = [System.BitConverter]::ToString([System.Security.Cryptography.SHA1]::Create().ComputeHash($blobBytes)).Replace("-", "").ToLowerInvariant()
-  if ($packagedBlob -ne $expectedBlob) {
-    throw "Android listener differs from the immutable PC v$version release listener."
+  foreach ($required in @(
+    'url.pathname === "/launcher/api/server-info-mode"',
+    'rewriteCapturedServerInfo = serverInfoMode === "revivalside";',
+    'mode must be revivalside or official'
+  )) {
+    if (-not $packagedListenerSource.Contains($required)) { throw "Packaged Android official-server bridge is missing: $required" }
+  }
+  $temporaryListener = Join-Path ([System.IO.Path]::GetTempPath()) "revivalside-android-parity-$([guid]::NewGuid().ToString('N')).js"
+  try {
+    [System.IO.File]::WriteAllText($temporaryListener, $packagedListenerSource, [System.Text.UTF8Encoding]::new($false))
+    & node $officialBridgePatcher --reverse $temporaryListener | Write-Host
+    if ($LASTEXITCODE -ne 0) { throw "Could not remove the Android official-server bridge for baseline comparison." }
+    $baselineBytes = [System.IO.File]::ReadAllBytes($temporaryListener)
+    $headerBytes = [System.Text.Encoding]::ASCII.GetBytes("blob $($baselineBytes.Length)`0")
+    $blobBytes = New-Object byte[] ($headerBytes.Length + $baselineBytes.Length)
+    [System.Buffer]::BlockCopy($headerBytes, 0, $blobBytes, 0, $headerBytes.Length)
+    [System.Buffer]::BlockCopy($baselineBytes, 0, $blobBytes, $headerBytes.Length, $baselineBytes.Length)
+    $baselineBlob = [System.BitConverter]::ToString([System.Security.Cryptography.SHA1]::Create().ComputeHash($blobBytes)).Replace("-", "").ToLowerInvariant()
+  } finally {
+    Remove-Item -LiteralPath $temporaryListener -Force -ErrorAction SilentlyContinue
+  }
+  if ($baselineBlob -ne $expectedBlob) {
+    throw "Android listener differs from PC v$version beyond the official-server bridge compatibility patch."
   }
 } else {
   foreach ($required in @(
@@ -264,5 +286,5 @@ foreach ($required in @('Os.symlink(', 'prepareDeviceCombatRuntime(target)', 'na
   }
 }
 
-$parityTarget = if ($ReleaseSnapshot) { "immutable PC release payload" } else { "live PC source" }
+$parityTarget = if ($ReleaseSnapshot) { "PC release baseline plus Android official-server bridge" } else { "live PC source" }
 Write-Host "Android listener parity OK: target=$parityTarget, PC payload v$version, payload files=$($entries.Count), source-critical files=$($sharedFiles.Count), client=$($clientContract.versionName)/$($clientContract.patchVersion), kernel TCP normal-play path."

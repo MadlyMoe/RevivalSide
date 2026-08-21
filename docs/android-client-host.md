@@ -21,7 +21,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-android-resource
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-android-offline-payload.ps1
 ```
 
-The release builder keeps Android, PC, and ExtraAsset on the source content number; it does not invent a version bump. It validates native `PatchInfo.json` MD5/size records, injects the patched Android script bundle, compiles a complete ExtraAsset cache with PC Lua tables overriding matching Android tables, adds Android-only tables and active Mod:Side overlays, and writes SHA-256 records for every hosted file. It also stages the KMP contract from the exact PC `core` and `game-data` archives.
+The release builder keeps Android, PC, and ExtraAsset on the source content number; it does not invent a content version bump. It validates native `PatchInfo.json` MD5/size records, injects the patched Android script bundle, compiles a complete ExtraAsset cache with PC Lua tables overriding matching Android tables, adds Android-only tables and active Mod:Side overlays, and writes SHA-256 records for every hosted file. It stages the KMP contract from the exact PC `core` and `game-data` archives, then adds only the Android official/RevivalSide server-switch compatibility route to the release listener.
 
 Run the hard parity gates before publishing:
 
