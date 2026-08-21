@@ -109,7 +109,7 @@ The debug APK bundles:
 
 - Node.js Mobile `v18.20.4` native libraries for `armeabi-v7a` and `arm64-v8a`.
 - A small JNI bridge library that starts Node in a background thread.
-- The PC release's exact listener and game-data component contents under `assets/revivalside-payload.zip`.
+- The PC release's listener and game-data component contents under `assets/revivalside-payload.zip`, with only the Android official/RevivalSide server-switch compatibility route added to the listener.
 - Android-only managed combat and .NET files under `assets/revivalside-listener`; this directory is never overlaid onto the shared listener.
 - A complete PC gameplay-table archive for the managed listener. Counter:Side's Unity bundles and ExtraAsset cache remain on the configured CDN.
 

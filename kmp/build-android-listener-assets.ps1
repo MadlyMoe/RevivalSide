@@ -34,6 +34,7 @@ $androidLuaCacheAssetZip = Join-Path $expectedPrefix "revivalside-android-lua-ca
 $gameplayTablesAssetZip = Join-Path $expectedPrefix "revivalside-gameplay-tables.zip"
 $gameplayTablesAssetManifest = Join-Path $expectedPrefix "revivalside-gameplay-tables-manifest.json"
 $legacyClientAssetRoot = Join-Path $expectedPrefix "revivalside-client-assets"
+$officialBridgePatcher = Join-Path $repoRoot "tools\patch-android-official-server-bridge.js"
 $scriptBundle = ""
 $androidPatchInfoPath = ""
 $hasPayload = $PayloadZip.Count -gt 0
@@ -47,6 +48,10 @@ $androidCombatRuntimes = @(
 
 if (-not $assetRootFull.StartsWith($expectedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
   throw "Refusing to write outside Android assets: $assetRootFull"
+}
+
+if (-not (Test-Path -LiteralPath $officialBridgePatcher -PathType Leaf)) {
+  throw "Android official-server bridge patcher is missing: $officialBridgePatcher"
 }
 
 function Write-AndroidPayloadArchive([string[]]$SourcePaths, [string]$DestinationPath) {
@@ -75,7 +80,23 @@ function Write-AndroidPayloadArchive([string[]]$SourcePaths, [string]$Destinatio
             $input = $entry.Open()
             try {
               $output = $outputEntry.Open()
-              try { $input.CopyTo($output) } finally { $output.Dispose() }
+              try {
+                if ($entry.FullName.Equals("payload/app/server/listener.js", [System.StringComparison]::OrdinalIgnoreCase)) {
+                  $temporaryListener = Join-Path ([System.IO.Path]::GetTempPath()) "revivalside-android-listener-$([guid]::NewGuid().ToString('N')).js"
+                  try {
+                    $temporaryStream = [System.IO.File]::Create($temporaryListener)
+                    try { $input.CopyTo($temporaryStream) } finally { $temporaryStream.Dispose() }
+                    & node $officialBridgePatcher $temporaryListener | Write-Host
+                    if ($LASTEXITCODE -ne 0) { throw "Failed to add the Android official-server bridge to the PC release listener." }
+                    $patchedListener = [System.IO.File]::ReadAllBytes($temporaryListener)
+                    $output.Write($patchedListener, 0, $patchedListener.Length)
+                  } finally {
+                    Remove-Item -LiteralPath $temporaryListener -Force -ErrorAction SilentlyContinue
+                  }
+                } else {
+                  $input.CopyTo($output)
+                }
+              } finally { $output.Dispose() }
             } finally {
               $input.Dispose()
             }
@@ -225,7 +246,7 @@ $payloadId = "$($sourceManifest.payloadId)-android"
   archiveSize = $payloadSize
   archiveSha256 = $payloadHash
 } | ConvertTo-Json | Set-Content -LiteralPath $payloadAssetManifest -Encoding UTF8
-Write-Host "Android payload staged from the exact PC core + game-data components at $payloadAssetZip ($copiedPayloadFiles files, $payloadSize bytes)."
+Write-Host "Android payload staged from the PC core + game-data components with the official-server bridge compatibility route at $payloadAssetZip ($copiedPayloadFiles files, $payloadSize bytes)."
 
 if (Test-Path -LiteralPath $assetRootFull) {
   Remove-Item -LiteralPath $assetRootFull -Recurse -Force
