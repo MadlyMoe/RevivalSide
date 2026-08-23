@@ -72,11 +72,18 @@ launcher-settings.json
 frozen-client/
 prebuilt/revivalside-*/
 prebuilt/android-combat-host-*/
+prebuilt/android-tools/
+prebuilt/counterside-android-original/
+prebuilt/counterside-android-patched/
+prebuilt/device-backups/
+prebuilt/device-test/
+prebuilt/asset-host-no-mods/
 prebuilt/local-launcher-test/
 prebuilt/local-client-patcher-test/
 prebuilt/logs/
 prebuilt/release-logs/
 prebuilt/syntax-probe/
+dist/CounterSide-Android-*/
 download-service/NUL
 
 # Nested/optional viewer project outputs

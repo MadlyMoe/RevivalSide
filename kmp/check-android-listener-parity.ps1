@@ -14,9 +14,12 @@ $platformManifestPath = Join-Path $assets "revivalside-platform-manifest.json"
 $clientContractPath = Join-Path $assets "revivalside-android-client-contract.json"
 $servicePath = Join-Path $PSScriptRoot "app\src\main\kotlin\dev\revivalside\capture\android\RevivalSideListenerService.kt"
 $activityPath = Join-Path $PSScriptRoot "app\src\main\kotlin\dev\revivalside\capture\android\MainActivity.kt"
+$vpnServicePath = Join-Path $PSScriptRoot "app\src\main\kotlin\dev\revivalside\capture\android\CounterSideVpnService.kt"
+$captureRepositoryPath = Join-Path $PSScriptRoot "app\src\main\kotlin\dev\revivalside\capture\android\CaptureRepository.kt"
 $androidManifestPath = Join-Path $PSScriptRoot "app\src\main\AndroidManifest.xml"
 $settingsPath = Join-Path $PSScriptRoot "app\src\main\kotlin\dev\revivalside\capture\android\RevivalSideSettings.kt"
 $payloadCachePath = Join-Path $PSScriptRoot "app\src\main\kotlin\dev\revivalside\capture\android\AndroidPayloadCache.kt"
+$payloadHttpServerPath = Join-Path $PSScriptRoot "app\src\main\kotlin\dev\revivalside\capture\android\AndroidPayloadHttpServer.kt"
 $gradlePath = Join-Path $PSScriptRoot "app\build.gradle.kts"
 $listenerSourcePath = Join-Path $repo "server\listener.js"
 $officialBridgePatcher = Join-Path $repo "tools\patch-android-official-server-bridge.js"
@@ -63,6 +66,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::OpenRead($payloadPath)
 $sharedFiles = @()
 $packagedListenerSource = ""
+$packagedStageSource = ""
 try {
   $entries = @{}
   foreach ($entry in $zip.Entries) { $entries[$entry.FullName] = $entry }
@@ -74,6 +78,15 @@ try {
     try { $packagedListenerSource = $reader.ReadToEnd() } finally { $reader.Dispose() }
   } finally {
     $packagedListenerStream.Dispose()
+  }
+  $packagedStageEntry = $entries["payload/app/stages/mainStoryStage.js"]
+  if (-not $packagedStageEntry) { throw "Android payload is missing payload/app/stages/mainStoryStage.js." }
+  $packagedStageStream = $packagedStageEntry.Open()
+  try {
+    $stageReader = [System.IO.StreamReader]::new($packagedStageStream, [System.Text.Encoding]::UTF8, $true, 4096, $true)
+    try { $packagedStageSource = $stageReader.ReadToEnd() } finally { $stageReader.Dispose() }
+  } finally {
+    $packagedStageStream.Dispose()
   }
 
   if (-not $ReleaseSnapshot) {
@@ -146,7 +159,9 @@ foreach ($required in @(
   'env["CS_REPLAY_CAPTURED_LOGIN_ACK"] = "0"',
   'process.env.CS_REPLAY_CAPTURED_LOGIN_ACK = "0"',
   'env["CS_EVENT_DATE"] = settings.eventDate',
+  'env["CS_UNLOCK_ALL_SUBSTREAMS"] = "1"',
   'process.env.CS_EVENT_DATE = ${jsString(settings.eventDate)}',
+  'process.env.CS_UNLOCK_ALL_SUBSTREAMS = "1"',
   'env["CS_LOGIN_BACKGROUND"] = settings.loginBackground',
   'process.env.CS_LOGIN_BACKGROUND = ${jsString(settings.loginBackground)}',
   'installVersionedArchive(',
@@ -154,8 +169,8 @@ foreach ($required in @(
   'process.env.CS_ANDROID_CLIENT_CDN_BASE_URL =',
   'env["CS_ANDROID_CLIENT_PAYLOAD_DIR"] = androidClientPayloadDir.absolutePath',
   'process.env.CS_ANDROID_CLIENT_PAYLOAD_DIR =',
-  'message.startsWith("[mirror] HIT ") && message.includes("/patchfiles/")',
-  'val requestRoute = route.replace(" ", "%20")',
+  'payloadServer = AndroidPayloadHttpServer(',
+  'AndroidPayloadCache.nodeMirrorPort(settings.httpPort)',
   'process.env.CS_REQUIRE_COMBAT_HOST = "1"',
   'env["CS_PRIVATE_PVP"] = "0"',
   'process.env.CS_PRIVATE_PVP = "0"',
@@ -165,12 +180,26 @@ foreach ($required in @(
 )) {
   if (-not $service.Contains($required)) { throw "Android listener parity contract is missing: $required" }
 }
+$payloadHttpServer = Get-Content -Raw -LiteralPath $payloadHttpServerPath
+foreach ($required in @(
+  'Executors.newFixedThreadPool(WORKER_COUNT)',
+  'bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), port), SOCKET_BACKLOG)',
+  'path == "/server_config/live/ServerInfo_V2.json"',
+  '.put("cdn", "http://127.0.0.1:$port/patchfiles/")',
+  'private const val WORKER_COUNT = 16',
+  'private const val MAX_REQUESTS_PER_CONNECTION = 4096'
+)) {
+  if (-not $payloadHttpServer.Contains($required)) { throw "Android native payload server contract is missing: $required" }
+}
 foreach ($forbidden in @('ANDROID_MANAGED_HOST_TICK_INTERVAL_MS', 'Applied packaged RevivalSide listener overlay', 'private const val DEFAULT_EVENT_DATE')) {
   if ($service.Contains($forbidden)) { throw "Android listener still contains divergent behavior: $forbidden" }
 }
 $activity = Get-Content -Raw -LiteralPath $activityPath
 foreach ($required in @(
   'validateInstalledAndroidClient(',
+  'detectInstalledAndroidClient(',
+  'AndroidClientMode.OFFICIAL',
+  'AndroidClientMode.PATCHED',
   'validateAndroidPayloadHost(',
   'AndroidPayloadCache.validate(applicationContext)',
   'AndroidPayloadCache.importZip(applicationContext, uri)',
@@ -179,13 +208,33 @@ foreach ($required in @(
   'listenerHealthTimedOut()',
   'tryLaunchAfterStart()',
   'requestServerInfoMode(settings, SERVER_MODE_REVIVALSIDE)',
-  'requestServerInfoMode(settings, SERVER_MODE_OFFICIAL)',
-  'waitForOfficialServerBridge(settings, token, attempt = 0)',
-  'text = "OFFICIAL + ACK"',
+  '"EXTRACT GAME PROFILE"',
+  '"DOWNLOAD ACTIVE PROFILE"',
+  '"DOWNLOAD PATCHED APK"',
+  'MediaStore.Downloads.EXTERNAL_CONTENT_URI',
+  'CaptureRepository.hasPendingProfileImport(this)',
+  'requestActiveProfileTarget(settings)',
+  'https://discord.gg/revivalside',
   'eventDate = eventDateInput.text.toString().trim()',
   'loginBackground = RevivalSideSettingsStore.normalizeLoginBackground('
 )) {
   if (-not $activity.Contains($required)) { throw "Android client launch parity contract is missing: $required" }
+}
+foreach ($forbidden in @('text = "OFFICIAL + ACK"', 'private lateinit var stopButton', 'private lateinit var captureButton', 'private lateinit var extractButton')) {
+  if ($activity.Contains($forbidden)) { throw "Android launcher still contains the retired multi-button flow: $forbidden" }
+}
+$vpnService = Get-Content -Raw -LiteralPath $vpnServicePath
+foreach ($required in @(
+  'publishStatus("Captured JOIN_LOBBY_ACK", export)',
+  'PROFILE_SAVED_NOTIFICATION_ID',
+  'buildProfileSavedNotification()',
+  'stopCapture()'
+)) {
+  if (-not $vpnService.Contains($required)) { throw "Android ACK completion contract is missing: $required" }
+}
+$captureRepository = Get-Content -Raw -LiteralPath $captureRepositoryPath
+foreach ($required in @('KEY_PENDING_PROFILE_EXPORT', 'hasPendingProfileImport(', 'markLatestProfileImported(')) {
+  if (-not $captureRepository.Contains($required)) { throw "Android automatic profile import contract is missing: $required" }
 }
 $payloadCache = Get-Content -Raw -LiteralPath $payloadCachePath
 foreach ($required in @(
@@ -210,33 +259,57 @@ if ($androidManifest -notmatch 'android:launchMode="singleTask"') {
 }
 $listenerSource = if ($ReleaseSnapshot) { $packagedListenerSource } else { Get-Content -Raw -LiteralPath $listenerSourcePath }
 if ($ReleaseSnapshot) {
-  $expectedBlob = (& git -C $repo rev-parse "v$version`:server/listener.js").Trim()
-  if ($LASTEXITCODE -ne 0 -or $expectedBlob -notmatch '^[a-f0-9]{40}$') {
-    throw "Could not resolve the immutable PC v$version listener blob."
+  $hasLegacyBridge =
+    $packagedListenerSource.Contains('url.pathname === "/launcher/api/server-info-mode"') -and
+    $packagedListenerSource.Contains('rewriteCapturedServerInfo = serverInfoMode === "revivalside";')
+  $hasIntegratedBridge =
+    $packagedListenerSource.Contains('url.pathname === "/launcher/api/server-info-mode"') -and
+    $packagedListenerSource.Contains('serverInfoMode = normalizeServerInfoMode(') -and
+    $packagedListenerSource.Contains('function rewriteServerInfo(')
+  if (-not ($hasLegacyBridge -or $hasIntegratedBridge)) {
+    throw "Packaged Android official-server bridge is missing its server-info mode contract."
   }
   foreach ($required in @(
-    'url.pathname === "/launcher/api/server-info-mode"',
-    'rewriteCapturedServerInfo = serverInfoMode === "revivalside";',
-    'mode must be revivalside or official'
+    'function buildCapturedLoginLikeAck(',
+    'function buildLoginLikePayload(user)',
+    'function getEffectiveContentsTags(baseTags)',
+    'function getEffectiveOpenTags(baseTags)',
+    'REQUIRED_CORE_OPEN_TAGS',
+    'PRIVATE_PVP_OPEN_TAGS'
   )) {
-    if (-not $packagedListenerSource.Contains($required)) { throw "Packaged Android official-server bridge is missing: $required" }
+    if (-not $packagedListenerSource.Contains($required)) {
+      throw "Packaged Android login tag parity is missing: $required"
+    }
   }
-  $temporaryListener = Join-Path ([System.IO.Path]::GetTempPath()) "revivalside-android-parity-$([guid]::NewGuid().ToString('N')).js"
-  try {
-    [System.IO.File]::WriteAllText($temporaryListener, $packagedListenerSource, [System.Text.UTF8Encoding]::new($false))
-    & node $officialBridgePatcher --reverse $temporaryListener | Write-Host
-    if ($LASTEXITCODE -ne 0) { throw "Could not remove the Android official-server bridge for baseline comparison." }
-    $baselineBytes = [System.IO.File]::ReadAllBytes($temporaryListener)
-    $headerBytes = [System.Text.Encoding]::ASCII.GetBytes("blob $($baselineBytes.Length)`0")
-    $blobBytes = New-Object byte[] ($headerBytes.Length + $baselineBytes.Length)
-    [System.Buffer]::BlockCopy($headerBytes, 0, $blobBytes, 0, $headerBytes.Length)
-    [System.Buffer]::BlockCopy($baselineBytes, 0, $blobBytes, $headerBytes.Length, $baselineBytes.Length)
-    $baselineBlob = [System.BitConverter]::ToString([System.Security.Cryptography.SHA1]::Create().ComputeHash($blobBytes)).Replace("-", "").ToLowerInvariant()
-  } finally {
-    Remove-Item -LiteralPath $temporaryListener -Force -ErrorAction SilentlyContinue
+  foreach ($required in @('UNLOCK_ALL_SUBSTREAMS', 'SURT_UNIT_GET', 'SURT_CLEAR_DUNGEON_INTERVAL')) {
+    if (-not $packagedStageSource.Contains($required)) {
+      throw "Packaged Android substream compatibility is missing: $required"
+    }
   }
-  if ($baselineBlob -ne $expectedBlob) {
-    throw "Android listener differs from PC v$version beyond the official-server bridge compatibility patch."
+  if ($hasLegacyBridge) {
+    $expectedBlob = (& git -C $repo rev-parse "v$version`:server/listener.js").Trim()
+    if ($LASTEXITCODE -ne 0 -or $expectedBlob -notmatch '^[a-f0-9]{40}$') {
+      throw "Could not resolve the immutable PC v$version listener blob."
+    }
+    $temporaryListener = Join-Path ([System.IO.Path]::GetTempPath()) "revivalside-android-parity-$([guid]::NewGuid().ToString('N')).js"
+    try {
+      [System.IO.File]::WriteAllText($temporaryListener, $packagedListenerSource, [System.Text.UTF8Encoding]::new($false))
+      & node $officialBridgePatcher --reverse $temporaryListener | Write-Host
+      if ($LASTEXITCODE -ne 0) { throw "Could not remove the Android official-server bridge for baseline comparison." }
+      $baselineBytes = [System.IO.File]::ReadAllBytes($temporaryListener)
+      $headerBytes = [System.Text.Encoding]::ASCII.GetBytes("blob $($baselineBytes.Length)`0")
+      $blobBytes = New-Object byte[] ($headerBytes.Length + $baselineBytes.Length)
+      [System.Buffer]::BlockCopy($headerBytes, 0, $blobBytes, 0, $headerBytes.Length)
+      [System.Buffer]::BlockCopy($baselineBytes, 0, $blobBytes, $headerBytes.Length, $baselineBytes.Length)
+      $baselineBlob = [System.BitConverter]::ToString([System.Security.Cryptography.SHA1]::Create().ComputeHash($blobBytes)).Replace("-", "").ToLowerInvariant()
+    } finally {
+      Remove-Item -LiteralPath $temporaryListener -Force -ErrorAction SilentlyContinue
+    }
+    if ($baselineBlob -ne $expectedBlob) {
+      throw "Android listener differs from PC v$version beyond the official-server bridge compatibility patch."
+    }
+  } else {
+    Write-Host "Android listener uses the integrated PC release server-info bridge."
   }
 } else {
   foreach ($required in @(

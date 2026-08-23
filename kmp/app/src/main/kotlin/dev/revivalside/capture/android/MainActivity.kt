@@ -3,7 +3,9 @@ package dev.revivalside.capture.android
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.ActivityManager
 import android.content.BroadcastReceiver
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -17,6 +19,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.os.Environment
+import android.provider.MediaStore
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -29,6 +33,9 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.Space
 import android.widget.TextView
+import org.json.JSONObject
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.time.LocalTime
@@ -50,11 +57,10 @@ class MainActivity : Activity() {
     private lateinit var exportText: TextView
     private lateinit var logText: TextView
     private lateinit var startButton: Button
-    private lateinit var stopButton: Button
-    private lateinit var captureButton: Button
-    private lateinit var extractButton: Button
     private lateinit var userManagerOpenButton: Button
+    private lateinit var downloadProfileButton: Button
     private lateinit var payloadImportButton: Button
+    private lateinit var clientStatusText: TextView
     private lateinit var payloadStatusText: TextView
     private lateinit var payloadProgress: ProgressBar
     private val timeFormat = DateTimeFormatter.ofPattern("HH:mm:ss")
@@ -66,6 +72,13 @@ class MainActivity : Activity() {
     private var vpnReadyForLaunch = false
     private var startFlowToken = 0
     private var listenerProgressAtMs = 0L
+    private var clientDetectionToken = 0
+    private var clientMode = AndroidClientMode.UNSUPPORTED
+    private var primaryOperationRunning = false
+    private var payloadImportBusy = false
+    private var automaticProfileImportRunning = false
+    private var activityResumed = false
+    private var pendingProfileTarget: ProfileExportTarget? = null
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -82,20 +95,29 @@ class MainActivity : Activity() {
                     }
                     if (launchAfterCapture && message.startsWith("Recording")) {
                         launchAfterCapture = false
-                        setCaptureButtonBusy(false)
                         appendLog("Launching CounterSide for JOIN_LOBBY_ACK capture")
                         launchCounterSide()
                     } else if (launchAfterCapture && message.startsWith("Failed")) {
                         launchAfterCapture = false
-                        setCaptureButtonBusy(false)
+                        setPrimaryOperationRunning(false)
                     }
                     val exportPath = intent.getStringExtra(CounterSideVpnService.EXTRA_EXPORT_PATH)
-                    if (!exportPath.isNullOrBlank()) exportText.text = exportPath
+                    if (!exportPath.isNullOrBlank()) {
+                        exportText.text = exportPath
+                        if (activityResumed) maybeImportCapturedProfile()
+                    }
+                    if (message == "Stopped" && !launchAfterCapture && !launchAfterStart) setPrimaryOperationRunning(false)
                 }
                 RevivalSideListenerService.ACTION_STATUS -> {
                     listenerStatusText.text = message
                     appendLog("Listener: $message")
                     if (isListenerStartupProgress(message)) listenerProgressAtMs = SystemClock.elapsedRealtime()
+                    if (message.startsWith("Listener online") && clientMode == AndroidClientMode.PATCHED) {
+                        setPrimaryOperationRunning(true)
+                    }
+                    if (message == "Stopped" && clientMode == AndroidClientMode.PATCHED && !automaticProfileImportRunning) {
+                        setPrimaryOperationRunning(false)
+                    }
                 }
             }
         }
@@ -109,6 +131,18 @@ class MainActivity : Activity() {
         requestNotificationPermissionIfNeeded()
         registerStatusReceiver()
         appendLog("Ready")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        activityResumed = true
+        refreshInstalledClientMode()
+        handler.post { maybeImportCapturedProfile() }
+    }
+
+    override fun onPause() {
+        activityResumed = false
+        super.onPause()
     }
 
     override fun onDestroy() {
@@ -130,13 +164,33 @@ class MainActivity : Activity() {
                 setPayloadImportBusy(false)
                 appendLog("Payload ZIP selection cancelled")
             }
+        } else if (requestCode == PROFILE_JSON_REQUEST) {
+            val target = pendingProfileTarget
+            pendingProfileTarget = null
+            if (resultCode == RESULT_OK && data?.data != null && target != null) {
+                setDownloadProfileBusy(true)
+                Thread {
+                    val result = runCatching { streamActiveProfileTo(data.data!!, target) }
+                    runOnUiThread {
+                        setDownloadProfileBusy(false)
+                        result.onSuccess {
+                            appendLog("Active profile saved to Downloads")
+                        }.onFailure {
+                            appendLog("Active profile download failed: ${it.message}")
+                        }
+                    }
+                }.start()
+            } else {
+                setDownloadProfileBusy(false)
+                appendLog("Active profile download cancelled")
+            }
         } else if (requestCode == VPN_REQUEST && resultCode == RESULT_OK) {
             startVpnService(pendingVpnMode)
         } else if (requestCode == VPN_REQUEST && launchAfterStart) {
             failStartOperation("VPN permission was not granted")
         } else if (requestCode == VPN_REQUEST && launchAfterCapture) {
             launchAfterCapture = false
-            setCaptureButtonBusy(false)
+            setPrimaryOperationRunning(false)
             appendLog("Official server capture needs VPN permission")
         }
     }
@@ -173,12 +227,17 @@ class MainActivity : Activity() {
             addView(listenerStatusText)
             vpnStatusText = statusText("VPN idle")
             addView(vpnStatusText)
+            clientStatusText = mutedText("Detecting installed Counter:Side...", 13f)
+            addView(clientStatusText, fillWrap().apply { topMargin = dp(4) })
             addView(chipRow(
                 chip("Target", settings.targetPackage.substringAfterLast('.')),
                 chip("Port", settings.gamePort.toString()),
             ))
             addView(userManagerButton(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(54)).apply {
                 topMargin = dp(12)
+            })
+            addView(createDownloadProfileButton(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(54)).apply {
+                topMargin = dp(8)
             })
             payloadStatusText = mutedText(
                 if (AndroidPayloadCache.activeRoot(this@MainActivity) != null) "Android payload cache ready" else "Android payload ZIP not imported",
@@ -196,6 +255,9 @@ class MainActivity : Activity() {
             }
             addView(payloadProgress, fillWrap().apply { topMargin = dp(6) })
             addView(createPayloadImportButton(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(54)).apply {
+                topMargin = dp(8)
+            })
+            addView(createDownloadPatchedApkButton(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(54)).apply {
                 topMargin = dp(8)
             })
         }
@@ -294,71 +356,35 @@ class MainActivity : Activity() {
                     typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                     setTextColor(0xffffffff.toInt())
                 })
-                addView(mutedText("Switchable RevivalSide / official server bridge", 12f))
+                addView(mutedText("Official profile extraction or patched RevivalSide", 12f))
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 bottomMargin = dp(10)
             })
 
-            val controls = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-
             startButton = Button(this@MainActivity).apply {
-                text = "REVIVALSIDE"
-                textSize = 13f
+                text = "DETECTING GAME"
+                textSize = 16f
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                 setTextColor(0xff06111f.toInt())
                 background = rounded(0xfff8fafc.toInt(), dp(10), 0xffffffff.toInt())
                 setPadding(dp(10), 0, dp(10), 0)
                 minHeight = dp(58)
-                setOnClickListener { startOperation() }
-                setOnLongClickListener {
-                    stopOperation()
-                    true
-                }
+                isEnabled = false
+                setOnClickListener { onPrimaryButtonPressed() }
             }
-            stopButton = Button(this@MainActivity).apply {
-                text = "STOP"
-                textSize = 17f
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                setTextColor(0xfffecdd3.toInt())
-                background = rounded(0xff220914.toInt(), dp(10), 0xfffb7185.toInt())
-                setPadding(dp(10), 0, dp(10), 0)
-                minHeight = dp(58)
-                setOnClickListener { stopOperation() }
-            }
-            captureButton = Button(this@MainActivity).apply {
-                text = "OFFICIAL + ACK"
-                textSize = 13f
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                setTextColor(0xffdbeafe.toInt())
-                background = rounded(0xff111827.toInt(), dp(10), 0xff60a5fa.toInt())
-                setPadding(dp(8), 0, dp(8), 0)
-                minHeight = dp(58)
-                setOnClickListener { startJoinLobbyAckCapture() }
-            }
-            extractButton = Button(this@MainActivity).apply {
-                text = "EXTRACT"
-                textSize = 13f
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                setTextColor(0xffd1fae5.toInt())
-                background = rounded(0xff071a14.toInt(), dp(10), 0xff34d399.toInt())
-                setPadding(dp(8), 0, dp(8), 0)
-                minHeight = dp(58)
-                setOnClickListener { extractAndCopyLatestJoinLobbyAck() }
-            }
-            controls.addView(stopButton, LinearLayout.LayoutParams(0, dp(62), 1f).apply {
-                rightMargin = dp(8)
-            })
-            controls.addView(captureButton, LinearLayout.LayoutParams(0, dp(62), 1f).apply {
-                rightMargin = dp(8)
-            })
-            controls.addView(extractButton, LinearLayout.LayoutParams(0, dp(62), 1f).apply {
-                rightMargin = dp(8)
-            })
-            controls.addView(startButton, LinearLayout.LayoutParams(0, dp(62), 1f))
-            addView(controls, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(startButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(62)))
+        }
+    }
+
+    private fun onPrimaryButtonPressed() {
+        if (primaryOperationRunning) {
+            stopOperation()
+            return
+        }
+        when (clientMode) {
+            AndroidClientMode.OFFICIAL -> startJoinLobbyAckCapture()
+            AndroidClientMode.PATCHED -> startOperation()
+            else -> refreshInstalledClientMode()
         }
     }
 
@@ -367,8 +393,7 @@ class MainActivity : Activity() {
         val token = ++startFlowToken
         stopVpnService()
         setUserManagerButtonBusy(false)
-        startButton.isEnabled = false
-        startButton.text = "STARTING"
+        setPrimaryOperationRunning(true)
         launchAfterStart = true
         listenerReadyForLaunch = false
         vpnReadyForLaunch = false
@@ -404,6 +429,7 @@ class MainActivity : Activity() {
         startFlowToken += 1
         launchAfterStart = false
         launchAfterCapture = false
+        setPrimaryOperationRunning(false)
         stopVpnService()
         stopListener()
         setPayloadImportBusy(true)
@@ -451,53 +477,18 @@ class MainActivity : Activity() {
     }
 
     private fun startJoinLobbyAckCapture() {
-        val settings = saveSettingsFromInputs()
-        val token = ++startFlowToken
+        saveSettingsFromInputs()
+        ++startFlowToken
         launchAfterStart = false
-        launchAfterCapture = false
+        launchAfterCapture = true
         listenerReadyForLaunch = false
         vpnReadyForLaunch = false
         setUserManagerButtonBusy(false)
-        setCaptureButtonBusy(true)
-        if (::startButton.isInitialized) {
-            startButton.isEnabled = true
-            startButton.text = "REVIVALSIDE"
-        }
-        appendLog("Switching to the official server for JOIN_LOBBY_ACK capture")
+        setPrimaryOperationRunning(true)
+        appendLog("Starting official JOIN_LOBBY_ACK capture")
         stopVpnService()
-        startListener(settings)
-        waitForOfficialServerBridge(settings, token, attempt = 0)
-    }
-
-    private fun extractAndCopyLatestJoinLobbyAck() {
-        val settings = saveSettingsFromInputs()
-        val token = ++startFlowToken
-        launchAfterStart = false
-        launchAfterCapture = false
-        listenerReadyForLaunch = false
-        vpnReadyForLaunch = false
-        setUserManagerButtonBusy(false)
-        setExtractButtonBusy(true)
-        appendLog("Extract + copy requested")
-        Thread {
-            val extracted = runCatching {
-                CaptureRepository.extractLatestJoinLobbyAckToCapturedGameFlow(applicationContext)
-            }
-            runOnUiThread {
-                if (token != startFlowToken) return@runOnUiThread
-                val error = extracted.exceptionOrNull()
-                if (error != null) {
-                    appendLog("Extract + copy failed: ${error.message}")
-                    setExtractButtonBusy(false)
-                    return@runOnUiThread
-                }
-                val result = extracted.getOrThrow()
-                exportText.text = result.targetDir.absolutePath
-                appendLog("Copied JOIN_LOBBY_ACK bundle files=${result.copiedFiles} bytes=${result.copiedBytes}")
-                startListener(settings)
-                waitForListenerHealthForImport(settings, token, attempt = 0)
-            }
-        }.start()
+        stopListener()
+        beginVpnFlow(CounterSideVpnService.MODE_CAPTURE)
     }
 
     private fun stopOperation() {
@@ -506,30 +497,19 @@ class MainActivity : Activity() {
         launchAfterCapture = false
         listenerReadyForLaunch = false
         vpnReadyForLaunch = false
+        automaticProfileImportRunning = false
         setUserManagerButtonBusy(false)
-        if (::startButton.isInitialized) {
-            startButton.isEnabled = true
-            startButton.text = "REVIVALSIDE"
-        }
-        setCaptureButtonBusy(false)
-        setExtractButtonBusy(false)
+        setDownloadProfileBusy(false)
+        setPrimaryOperationRunning(false)
         appendLog("Stop requested")
         stopVpnService()
         stopListener()
-    }
-
-    private fun setExtractButtonBusy(busy: Boolean) {
-        if (!::extractButton.isInitialized) return
-        extractButton.isEnabled = !busy
-        extractButton.text = if (busy) "COPYING" else "EXTRACT"
     }
 
     private fun tryLaunchAfterStart() {
         if (!launchAfterStart || !listenerReadyForLaunch || !vpnReadyForLaunch) return
         launchAfterStart = false
         appendLog("Launching CounterSide")
-        startButton.isEnabled = true
-        startButton.text = "REVIVALSIDE"
         launchCounterSide()
     }
 
@@ -538,17 +518,14 @@ class MainActivity : Activity() {
         listenerReadyForLaunch = false
         vpnReadyForLaunch = false
         appendLog(message)
-        if (::startButton.isInitialized) {
-            startButton.isEnabled = true
-            startButton.text = "REVIVALSIDE"
-        }
+        setPrimaryOperationRunning(false)
     }
 
     private fun waitForListenerHealth(settings: RevivalSideSettings, token: Int, attempt: Int) {
         if (!launchAfterStart || token != startFlowToken) return
         if (attempt == 0) {
             listenerStatusText.text = "Waiting for listener health"
-            appendLog("Waiting for listener health on 127.0.0.1:${settings.httpPort}")
+            appendLog("Waiting for listener health on 127.0.0.1:${listenerApiPort(settings)}")
         }
         Thread {
             val health = readListenerHealth(settings)
@@ -595,33 +572,6 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun waitForOfficialServerBridge(settings: RevivalSideSettings, token: Int, attempt: Int) {
-        if (token != startFlowToken) return
-        if (attempt == 0) listenerStatusText.text = "Selecting official server"
-        Thread {
-            val result = requestServerInfoMode(settings, SERVER_MODE_OFFICIAL)
-            runOnUiThread {
-                if (token != startFlowToken) return@runOnUiThread
-                if (result.ok) {
-                    listenerStatusText.text = "Official server selected"
-                    appendLog("Official server bridge ready; starting ACK capture")
-                    launchAfterCapture = true
-                    beginVpnFlow(CounterSideVpnService.MODE_CAPTURE)
-                    return@runOnUiThread
-                }
-                if (listenerHealthTimedOut()) {
-                    setCaptureButtonBusy(false)
-                    appendLog("Official server bridge timed out${result.summary.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""}")
-                    return@runOnUiThread
-                }
-                if (attempt > 0 && attempt % 10 == 0) appendLog("Still waiting for official server bridge (${attempt}s)")
-                handler.postDelayed({
-                    waitForOfficialServerBridge(settings, token, attempt + 1)
-                }, LISTENER_HEALTH_INTERVAL_MS)
-            }
-        }.start()
-    }
-
     private fun waitForListenerWarmup(settings: RevivalSideSettings, token: Int) {
         if (!launchAfterStart || token != startFlowToken) return
         listenerStatusText.text = "Warming lobby data"
@@ -642,11 +592,42 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    private fun maybeImportCapturedProfile() {
+        if (!activityResumed || automaticProfileImportRunning || !CaptureRepository.hasPendingProfileImport(this)) return
+        val settings = saveSettingsFromInputs()
+        val token = ++startFlowToken
+        launchAfterStart = false
+        launchAfterCapture = false
+        automaticProfileImportRunning = true
+        listenerProgressAtMs = SystemClock.elapsedRealtime()
+        appendLog("Importing captured profile into User Manager")
+        Thread {
+            val extracted = runCatching {
+                CaptureRepository.extractLatestJoinLobbyAckToCapturedGameFlow(applicationContext)
+            }
+            runOnUiThread {
+                if (token != startFlowToken) {
+                    automaticProfileImportRunning = false
+                    return@runOnUiThread
+                }
+                extracted.onSuccess { result ->
+                    exportText.text = result.targetDir.absolutePath
+                    appendLog("Prepared captured profile files=${result.copiedFiles} bytes=${result.copiedBytes}")
+                    startListener(settings)
+                    waitForListenerHealthForImport(settings, token, attempt = 0)
+                }.onFailure { error ->
+                    automaticProfileImportRunning = false
+                    appendLog("Captured profile preparation failed: ${error.message}")
+                }
+            }
+        }.start()
+    }
+
     private fun waitForListenerHealthForImport(settings: RevivalSideSettings, token: Int, attempt: Int) {
         if (token != startFlowToken) return
         if (attempt == 0) {
             listenerStatusText.text = "Waiting for listener import API"
-            appendLog("Waiting for listener import API on 127.0.0.1:${settings.httpPort}")
+            appendLog("Waiting for listener import API on 127.0.0.1:${listenerApiPort(settings)}")
         }
         Thread {
             val ready = isListenerHealthReady(settings)
@@ -659,7 +640,7 @@ class MainActivity : Activity() {
                 }
                 if (listenerHealthTimedOut()) {
                     appendLog("Listener import API timed out")
-                    setExtractButtonBusy(false)
+                    automaticProfileImportRunning = false
                     return@runOnUiThread
                 }
                 if (attempt > 0 && attempt % 10 == 0) {
@@ -680,11 +661,12 @@ class MainActivity : Activity() {
             runOnUiThread {
                 if (token != startFlowToken) return@runOnUiThread
                 if (result.ok) {
+                    CaptureRepository.markLatestProfileImported(applicationContext)
                     appendLog("Imported profile${result.summary.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""}")
                 } else {
                     appendLog("Official profile import failed${result.summary.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""}")
                 }
-                setExtractButtonBusy(false)
+                automaticProfileImportRunning = false
             }
         }.start()
     }
@@ -696,7 +678,7 @@ class MainActivity : Activity() {
     private fun readListenerHealth(settings: RevivalSideSettings): ListenerHealth {
         var connection: HttpURLConnection? = null
         return try {
-            connection = (URL("http://127.0.0.1:${settings.httpPort}/launcher/api/health").openConnection() as HttpURLConnection).apply {
+            connection = (URL("http://127.0.0.1:${listenerApiPort(settings)}/launcher/api/health").openConnection() as HttpURLConnection).apply {
                 connectTimeout = 1000
                 readTimeout = 1000
                 requestMethod = "GET"
@@ -723,7 +705,7 @@ class MainActivity : Activity() {
     private fun requestListenerWarmup(settings: RevivalSideSettings): WarmupResult {
         var connection: HttpURLConnection? = null
         return try {
-            connection = (URL("http://127.0.0.1:${settings.httpPort}/launcher/api/warmup").openConnection() as HttpURLConnection).apply {
+            connection = (URL("http://127.0.0.1:${listenerApiPort(settings)}/launcher/api/warmup").openConnection() as HttpURLConnection).apply {
                 connectTimeout = LISTENER_WARMUP_CONNECT_TIMEOUT_MS
                 readTimeout = LISTENER_WARMUP_READ_TIMEOUT_MS
                 requestMethod = "POST"
@@ -748,7 +730,7 @@ class MainActivity : Activity() {
     private fun requestServerInfoMode(settings: RevivalSideSettings, mode: String): ServerInfoModeResult {
         var connection: HttpURLConnection? = null
         return try {
-            connection = (URL("http://127.0.0.1:${settings.httpPort}/launcher/api/server-info-mode?mode=$mode").openConnection() as HttpURLConnection).apply {
+            connection = (URL("http://127.0.0.1:${listenerApiPort(settings)}/launcher/api/server-info-mode?mode=$mode").openConnection() as HttpURLConnection).apply {
                 connectTimeout = 1000
                 readTimeout = 2000
                 requestMethod = "POST"
@@ -775,7 +757,7 @@ class MainActivity : Activity() {
     private fun requestOfficialProfileImport(settings: RevivalSideSettings): ImportResult {
         var connection: HttpURLConnection? = null
         return try {
-            connection = (URL("http://127.0.0.1:${settings.httpPort}/launcher/api/official-profile/import-latest").openConnection() as HttpURLConnection).apply {
+            connection = (URL("http://127.0.0.1:${listenerApiPort(settings)}/launcher/api/official-profile/import-latest").openConnection() as HttpURLConnection).apply {
                 connectTimeout = LISTENER_WARMUP_CONNECT_TIMEOUT_MS
                 readTimeout = LISTENER_WARMUP_READ_TIMEOUT_MS
                 requestMethod = "POST"
@@ -892,10 +874,58 @@ class MainActivity : Activity() {
         appendLog("Stopping VPN")
     }
 
-    private fun setCaptureButtonBusy(busy: Boolean) {
-        if (!::captureButton.isInitialized) return
-        captureButton.isEnabled = !busy
-        captureButton.text = if (busy) "SWITCHING" else "OFFICIAL + ACK"
+    private fun refreshInstalledClientMode() {
+        if (!::packageInput.isInitialized) return
+        val targetPackage = packageInput.text.toString().trim().ifBlank { DEFAULT_COUNTERSIDE_PACKAGE }
+        val token = ++clientDetectionToken
+        if (!primaryOperationRunning) {
+            startButton.isEnabled = false
+            startButton.text = "DETECTING GAME"
+        }
+        Thread {
+            val detection = detectInstalledAndroidClient(applicationContext, targetPackage)
+            runOnUiThread {
+                if (token != clientDetectionToken) return@runOnUiThread
+                clientMode = detection.mode
+                clientStatusText.text = detection.message
+                appendLog(detection.message)
+                if (clientMode == AndroidClientMode.PATCHED && isListenerServiceRunning()) {
+                    primaryOperationRunning = true
+                }
+                refreshLauncherControls()
+            }
+        }.start()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun isListenerServiceRunning(): Boolean =
+        getSystemService(ActivityManager::class.java)
+            .getRunningServices(Int.MAX_VALUE)
+            .any { it.service.className == RevivalSideListenerService::class.java.name }
+
+    private fun setPrimaryOperationRunning(running: Boolean) {
+        primaryOperationRunning = running
+        refreshLauncherControls()
+    }
+
+    private fun refreshLauncherControls() {
+        if (::startButton.isInitialized) {
+            startButton.text = when {
+                primaryOperationRunning -> "STOP"
+                clientMode == AndroidClientMode.OFFICIAL -> "EXTRACT GAME PROFILE"
+                clientMode == AndroidClientMode.PATCHED -> "START"
+                clientMode == AndroidClientMode.MISSING -> "COUNTER:SIDE NOT INSTALLED"
+                else -> "UNSUPPORTED GAME VERSION"
+            }
+            startButton.isEnabled = primaryOperationRunning ||
+                (!payloadImportBusy && (clientMode == AndroidClientMode.OFFICIAL || clientMode == AndroidClientMode.PATCHED))
+        }
+        if (::payloadImportButton.isInitialized) {
+            val enabled = clientMode == AndroidClientMode.PATCHED && !payloadImportBusy
+            payloadImportButton.isEnabled = enabled
+            payloadImportButton.alpha = if (enabled) 1f else 0.45f
+            payloadImportButton.text = if (payloadImportBusy) "IMPORTING..." else "IMPORT PAYLOAD ZIP"
+        }
     }
 
     private fun openUserManager() {
@@ -937,6 +967,303 @@ class MainActivity : Activity() {
                 }, LISTENER_HEALTH_INTERVAL_MS)
             }
         }.start()
+    }
+
+    private fun downloadActiveProfile() {
+        val settings = saveSettingsFromInputs()
+        val token = ++startFlowToken
+        launchAfterStart = false
+        launchAfterCapture = false
+        listenerProgressAtMs = SystemClock.elapsedRealtime()
+        setDownloadProfileBusy(true)
+        appendLog("Preparing active User Manager profile download")
+        startListener(settings)
+        waitForActiveProfileDownload(settings, token, attempt = 0)
+    }
+
+    private fun waitForActiveProfileDownload(settings: RevivalSideSettings, token: Int, attempt: Int) {
+        if (token != startFlowToken) return
+        Thread {
+            val ready = isListenerHealthReady(settings)
+            runOnUiThread {
+                if (token != startFlowToken) return@runOnUiThread
+                if (ready) {
+                    fetchActiveProfile(settings, token)
+                    return@runOnUiThread
+                }
+                if (listenerHealthTimedOut()) {
+                    appendLog("Active profile download timed out")
+                    setDownloadProfileBusy(false)
+                    return@runOnUiThread
+                }
+                handler.postDelayed({
+                    waitForActiveProfileDownload(settings, token, attempt + 1)
+                }, LISTENER_HEALTH_INTERVAL_MS)
+            }
+        }.start()
+    }
+
+    private fun fetchActiveProfile(settings: RevivalSideSettings, token: Int) {
+        Thread {
+            val result = requestActiveProfileTarget(settings)
+            runOnUiThread {
+                if (token != startFlowToken) return@runOnUiThread
+                setDownloadProfileBusy(false)
+                if (!result.ok || result.target == null) {
+                    appendLog("Active profile download failed: ${result.summary}")
+                    return@runOnUiThread
+                }
+                val target = result.target
+                setDownloadProfileBusy(true)
+                Thread {
+                    val saved = runCatching { saveActiveProfileToDownloads(target) }
+                    runOnUiThread {
+                        setDownloadProfileBusy(false)
+                        saved.onSuccess {
+                            appendLog("Active profile saved to Downloads: ${target.fileName}")
+                        }.onFailure {
+                            appendLog("Active profile download failed: ${it.message}")
+                        }
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun requestActiveProfileTarget(settings: RevivalSideSettings): ProfileExportResult {
+        return runCatching {
+            val users = requestJson("http://127.0.0.1:${listenerApiPort(settings)}/user-manager/api/users")
+            val activeUid = users.optJSONObject("meta")?.optString("activeUserUid").orEmpty()
+            check(activeUid.isNotBlank()) { "User Manager has no active profile." }
+            val activeUser = users.optJSONArray("users")?.let { summaries ->
+                (0 until summaries.length())
+                    .mapNotNull { summaries.optJSONObject(it) }
+                    .firstOrNull { it.optString("userUid") == activeUid }
+            }
+            val nickname = activeUser?.optString("nickname").orEmpty()
+            val fileName = "users-${sanitizeFileNamePart(nickname.ifBlank { activeUid })}-$activeUid.json"
+            ProfileExportResult(
+                ok = true,
+                target = ProfileExportTarget(
+                    fileName = fileName,
+                    url = "http://127.0.0.1:${listenerApiPort(settings)}/user-manager/api/users/${Uri.encode(activeUid)}/export-json",
+                ),
+            )
+        }.getOrElse { ProfileExportResult(false, summary = it.message.orEmpty()) }
+    }
+
+    private fun streamActiveProfileTo(uri: Uri, target: ProfileExportTarget) {
+        val output = contentResolver.openOutputStream(uri, "w")
+            ?: error("Android could not open the selected destination.")
+        output.use { streamActiveProfileTo(it, target) }
+    }
+
+    private fun streamActiveProfileTo(output: java.io.OutputStream, target: ProfileExportTarget) {
+        val connection = URL(target.url).openConnection() as HttpURLConnection
+        try {
+            connection.connectTimeout = 2000
+            connection.readTimeout = LISTENER_WARMUP_READ_TIMEOUT_MS
+            connection.requestMethod = "GET"
+            connection.useCaches = false
+            val status = connection.responseCode
+            if (status !in 200..299) {
+                val message = connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+                val detail = runCatching { JSONObject(message).optString("error") }.getOrDefault("")
+                error(detail.ifBlank { "HTTP $status" })
+            }
+            BufferedOutputStream(output, 1024 * 1024).use { bufferedOutput ->
+                connection.inputStream.use { response ->
+                    copyDbObjectFromExport(response, bufferedOutput)
+                }
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun saveActiveProfileToDownloads(target: ProfileExportTarget): String {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, target.fileName)
+                put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: error("Android could not create the Downloads file.")
+            try {
+                streamActiveProfileTo(uri, target)
+                contentResolver.update(
+                    uri,
+                    ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) },
+                    null,
+                    null,
+                )
+                return target.fileName
+            } catch (error: Throwable) {
+                contentResolver.delete(uri, null, null)
+                throw error
+            }
+        }
+
+        val directory = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: filesDir
+        if (!directory.exists()) directory.mkdirs()
+        val file = java.io.File(directory, target.fileName)
+        java.io.FileOutputStream(file).use { streamActiveProfileTo(it, target) }
+        return file.absolutePath
+    }
+
+    /** Streams only the wrapper's db object; never materializes the profile in the Android heap. */
+    private fun copyDbObjectFromExport(source: java.io.InputStream, destination: java.io.OutputStream) {
+        val input = BufferedInputStream(source, 1024 * 1024)
+        expectJsonByte(input, '{'.code)
+        while (true) {
+            skipJsonWhitespace(input)
+            input.mark(1)
+            val marker = input.read()
+            if (marker == '}'.code) error("Profile export did not contain a db object.")
+            if (marker >= 0) input.reset()
+            val key = readJsonString(input)
+            skipJsonWhitespace(input)
+            expectJsonByte(input, ':'.code)
+            skipJsonWhitespace(input)
+            if (key == "db") {
+                expectJsonByte(input, '{'.code)
+                destination.write('{'.code)
+                copyBalancedJsonObject(input, destination)
+                destination.write('\n'.code)
+                return
+            }
+            skipJsonValue(input)
+            skipJsonWhitespace(input)
+            val separator = input.read()
+            if (separator == '}'.code) error("Profile export did not contain a db object.")
+            if (separator != ','.code) error("Malformed profile export envelope.")
+        }
+    }
+
+    private fun copyBalancedJsonObject(input: BufferedInputStream, output: java.io.OutputStream) {
+        var depth = 1
+        var inString = false
+        var escaped = false
+        while (depth > 0) {
+            val value = input.read()
+            if (value < 0) error("Profile export ended before the db object was complete.")
+            output.write(value)
+            if (inString) {
+                if (escaped) escaped = false
+                else if (value == '\\'.code) escaped = true
+                else if (value == '"'.code) inString = false
+            } else {
+                when (value) {
+                    '"'.code -> inString = true
+                    '{'.code -> depth += 1
+                    '}'.code -> depth -= 1
+                }
+            }
+        }
+    }
+
+    private fun readJsonString(input: BufferedInputStream): String {
+        expectJsonByte(input, '"'.code)
+        val value = StringBuilder()
+        var escaped = false
+        while (true) {
+            val next = input.read()
+            if (next < 0) error("Malformed profile export envelope.")
+            if (escaped) {
+                value.append(next.toChar())
+                escaped = false
+            } else if (next == '\\'.code) {
+                escaped = true
+            } else if (next == '"'.code) {
+                return value.toString()
+            } else {
+                value.append(next.toChar())
+            }
+        }
+    }
+
+    private fun skipJsonValue(input: BufferedInputStream) {
+        val first = input.read()
+        if (first < 0) error("Malformed profile export envelope.")
+        when (first) {
+            '"'.code -> {
+                var escaped = false
+                while (true) {
+                    val next = input.read()
+                    if (next < 0) error("Malformed profile export envelope.")
+                    if (escaped) escaped = false
+                    else if (next == '\\'.code) escaped = true
+                    else if (next == '"'.code) break
+                }
+            }
+            '{'.code, '['.code -> {
+                val open = first
+                val close = if (open == '{'.code) '}'.code else ']'.code
+                var depth = 1
+                var inString = false
+                var escaped = false
+                while (depth > 0) {
+                    val next = input.read()
+                    if (next < 0) error("Malformed profile export envelope.")
+                    if (inString) {
+                        if (escaped) escaped = false
+                        else if (next == '\\'.code) escaped = true
+                        else if (next == '"'.code) inString = false
+                    } else when (next) {
+                        '"'.code -> inString = true
+                        open -> depth += 1
+                        close -> depth -= 1
+                    }
+                }
+            }
+            else -> while (true) {
+                val next = input.read()
+                if (next < 0 || next == ','.code || next == '}'.code) return
+            }
+        }
+    }
+
+    private fun skipJsonWhitespace(input: BufferedInputStream) {
+        input.mark(1)
+        while (true) {
+            val next = input.read()
+            if (next < 0 || !next.toChar().isWhitespace()) {
+                if (next >= 0) input.reset()
+                return
+            }
+            input.mark(1)
+        }
+    }
+
+    private fun expectJsonByte(input: BufferedInputStream, expected: Int) {
+        if (input.read() != expected) error("Malformed profile export envelope.")
+    }
+
+    private fun sanitizeFileNamePart(value: String): String = value
+        .replace(Regex("[^A-Za-z0-9._-]+"), "_")
+        .trim('_')
+        .ifBlank { "profile" }
+
+    private fun requestJson(url: String): JSONObject {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        return try {
+            connection.connectTimeout = 2000
+            connection.readTimeout = 15000
+            connection.requestMethod = "GET"
+            connection.useCaches = false
+            val status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            val body = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            if (status !in 200..299) {
+                val message = runCatching { JSONObject(body).optString("error") }.getOrDefault("")
+                error(message.ifBlank { "HTTP $status" })
+            }
+            JSONObject(body)
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun launchCounterSide() {
@@ -992,8 +1319,15 @@ class MainActivity : Activity() {
     }
 
     private fun userManagerUrl(settings: RevivalSideSettings): String {
-        return "http://127.0.0.1:${settings.httpPort}/user-manager"
+        return "http://127.0.0.1:${listenerApiPort(settings)}/user-manager"
     }
+
+    private fun listenerApiPort(settings: RevivalSideSettings): Int =
+        if (AndroidPayloadCache.activeRoot(applicationContext) != null) {
+            AndroidPayloadCache.nodeMirrorPort(settings.httpPort)
+        } else {
+            settings.httpPort
+        }
 
     private fun openUrl(url: String) {
         val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
@@ -1117,6 +1451,21 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun createDownloadProfileButton(): Button {
+        return Button(this).apply {
+            text = "DOWNLOAD ACTIVE PROFILE"
+            textSize = 15f
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(0xffdbeafe.toInt())
+            background = rounded(0xff111827.toInt(), dp(10), 0xff60a5fa.toInt())
+            setPadding(dp(14), 0, dp(14), 0)
+            minHeight = dp(54)
+            setOnClickListener { downloadActiveProfile() }
+        }.also {
+            downloadProfileButton = it
+        }
+    }
+
     private fun createPayloadImportButton(): Button {
         return Button(this).apply {
             text = "IMPORT PAYLOAD ZIP"
@@ -1132,12 +1481,22 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun createDownloadPatchedApkButton(): Button {
+        return Button(this).apply {
+            text = "DOWNLOAD PATCHED APK"
+            textSize = 15f
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(0xffffedd5.toInt())
+            background = rounded(0xff241207.toInt(), dp(10), 0xfffb923c.toInt())
+            setPadding(dp(14), 0, dp(14), 0)
+            minHeight = dp(54)
+            setOnClickListener { openUrl(PATCHED_APK_URL) }
+        }
+    }
+
     private fun setPayloadImportBusy(busy: Boolean) {
-        if (!::payloadImportButton.isInitialized) return
-        payloadImportButton.isEnabled = !busy
-        payloadImportButton.alpha = if (busy) 0.72f else 1f
-        payloadImportButton.text = if (busy) "IMPORTING..." else "IMPORT PAYLOAD ZIP"
-        if (::startButton.isInitialized) startButton.isEnabled = !busy
+        payloadImportBusy = busy
+        refreshLauncherControls()
     }
 
     private fun setUserManagerButtonBusy(busy: Boolean) {
@@ -1145,6 +1504,13 @@ class MainActivity : Activity() {
         userManagerOpenButton.isEnabled = !busy
         userManagerOpenButton.alpha = if (busy) 0.72f else 1f
         userManagerOpenButton.text = if (busy) "OPENING..." else "USER MANAGER"
+    }
+
+    private fun setDownloadProfileBusy(busy: Boolean) {
+        if (!::downloadProfileButton.isInitialized) return
+        downloadProfileButton.isEnabled = !busy
+        downloadProfileButton.alpha = if (busy) 0.72f else 1f
+        downloadProfileButton.text = if (busy) "PREPARING..." else "DOWNLOAD ACTIVE PROFILE"
     }
 
     private fun mutedText(text: String, size: Float): TextView {
@@ -1231,12 +1597,13 @@ class MainActivity : Activity() {
     private companion object {
         const val VPN_REQUEST = 100
         const val PAYLOAD_ZIP_REQUEST = 101
+        const val PROFILE_JSON_REQUEST = 102
         const val LISTENER_HEALTH_TIMEOUT_MS = 240000L
         const val LISTENER_HEALTH_INTERVAL_MS = 1000L
         const val LISTENER_WARMUP_CONNECT_TIMEOUT_MS = 2000
         const val LISTENER_WARMUP_READ_TIMEOUT_MS = 240000
         const val SERVER_MODE_REVIVALSIDE = "revivalside"
-        const val SERVER_MODE_OFFICIAL = "official"
+        const val PATCHED_APK_URL = "https://discord.gg/revivalside"
     }
 
     private data class WarmupResult(val ok: Boolean, val summary: String = "")
@@ -1244,4 +1611,10 @@ class MainActivity : Activity() {
     private data class ServerInfoModeResult(val ok: Boolean, val summary: String = "")
 
     private data class ImportResult(val ok: Boolean, val summary: String = "")
+    private data class ProfileExportResult(
+        val ok: Boolean,
+        val target: ProfileExportTarget? = null,
+        val summary: String = "",
+    )
+    private data class ProfileExportTarget(val fileName: String, val url: String)
 }

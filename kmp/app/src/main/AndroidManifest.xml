@@ -15,8 +15,10 @@
 
     <application
         android:allowBackup="false"
+        android:icon="@drawable/revivalside_logo"
         android:pageSizeCompat="enabled"
         android:label="RevivalSide Android"
+        android:roundIcon="@drawable/revivalside_logo"
         android:resizeableActivity="true"
         android:usesCleartextTraffic="true"
         android:theme="@style/AppTheme">
@@ -46,6 +48,7 @@
         <service
             android:name="dev.revivalside.capture.android.RevivalSideListenerService"
             android:exported="false"
+            android:process=":listener"
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"

@@ -16,6 +16,7 @@ import java.util.zip.ZipOutputStream
 internal object CaptureRepository {
     private const val PREFS = "revivalside_capture"
     private const val KEY_LATEST_EXPORT = "latest_export"
+    private const val KEY_PENDING_PROFILE_EXPORT = "pending_profile_export"
     private val stampFormat = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneOffset.UTC)
 
     @Synchronized
@@ -45,6 +46,7 @@ internal object CaptureRepository {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_LATEST_EXPORT, zipFile.absolutePath)
+            .putString(KEY_PENDING_PROFILE_EXPORT, zipFile.absolutePath)
             .apply()
         return zipFile
     }
@@ -94,6 +96,20 @@ internal object CaptureRepository {
         val path = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_LATEST_EXPORT, "") ?: ""
         val file = File(path)
         return file.takeIf { path.isNotBlank() && it.isFile }
+    }
+
+    fun hasPendingProfileImport(context: Context): Boolean {
+        val path = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_PENDING_PROFILE_EXPORT, "")
+            .orEmpty()
+        return path.isNotBlank() && File(path).isFile
+    }
+
+    fun markLatestProfileImported(context: Context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .remove(KEY_PENDING_PROFILE_EXPORT)
+            .apply()
     }
 
     @Synchronized
@@ -170,7 +186,10 @@ internal object CaptureRepository {
 
     @Synchronized
     fun extractLatestJoinLobbyAckToCapturedGameFlow(context: Context): ExtractedJoinLobbyAck {
-        val export = latestExport(context)
+        val pendingPath = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_PENDING_PROFILE_EXPORT, "")
+            .orEmpty()
+        val export = File(pendingPath).takeIf { pendingPath.isNotBlank() && it.isFile } ?: latestExport(context)
             ?: throw IllegalStateException("No JOIN_LOBBY_ACK export is available yet.")
         if (!export.isFile) throw IllegalStateException("Latest export is missing: ${export.absolutePath}")
 

@@ -22,12 +22,17 @@ import kotlin.concurrent.thread
 class RevivalSideListenerService : Service() {
     private val running = AtomicBoolean(false)
     @Volatile private var nodeRuntime: NodeProcessRuntime? = null
+    @Volatile private var payloadServer: AndroidPayloadHttpServer? = null
     private var logFile: File? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) stopListener() else startListener()
+        if (intent?.action == ACTION_STOP) {
+            stopListener()
+            return START_NOT_STICKY
+        }
+        startListener()
         return START_STICKY
     }
 
@@ -60,6 +65,16 @@ class RevivalSideListenerService : Service() {
         try {
             appendLog("Starting Android listener gamePort=${settings.gamePort} httpPort=${settings.httpPort}")
 
+            AndroidPayloadCache.activeRoot(this)?.let { payloadRoot ->
+                payloadServer = AndroidPayloadHttpServer(
+                    payloadRoot = payloadRoot,
+                    contract = AndroidClientContract.load(this),
+                    port = AndroidPayloadCache.localCdnPort(settings.httpPort),
+                    gamePort = settings.gamePort,
+                    log = ::appendLog,
+                ).also { it.start() }
+            }
+
             val runtime = NodeProcessRuntime(this, settings, ::appendLog, ::handleRuntimeExit)
             if (!runtime.start()) {
                 throw IllegalStateException("Embedded listener failed: ${runtime.describeState()}")
@@ -78,6 +93,8 @@ class RevivalSideListenerService : Service() {
             running.set(false)
             nodeRuntime?.stop()
             nodeRuntime = null
+            payloadServer?.stop()
+            payloadServer = null
             stopForeground(STOP_FOREGROUND_REMOVE)
         }
     }
@@ -87,6 +104,8 @@ class RevivalSideListenerService : Service() {
         appendLog("Stopping Android listener")
         nodeRuntime?.stop()
         nodeRuntime = null
+        payloadServer?.stop()
+        payloadServer = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         publishStatus("Listener stopped")
     }
@@ -237,13 +256,18 @@ private class NodeProcessRuntime(
             val dataDir = RevivalSideSettingsStore.serverDataDir(context)
             val gameplayTablesDir = paths.gameplayTablesRoot
             val androidClientPayloadDir = AndroidPayloadCache.activeRoot(context)
+            val nodeMirrorPort = if (androidClientPayloadDir != null) {
+                AndroidPayloadCache.nodeMirrorPort(settings.httpPort)
+            } else {
+                settings.httpPort
+            }
             val androidClientCdnBaseUrl = if (androidClientPayloadDir != null) {
                 AndroidPayloadCache.localCdnBaseUrl(settings.httpPort)
             } else {
                 settings.assetCdnBaseUrl.ifBlank { clientContract.assetCdnBaseUrl }
             }
             env["CS_PORT"] = settings.gamePort.toString()
-            env["CS_HTTP_MIRROR_PORT"] = settings.httpPort.toString()
+            env["CS_HTTP_MIRROR_PORT"] = nodeMirrorPort.toString()
             env["CS_HTTP_MIRROR_HOST"] = "127.0.0.1"
             env["CS_USER_DB_PATH"] = File(dataDir, "users.json").absolutePath
             env["CS_SERVER_TIME_STATE_PATH"] = File(dataDir, "server-time.json").absolutePath
@@ -255,7 +279,11 @@ private class NodeProcessRuntime(
             env.remove("CS_ANDROID_STANDALONE")
             env["CS_GAMEPLAY_TABLES_DIR"] = gameplayTablesDir.absolutePath
             env["CS_FROZEN_SOURCE_CONTENTS_VERSION"] = paths.sourceContentsVersion
-            env["CS_HTTP_MIRROR_BASE_URL"] = "http://127.0.0.1:${settings.httpPort}"
+            env["CS_HTTP_MIRROR_BASE_URL"] = if (androidClientPayloadDir != null) {
+                AndroidPayloadCache.localCdnOrigin(settings.httpPort)
+            } else {
+                "http://127.0.0.1:${settings.httpPort}"
+            }
             env["CS_ANDROID_CLIENT_CDN_BASE_URL"] = androidClientCdnBaseUrl
             if (androidClientPayloadDir != null) {
                 env["CS_ANDROID_CLIENT_PAYLOAD_DIR"] = androidClientPayloadDir.absolutePath
@@ -264,6 +292,7 @@ private class NodeProcessRuntime(
             }
             env["CS_REQUIRE_COMBAT_HOST"] = "1"
             env["CS_EVENT_DATE"] = settings.eventDate
+            env["CS_UNLOCK_ALL_SUBSTREAMS"] = "1"
             env["CS_EVENT_MANAGER"] = "auto"
             env["CS_LOGIN_BACKGROUND"] = settings.loginBackground
             env["CS_USE_LOCAL_JOIN_LOBBY_ACK"] = settings.joinLobbyAckMode
@@ -375,6 +404,11 @@ private class NodeProcessRuntime(
         val combatNativeLibraryPath = buildNativeLibraryPath(combatHost)
         val clientContract = AndroidClientContract.load(context)
         val androidClientPayloadDir = AndroidPayloadCache.activeRoot(context)
+        val nodeMirrorPort = if (androidClientPayloadDir != null) {
+            AndroidPayloadCache.nodeMirrorPort(settings.httpPort)
+        } else {
+            settings.httpPort
+        }
         val androidClientCdnBaseUrl = if (androidClientPayloadDir != null) {
             AndroidPayloadCache.localCdnBaseUrl(settings.httpPort)
         } else {
@@ -415,9 +449,12 @@ private class NodeProcessRuntime(
                   appendNodeLog("unhandled", [error]);
                 });
                 process.env.CS_PORT = ${jsString(settings.gamePort.toString())};
-                process.env.CS_HTTP_MIRROR_PORT = ${jsString(settings.httpPort.toString())};
+                process.env.CS_HTTP_MIRROR_PORT = ${jsString(nodeMirrorPort.toString())};
                 process.env.CS_HTTP_MIRROR_HOST = "127.0.0.1";
-                process.env.CS_HTTP_MIRROR_BASE_URL = ${jsString("http://127.0.0.1:${settings.httpPort}")};
+                process.env.CS_HTTP_MIRROR_BASE_URL = ${jsString(
+                    if (androidClientPayloadDir != null) AndroidPayloadCache.localCdnOrigin(settings.httpPort)
+                    else "http://127.0.0.1:${settings.httpPort}"
+                )};
                 process.env.CS_ANDROID_CLIENT_CDN_BASE_URL = ${jsString(androidClientCdnBaseUrl)};
                 process.env.CS_ANDROID_CLIENT_PAYLOAD_DIR = ${jsString(androidClientPayloadDir?.absolutePath.orEmpty())};
                 process.env.CS_REQUIRE_COMBAT_HOST = "1";
@@ -436,6 +473,7 @@ private class NodeProcessRuntime(
                 process.env.COUNTERSIDE_MANAGED_DIR = ${jsString(combatManagedDirPath)};
                 process.env.CS_COUNTERSIDE_DIR = ${jsString(combatGameRootPath)};
                 process.env.CS_EVENT_DATE = ${jsString(settings.eventDate)};
+                process.env.CS_UNLOCK_ALL_SUBSTREAMS = "1";
                 process.env.CS_EVENT_MANAGER = "auto";
                 process.env.CS_LOGIN_BACKGROUND = ${jsString(settings.loginBackground)};
                 process.env.CS_USE_LOCAL_JOIN_LOBBY_ACK = ${jsString(settings.joinLobbyAckMode)};
@@ -692,7 +730,7 @@ private class NodeProcessRuntime(
             contract.payloadManifestSha256,
             updateVersion,
             if (payloadRoot == null) "remote" else "local",
-            "encoded-paths-v1",
+            "native-stream-v1",
         ).joinToString(":")
         if (marker.readTextOrBlank() == markerValue) return
 
@@ -702,40 +740,6 @@ private class NodeProcessRuntime(
             val entry = original.optJSONObject(index) ?: continue
             val route = entry.optString("path")
             if (route.isNotBlank() && !entry.optBoolean("androidPayload")) entries[route] = entry
-        }
-
-        fun addFile(route: String, file: File) {
-            if (!file.isFile) throw IllegalStateException("Android payload file is missing: $route")
-            val requestRoute = route.replace(" ", "%20")
-            entries[requestRoute] = JSONObject()
-                .put("method", "GET")
-                .put("host", "127.0.0.1")
-                .put("path", requestRoute)
-                .put("statusCode", 200)
-                .put("headers", JSONObject().put("Content-Type", androidPayloadContentType(route)))
-                .put("bodyFile", file.relativeTo(flowRoot).path.replace(File.separatorChar, '/'))
-                .put("androidPayload", true)
-        }
-
-        if (payloadRoot != null) {
-            val payloadManifestFile = File(payloadRoot, "payload-manifest.json")
-            val payloadManifest = validateAndroidPayloadManifest(contract, payloadManifestFile.readBytes())
-            val files = payloadManifest.getJSONArray("files")
-            val sourcePrefix = "patchfiles/Android/${contract.patchVersion}/"
-            val updatePrefix = "patchfiles/Android/$updateVersion/"
-            for (index in 0 until files.length()) {
-                val item = files.getJSONObject(index)
-                val relative = normalizeAndroidPayloadPath(item.getString("path"))
-                val file = File(payloadRoot, relative)
-                if (file.length() != item.getLong("size")) {
-                    throw IllegalStateException("Android payload file size is invalid: $relative")
-                }
-                addFile("/$relative", file)
-                if (relative.startsWith(sourcePrefix)) {
-                    addFile("/${relative.replaceFirst(sourcePrefix, updatePrefix)}", file)
-                }
-            }
-            addFile("/android-client/payload-manifest.json", payloadManifestFile)
         }
 
         entries["/server_config/live/ServerInfo_V2.json"]?.let { serverInfo ->
@@ -751,17 +755,10 @@ private class NodeProcessRuntime(
         temporary.copyTo(manifestFile, overwrite = true)
         temporary.delete()
         marker.writeText(markerValue, Charsets.UTF_8)
-        log("Android payload mirror ready: ${entries.size} routes (${contract.patchVersion} -> $updateVersion).")
-    }
-
-    private fun androidPayloadContentType(path: String): String = when (path.substringAfterLast('.', "").lowercase()) {
-        "json" -> "application/json"
-        "xml" -> "application/xml"
-        "txt" -> "text/plain"
-        "png" -> "image/png"
-        "jpg", "jpeg" -> "image/jpeg"
-        "webp" -> "image/webp"
-        else -> "application/octet-stream"
+        log(
+            "Android bootstrap mirror ready: ${entries.size} routes; payload files use the native streamer " +
+                "(${contract.patchVersion} -> $updateVersion).",
+        )
     }
 
     private fun File.readTextOrBlank(): String = runCatching { readText(Charsets.UTF_8).trim() }.getOrDefault("")
