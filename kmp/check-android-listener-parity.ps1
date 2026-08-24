@@ -1,5 +1,6 @@
 param(
-  [switch]$ReleaseSnapshot
+  [switch]$ReleaseSnapshot,
+  [switch]$AckCaptureOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,6 +24,28 @@ $payloadHttpServerPath = Join-Path $PSScriptRoot "app\src\main\kotlin\dev\reviva
 $gradlePath = Join-Path $PSScriptRoot "app\build.gradle.kts"
 $listenerSourcePath = Join-Path $repo "server\listener.js"
 $officialBridgePatcher = Join-Path $repo "tools\patch-android-official-server-bridge.js"
+
+function Test-AndroidAckCapture([string]$activity, [string]$vpnService) {
+  foreach ($required in @('publishStatus("Captured JOIN_LOBBY_ACK", export)', 'PROFILE_SAVED_NOTIFICATION_ID', 'buildProfileSavedNotification()')) {
+    if (-not $vpnService.Contains($required)) { throw "Android ACK completion contract is missing: $required" }
+  }
+  $captureStart = $vpnService.IndexOf('private fun inspectServerPayload(')
+  $captureEnd = $vpnService.IndexOf('private fun inspectOfficialLoginPackets(', $captureStart)
+  $captureBlock = $vpnService.Substring($captureStart, $captureEnd - $captureStart)
+  foreach ($forbidden in @('stopCapture()', 'stopSelf()')) {
+    if ($captureBlock.Contains($forbidden)) { throw "Android ACK capture tears down before the official client can consume it: $forbidden" }
+  }
+  $importStart = $activity.IndexOf('private fun maybeImportCapturedProfile()')
+  $importEnd = $activity.IndexOf('private fun waitForListenerHealthForImport(', $importStart)
+  $importBlock = $activity.Substring($importStart, $importEnd - $importStart)
+  if (-not $importBlock.Contains('stopVpnService()')) { throw 'Android automatic profile import must stop the completed official-client VPN relay.' }
+}
+
+if ($AckCaptureOnly) {
+  Test-AndroidAckCapture (Get-Content -Raw -LiteralPath $activityPath) (Get-Content -Raw -LiteralPath $vpnServicePath)
+  Write-Host 'Android official-client ACK capture parity OK'
+  exit 0
+}
 
 if (-not (Test-Path -LiteralPath $officialBridgePatcher -PathType Leaf)) {
   throw "Android official-server bridge patcher is missing: $officialBridgePatcher"
@@ -224,14 +247,7 @@ foreach ($forbidden in @('text = "OFFICIAL + ACK"', 'private lateinit var stopBu
   if ($activity.Contains($forbidden)) { throw "Android launcher still contains the retired multi-button flow: $forbidden" }
 }
 $vpnService = Get-Content -Raw -LiteralPath $vpnServicePath
-foreach ($required in @(
-  'publishStatus("Captured JOIN_LOBBY_ACK", export)',
-  'PROFILE_SAVED_NOTIFICATION_ID',
-  'buildProfileSavedNotification()',
-  'stopCapture()'
-)) {
-  if (-not $vpnService.Contains($required)) { throw "Android ACK completion contract is missing: $required" }
-}
+Test-AndroidAckCapture $activity $vpnService
 $captureRepository = Get-Content -Raw -LiteralPath $captureRepositoryPath
 foreach ($required in @('KEY_PENDING_PROFILE_EXPORT', 'hasPendingProfileImport(', 'markLatestProfileImported(')) {
   if (-not $captureRepository.Contains($required)) { throw "Android automatic profile import contract is missing: $required" }

@@ -314,12 +314,10 @@ class CounterSideVpnService : VpnService() {
         if (!joinLobbyCaptured.compareAndSet(false, true)) return
         val export = CaptureRepository.saveJoinLobbyAck(this, lobbyAck, session.key.remoteLabel)
         publishStatus("Captured JOIN_LOBBY_ACK", export)
-        stopCapture()
         getSystemService(NotificationManager::class.java).notify(
             PROFILE_SAVED_NOTIFICATION_ID,
             buildProfileSavedNotification(),
         )
-        stopSelf()
     }
 
     private fun inspectOfficialLoginPackets(session: TcpSession, frames: List<CapturedCounterSideFrame>) {

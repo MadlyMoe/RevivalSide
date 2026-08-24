@@ -594,6 +594,7 @@ class MainActivity : Activity() {
 
     private fun maybeImportCapturedProfile() {
         if (!activityResumed || automaticProfileImportRunning || !CaptureRepository.hasPendingProfileImport(this)) return
+        stopVpnService()
         val settings = saveSettingsFromInputs()
         val token = ++startFlowToken
         launchAfterStart = false
