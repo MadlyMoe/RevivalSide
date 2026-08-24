@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script_dungeon_templet",
+    "fileName": "LUA_DUNGEON_TEMPLET_BASE.json",
+    "tableName": "LUA_DUNGEON_TEMPLET_BASE"
+  },
+  "key": {
+    "field": "m_DungeonID",
+    "value": 10106
+  },
+  "value": {
+    "m_DungeonID": 10106,
+    "m_DungeonStrID": "NKM_DUNGEON_EP1_ACT4_DATING_EVENT_1",
+    "m_DungeonType": "NDT_CUTSCENE",
+    "m_DungeonName": "MODSIDE_STAGE_NAME_11246",
+    "m_DungeonIcon": "NKM_NPC_CUT_SCENE",
+    "m_DungeonLevel": 1,
+    "m_fDungeonTimeMax": 0,
+    "m_DGRecommendFightPower": 0,
+    "m_DGLimitUserLevel": 1,
+    "m_CutScenStrIDBefore": "EP1_ACT4_DATING_EVENT_1",
+    "m_bBonus_Resource": false,
+    "m_RewardUserEXP": 0,
+    "m_RewardUnitEXP": 0,
+    "m_RewardCredit_Min": 0,
+    "m_RewardCredit_Max": 0,
+    "m_RewardEternium_Min": 0,
+    "m_RewardEternium_Max": 0,
+    "m_RewardInformation_Min": 0,
+    "m_RewardInformation_Max": 0,
+    "m_RewardMultiplyMax": 99
+  },
+  "source": "revivalside-episode-maker"
+}

@@ -20,6 +20,7 @@ function createCsharpCombatHost(options = {}) {
   const gameplayTablesDir = options.gameplayTablesDir || "";
   const modTablesDir = String(options.modTablesDir || process.env.CS_MOD_TABLES_DIR || "").split(path.delimiter).find(Boolean) || "";
   const contentsTags = Array.isArray(options.contentsTags) ? options.contentsTags.map(String).filter(Boolean) : [];
+  const openTags = Array.isArray(options.openTags) ? options.openTags.map(String).filter(Boolean) : [];
   const dotnetPath = options.dotnetPath || findPreferredDotnetRuntime(managedDir);
   const buildDotnetPath = options.buildDotnetPath || process.env.CS_DOTNET_BUILD_PATH || "dotnet";
   const responseBufferBytes = Number(options.responseBufferBytes || 16 * 1024 * 1024);
@@ -178,6 +179,7 @@ function createCsharpCombatHost(options = {}) {
           managedDir,
           gameplayTablesDir,
           contentsTags,
+          openTags,
           syncIntervalSeconds: Number(options.syncIntervalSeconds || 0.25),
           defaultUnitDamage: Number(options.defaultUnitDamage || 10),
           defaultUnitAttackRange: Number(options.defaultUnitAttackRange || 130),

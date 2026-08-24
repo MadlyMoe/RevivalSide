@@ -203,15 +203,29 @@ function spendMiscItem(user, itemId, count, options = {}) {
   const current = getMiscItem(user, numericItemId);
   const currentFree = nonNegativeBigInt(current.countFree);
   const currentPaid = nonNegativeBigInt(current.countPaid);
+  const actualSpend = amount < currentFree + currentPaid ? amount : currentFree + currentPaid;
   const freeSpend = currentFree >= amount ? amount : currentFree;
   const paidSpend = amount - freeSpend;
   const nextFree = currentFree - freeSpend;
   const nextPaid = currentPaid > paidSpend ? currentPaid - paidSpend : 0n;
 
-  return setMiscItemBalance(user, numericItemId, nextFree, nextPaid, {
+  const updated = setMiscItemBalance(user, numericItemId, nextFree, nextPaid, {
     bonusRatio: current.bonusRatio,
     regDate: options.regDate || current.regDate,
   });
+  trackConsumerPackageSpend(user, numericItemId, actualSpend);
+  return updated;
+}
+
+function trackConsumerPackageSpend(user, itemId, amount) {
+  if (!user || amount <= 0n) return;
+  const source = user.consumerPackages;
+  const packages = Array.isArray(source) ? source : source && typeof source === "object" ? Object.values(source) : [];
+  for (const entry of packages) {
+    if (!entry || Number(entry.requireItemId || 0) !== Number(itemId)) continue;
+    entry.spendCount = String(nonNegativeBigInt(entry.spendCount) + amount);
+    entry.pendingUpdate = true;
+  }
 }
 
 function grantSkin(user, skinId) {

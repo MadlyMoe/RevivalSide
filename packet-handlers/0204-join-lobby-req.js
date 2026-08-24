@@ -1,9 +1,13 @@
 const { ensureLoginRewardPosts } = require("../modules/admin");
 const { buildAttendanceNotifyPayload, ensureAttendanceRewardPosts } = require("../modules/attendance");
+const { sendEventBarDailyInfoNotification } = require("../modules/event-bar");
 const { sendCounterPassLobbyNotifications } = require("../modules/event-pass");
-const { buildOfficeGuestListNotData } = require("../modules/office");
+const { buildResetGroupCountNotPayload } = require("../modules/equipment-pipeline");
+const { sendGuildLobbyBootstrap } = require("../modules/company-buff");
+const { buildOfficeGuestListNotData, getOfficeGuestProfiles } = require("../modules/office");
 const worldMap = require("../modules/world-map");
 
+const RESET_GROUP_COUNT_NOT = 1065;
 const OFFICE_GUEST_LIST_NOT = 3636;
 const FIERCE_DATA_ACK = 845;
 const FIERCE_LOBBY_REFRESH_RETRY_MS = 1000;
@@ -11,6 +15,7 @@ const FIERCE_LOBBY_REFRESH_RETRY_MS = 1000;
 module.exports = {
   packetId: 204,
   name: "JOIN_LOBBY_REQ",
+  sendOfficeGuestListBootstrap,
   handle(ctx, socket, packet) {
     const joinReq = ctx.decodeJoinLobbyReq(packet.payload);
     const privatePvpTicket = ctx.privatePvp && ctx.privatePvp.consumeJoinTicket(joinReq.accessToken, socket);
@@ -43,6 +48,10 @@ module.exports = {
       ctx.privatePvp.broadcastState(room, ctx);
       return true;
     }
+    const leaguePvpReconnect = ctx.leaguePvpMatchmaking && ctx.leaguePvpMatchmaking.reattachUser(user, socket);
+    const leagueJoinOptions = leaguePvpReconnect
+      ? { leaguePvpRoomDataPayload: ctx.leaguePvpMatchmaking.buildRoomData(leaguePvpReconnect.match) }
+      : {};
     socket.session.user = user;
     if (ctx.config.USE_LOCAL_USER_DB && user.userUid && typeof ctx.prepareUserLobbySession === "function") {
       ctx.prepareUserLobbySession(user, { source: "join-lobby" });
@@ -74,12 +83,13 @@ module.exports = {
     const replay = socket.session.gameReplay;
 
     if (ctx.config.REPLAY_CAPTURED_GAME_FLOW && ctx.capturedGameFlow) {
-      if (ctx.shouldUseLocalJoinLobbyAck(user)) {
-        const joinLobbyPayload = takeOrBuildJoinLobbyPayload(ctx, user);
+      if (leaguePvpReconnect || ctx.shouldUseLocalJoinLobbyAck(user)) {
+        const joinLobbyPayload = takeOrBuildJoinLobbyPayload(ctx, user, leagueJoinOptions);
         if (shouldUseOfficialTutorialLobbyOrder(user)) {
           sendOfficialTutorialJoinLobby(ctx, socket, replay, joinLobbyPayload, user);
           return true;
         }
+        sendResetCountBootstrap(ctx, socket, user);
         ctx.sendGameResponse(
           socket,
           packet,
@@ -87,6 +97,7 @@ module.exports = {
           joinLobbyPayload,
           "join-lobby-local-progress"
         );
+        sendGuildLobbyBootstrap(ctx, socket, user);
         replay.inGameFlow = true;
         sendFierceSeasonBootstrap(ctx, socket, user, {
           includeData: false,
@@ -97,6 +108,7 @@ module.exports = {
           sendJoinLobbyBootTemplates(ctx, socket, replay, user);
         }
         sendOfficeGuestListBootstrap(ctx, socket);
+        sendEventBarDailyInfoNotification(ctx, socket, "join-lobby-event-bar");
         sendCounterPassLobbyBootstrap(ctx, socket);
         sendJoinLobbyRaidBootstrap(ctx, socket, user);
         if (typeof ctx.repairPostTutorialGuideMissionsForSocket === "function") {
@@ -124,6 +136,7 @@ module.exports = {
           seasonLabel: "join-lobby-fierce-season-preload",
         });
         sendOfficeGuestListBootstrap(ctx, socket);
+        sendEventBarDailyInfoNotification(ctx, socket, "join-lobby-event-bar");
         sendCounterPassLobbyBootstrap(ctx, socket);
         sendJoinLobbyRaidBootstrap(ctx, socket, user);
         sendFierceSeasonBootstrap(ctx, socket, user);
@@ -137,7 +150,7 @@ module.exports = {
       return true;
     }
 
-    const joinLobbyPayload = takeOrBuildJoinLobbyPayload(ctx, user);
+    const joinLobbyPayload = takeOrBuildJoinLobbyPayload(ctx, user, leagueJoinOptions);
     if (shouldUseOfficialTutorialLobbyOrder(user)) {
       sendOfficialTutorialJoinLobby(ctx, socket, replay, joinLobbyPayload, user);
       return true;
@@ -149,6 +162,7 @@ module.exports = {
       joinLobbyPayload,
       "join-lobby-local-progress"
     );
+    sendGuildLobbyBootstrap(ctx, socket, user);
     replay.inGameFlow = true;
     sendFierceSeasonBootstrap(ctx, socket, user, {
       includeData: false,
@@ -159,6 +173,7 @@ module.exports = {
       sendJoinLobbyBootTemplates(ctx, socket, replay, user);
     }
     sendOfficeGuestListBootstrap(ctx, socket);
+    sendEventBarDailyInfoNotification(ctx, socket, "join-lobby-event-bar");
     sendCounterPassLobbyBootstrap(ctx, socket);
     sendJoinLobbyRaidBootstrap(ctx, socket, user);
     if (typeof ctx.repairPostTutorialGuideMissionsForSocket === "function") {
@@ -183,24 +198,42 @@ function shouldUseOfficialTutorialLobbyOrder(user) {
   return Boolean(tutorial && tutorial.enabled !== false && tutorial.completed !== true && tutorial.loginMode !== "post-tutorial");
 }
 
-function takeOrBuildJoinLobbyPayload(ctx, user) {
-  return (typeof ctx.takePrewarmedJoinLobbyAckPayload === "function" && ctx.takePrewarmedJoinLobbyAckPayload(user))
-    || ctx.buildJoinLobbyAckPayload(user);
+function takeOrBuildJoinLobbyPayload(ctx, user, options = {}) {
+  if (options.leaguePvpRoomDataPayload) return ctx.buildJoinLobbyAckPayload(user, options);
+  const cached = typeof ctx.takePrewarmedJoinLobbyAckPayload === "function"
+    ? ctx.takePrewarmedJoinLobbyAckPayload(user, { consume: false })
+    : null;
+  if (cached) return cached;
+  const payload = ctx.buildJoinLobbyAckPayload(user);
+  if (typeof ctx.rememberPrewarmedJoinLobbyAckPayload === "function") {
+    ctx.rememberPrewarmedJoinLobbyAckPayload(user, payload, "join-lobby");
+  }
+  return payload;
 }
 
 function sendOfficialTutorialJoinLobby(ctx, socket, replay, joinLobbyPayload, user) {
   replay.inGameFlow = true;
   if (!replay.bootLobbyTemplateSent) {
-    ctx.sendCapturedGameTemplateRange(socket, 1, 7, "tutorial-join-lobby-boot", { forceReframe: false });
+    sendResetCountBootstrap(ctx, socket, user, "tutorial-join-lobby-reset-count");
+    ctx.sendCapturedGameTemplateRange(socket, 2, 5, "tutorial-join-lobby-boot", { forceReframe: false });
+    sendAttendanceBootstrap(ctx, socket, user, "tutorial-attendance-not");
+    ctx.sendCapturedGameTemplateRange(socket, 7, 7, "tutorial-join-lobby-boot", { forceReframe: false });
     replay.bootLobbyTemplateSent = true;
   }
   ctx.sendServerGamePacket(socket, ctx.constants.JOIN_LOBBY_ACK, joinLobbyPayload, "tutorial-join-lobby-local-progress");
+  sendGuildLobbyBootstrap(ctx, socket, user, "tutorial-join-lobby-guild-data");
   sendFierceSeasonBootstrap(ctx, socket, user, {
     includeData: false,
     scheduleRefresh: false,
     seasonLabel: "join-lobby-fierce-season-preload",
   });
-  ctx.sendCapturedGameTemplateRange(socket, 9, 18, "tutorial-join-lobby-post-boot", { forceReframe: false });
+  ctx.sendCapturedGameTemplateRange(socket, 9, 9, "tutorial-join-lobby-post-boot", { forceReframe: false });
+  if (typeof ctx.sendStaminaChargeNotifications === "function") {
+    ctx.sendStaminaChargeNotifications(socket, "tutorial-join-lobby-charge-item", { includeUnchanged: true, itemIds: [2, 13] });
+  }
+  ctx.sendCapturedGameTemplateRange(socket, 12, 12, "tutorial-join-lobby-post-boot", { forceReframe: false });
+  sendResetCountBootstrap(ctx, socket, user, "tutorial-join-lobby-reset-count-refresh");
+  ctx.sendCapturedGameTemplateRange(socket, 14, 18, "tutorial-join-lobby-post-boot", { forceReframe: false });
   replay.bootPostListTemplateSent = true;
   replay.postLobbyBootTemplateSent = true;
   replay.localJoinLobbyAckSent = true;
@@ -212,8 +245,14 @@ function sendCounterPassLobbyBootstrap(ctx, socket) {
   sendCounterPassLobbyNotifications(ctx, socket, "join-lobby-counter-pass");
 }
 
+function sendResetCountBootstrap(ctx, socket, user, label = "join-lobby-reset-count") {
+  ctx.sendServerGamePacket(socket, RESET_GROUP_COUNT_NOT, buildResetGroupCountNotPayload(ctx, user), label);
+}
+
 function sendOfficeGuestListBootstrap(ctx, socket) {
-  ctx.sendServerGamePacket(socket, OFFICE_GUEST_LIST_NOT, buildOfficeGuestListNotData([]), "join-lobby-office-guest-list");
+  const user = socket && socket.session && socket.session.user;
+  const guests = getOfficeGuestProfiles(ctx, user, 4).map((entry) => structuredClone(entry));
+  ctx.sendServerGamePacket(socket, OFFICE_GUEST_LIST_NOT, buildOfficeGuestListNotData(guests), "join-lobby-office-guest-list");
 }
 
 function sendJoinLobbyRaidBootstrap(ctx, socket, user) {
@@ -224,8 +263,11 @@ function sendJoinLobbyRaidBootstrap(ctx, socket, user) {
   try {
     worldMap.sendRaidSnapshotData(ctx, socket, user, {
       ...options,
-      includeWorldMap: true,
-      worldMapLabel: "join-lobby-world-map-data",
+      // The client registers WORLDMAP_INFO_ACK only while its matching request is
+      // in flight. Sending it unsolicited during JOIN_LOBBY breaks Android boot.
+      includeWorldMap: false,
+      includeSeason: true,
+      seasonLabel: "join-lobby-raid-season",
       label: "join-lobby-my-raid-list",
       detailLabel: "join-lobby-raid-detail",
       coopLabel: "join-lobby-raid-coop-list",
@@ -287,7 +329,8 @@ function scheduleFierceLobbyRefresh(ctx, socket, seasonId) {
 }
 
 function sendJoinLobbyBootTemplates(ctx, socket, replay, user) {
-  ctx.sendCapturedGameTemplateRange(socket, 1, 1, "join-lobby-boot");
+  // Captured index 1 is RESET_GROUP_COUNT_NOT and is replaced with the
+  // authoritative persisted reset counters immediately before JOIN_LOBBY_ACK.
   ctx.sendServerGamePacket(
     socket,
     1644,
@@ -295,13 +338,22 @@ function sendJoinLobbyBootTemplates(ctx, socket, replay, user) {
     "join-lobby-boot-company-buff"
   );
   ctx.sendCapturedGameTemplateRange(socket, 3, 5, "join-lobby-boot");
-  const serverNow = ctx.getServerNowDate ? ctx.getServerNowDate() : new Date();
-  const attendancePayload = buildAttendanceNotifyPayload(user, { now: serverNow, clockNow: serverNow, consumePrompt: true });
-  if (attendancePayload) {
-    ctx.sendServerGamePacket(socket, 1640, attendancePayload, "attendance-not");
-  }
+  sendAttendanceBootstrap(ctx, socket, user, "attendance-not");
   ctx.sendCapturedGameTemplateRange(socket, 7, 7, "join-lobby-boot");
   replay.bootLobbyTemplateSent = true;
+}
+
+function sendAttendanceBootstrap(ctx, socket, user, label) {
+  const serverNow = ctx.getServerNowDate ? ctx.getServerNowDate() : new Date();
+  const payload = buildAttendanceNotifyPayload(user, {
+    now: serverNow,
+    clockNow: serverNow,
+    consumePrompt: true,
+  });
+  if (!payload) return false;
+  ctx.sendServerGamePacket(socket, 1640, payload, label || "attendance-not");
+  if (ctx.config && ctx.config.USE_LOCAL_USER_DB && typeof ctx.saveUserDb === "function") ctx.saveUserDb();
+  return true;
 }
 
 function sendJoinLobbyPostBootStart(ctx, socket, replay) {
@@ -315,7 +367,8 @@ function sendJoinLobbyPostBootRest(ctx, socket, replay) {
   if (!ctx.config.REPLAY_CAPTURED_GAME_FLOW || !ctx.capturedGameFlow || !replay || replay.postLobbyBootTemplateSent) {
     return;
   }
-  ctx.sendCapturedGameTemplateRange(socket, 12, 13, "join-lobby-post-boot");
+  ctx.sendCapturedGameTemplateRange(socket, 12, 12, "join-lobby-post-boot");
+  sendResetCountBootstrap(ctx, socket, socket.session && socket.session.user, "join-lobby-reset-count-refresh");
   ctx.sendCapturedGameTemplateRange(socket, 15, 16, "join-lobby-post-boot");
   replay.postLobbyBootTemplateSent = true;
   replay.bootPostListTemplateSent = true;

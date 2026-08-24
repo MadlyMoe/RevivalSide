@@ -7,6 +7,8 @@ const {
   toBigInt,
   writeInt64LE,
   writeNullableObject,
+  writeNullObject,
+  writeObjectList,
   writeSignedVarInt,
 } = require("../packet-codec");
 const { getMiscItem, setMiscItemBalance } = require("../inventory");
@@ -22,8 +24,11 @@ const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
 const CHARGE_ITEM_NOT = 1051;
+const CONTENTS_DAILY_REFRESH_NOT = 1629;
+const WEEKLY_REFRESH_NOT = 1648;
 const PVP_CHARGE_POINT_REFRESH_REQ = 2608;
 const PVP_CHARGE_POINT_REFRESH_ACK = 2609;
+const PVP_CHARGE_POINT_NOT_FOUND_ERROR = 348;
 
 const ITEM_IDS = Object.freeze({
   ETERNIUM: 2,
@@ -37,6 +42,15 @@ const ITEM_IDS = Object.freeze({
   SIM_AIR_TICKET: 17,
   DIVE_PERMIT: 1065,
 });
+const DAILY_REFRESH_ITEM_IDS = Object.freeze([
+  ITEM_IDS.DAILY_TICKET,
+  ITEM_IDS.PVP_PRACTICE_CHARGE_POINT,
+  ITEM_IDS.SIM_ATTACK_TICKET,
+  ITEM_IDS.SIM_DEFENSE_TICKET,
+  ITEM_IDS.SIM_AIR_TICKET,
+  ITEM_IDS.DIVE_PERMIT,
+]);
+const PVP_REFRESH_ITEM_IDS = new Set([ITEM_IDS.PVP_CHARGE_POINT, ITEM_IDS.PVP_PRACTICE_CHARGE_POINT]);
 
 const DAILY_UTC_HOUR = Number(process.env.CS_STAMINA_DAILY_REFRESH_UTC_HOUR || 4);
 
@@ -52,10 +66,21 @@ function createStaminaHandlers() {
         const user = getSocketUser(ctx, socket);
         const req = decodePvpChargePointRefreshReq(ctx, packet.payload);
         const now = getNow(ctx);
+        if (!req.valid || !PVP_REFRESH_ITEM_IDS.has(req.itemId)) {
+          console.log(`[stamina:PVP_CHARGE_POINT_REFRESH_REQ] ACK packetId=${PVP_CHARGE_POINT_REFRESH_ACK} itemId=${req.itemId} error=${PVP_CHARGE_POINT_NOT_FOUND_ERROR}`);
+          send(
+            ctx,
+            socket,
+            packet,
+            PVP_CHARGE_POINT_REFRESH_ACK,
+            buildPvpChargePointRefreshAckPayload(null, now, PVP_CHARGE_POINT_NOT_FOUND_ERROR)
+          );
+          return true;
+        }
         const refresh = refreshTimedStamina(user, {
           now,
           itemIds: [req.itemId],
-          initializeMissing: true,
+          initializeMissing: false,
         });
         const itemData = getMiscItem(user, req.itemId);
         const lastUpdateDate = getChargeItemLastUpdateDate(user, req.itemId, now);
@@ -83,6 +108,13 @@ function ensureStaminaState(user) {
     user.stamina.chargeItems && typeof user.stamina.chargeItems === "object" && !Array.isArray(user.stamina.chargeItems)
       ? user.stamina.chargeItems
       : {};
+  user.stamina.pendingDailyItemIds = Array.from(
+    new Set(
+      (Array.isArray(user.stamina.pendingDailyItemIds) ? user.stamina.pendingDailyItemIds : [])
+        .map(Number)
+        .filter((itemId) => DAILY_REFRESH_ITEM_IDS.includes(itemId))
+    )
+  ).sort((left, right) => left - right);
   return user.stamina;
 }
 
@@ -100,15 +132,16 @@ function refreshTimedStamina(user, options = {}) {
       .filter((itemId) => Number.isInteger(itemId) && itemId > 0)
   );
   const routes = getTimedStaminaRoutes(user).filter((route) => selectedItemIds.has(route.itemId));
+  const staminaState = ensureStaminaState(user);
   const updates = [];
   let changed = false;
 
   for (const route of routes) {
     const before = getMiscItem(user, route.itemId);
     const beforeTotal = getItemTotal(before);
-    const state = getChargeItemState(user, route.itemId);
-    const hadLastUpdate = state.lastUpdateDate != null && state.lastUpdateDate !== "";
-    const lastUpdateDate = normalizeDateTimeTicks(state.lastUpdateDate || now);
+    const routeState = getChargeItemState(user, route.itemId);
+    const hadLastUpdate = routeState.lastUpdateDate != null && routeState.lastUpdateDate !== "";
+    const lastUpdateDate = normalizeDateTimeTicks(routeState.lastUpdateDate || now);
     const result =
       route.kind === "daily"
         ? refreshDailyRoute(user, route, before, beforeTotal, lastUpdateDate, now, {
@@ -118,21 +151,26 @@ function refreshTimedStamina(user, options = {}) {
             initializeMissing: options.initializeMissing !== false || !hadLastUpdate,
           });
 
-    state.lastUpdateDate = String(result.lastUpdateDate);
-    state.lastUpdateIso = new Date(ticksToUnixMs(result.lastUpdateDate)).toISOString();
-    state.kind = route.kind;
-    state.max = route.max;
-    state.amount = route.amount;
-    state.intervalSeconds = route.intervalSeconds || 0;
-    state.refreshHourUtc = route.refreshHourUtc == null ? null : route.refreshHourUtc;
+    routeState.lastUpdateDate = String(result.lastUpdateDate);
+    routeState.lastUpdateIso = new Date(ticksToUnixMs(result.lastUpdateDate)).toISOString();
+    routeState.kind = route.kind;
+    routeState.max = route.max;
+    routeState.amount = route.amount;
+    routeState.intervalSeconds = route.intervalSeconds || 0;
+    routeState.refreshHourUtc = route.refreshHourUtc == null ? null : route.refreshHourUtc;
 
     if (result.changed) {
       changed = true;
       const itemData = getMiscItem(user, route.itemId);
+      if (route.kind === "daily" && !staminaState.pendingDailyItemIds.includes(route.itemId)) {
+        staminaState.pendingDailyItemIds.push(route.itemId);
+        staminaState.pendingDailyItemIds.sort((left, right) => left - right);
+      }
       updates.push({
         itemId: route.itemId,
         itemData,
         lastUpdateDate: result.lastUpdateDate,
+        kind: route.kind,
       });
     }
   }
@@ -146,6 +184,34 @@ function buildChargeItemNotPayload(update = {}) {
     writeInt64LE(normalizeDateTimeTicks(update.lastUpdateDate || dateTimeBinaryNow())),
     itemData ? writeNullableObject(buildItemMiscData(itemData)) : writeNullableObject(buildItemMiscData({ itemId: 0 })),
   ]);
+}
+
+function buildContentsDailyRefreshNotPayload(items = [], errorCode = 0) {
+  return Buffer.concat([
+    writeSignedVarInt(Number(errorCode || 0)),
+    writeObjectList(
+      (Array.isArray(items) ? items : []).filter(Boolean).map((item) => writeNullableObject(buildItemMiscData(item)))
+    ),
+  ]);
+}
+
+function buildWeeklyRefreshNotPayload(items = []) {
+  return writeObjectList(
+    (Array.isArray(items) ? items : []).filter(Boolean).map((item) => writeNullableObject(buildItemMiscData(item)))
+  );
+}
+
+function getPendingDailyRefreshItems(user) {
+  const state = ensureStaminaState(user);
+  return state.pendingDailyItemIds.map((itemId) => getMiscItem(user, itemId)).filter(Boolean);
+}
+
+function clearPendingDailyRefreshItems(user, itemIds = []) {
+  const state = ensureStaminaState(user);
+  const consumed = new Set((Array.isArray(itemIds) ? itemIds : [itemIds]).map(Number));
+  const previousLength = state.pendingDailyItemIds.length;
+  state.pendingDailyItemIds = state.pendingDailyItemIds.filter((itemId) => !consumed.has(itemId));
+  return state.pendingDailyItemIds.length !== previousLength;
 }
 
 function getChargeItemNotifications(user, options = {}) {
@@ -169,10 +235,10 @@ function getChargeItemNotifications(user, options = {}) {
     .filter(Boolean);
 }
 
-function buildPvpChargePointRefreshAckPayload(itemData, chargeTime) {
+function buildPvpChargePointRefreshAckPayload(itemData, chargeTime, errorCode = 0) {
   return Buffer.concat([
-    writeSignedVarInt(0),
-    itemData ? writeNullableObject(buildItemMiscData(itemData)) : writeNullableObject(buildItemMiscData({ itemId: 0 })),
+    writeSignedVarInt(Number(errorCode || 0)),
+    itemData ? writeNullableObject(buildItemMiscData(itemData)) : writeNullObject(),
     writeInt64LE(normalizeDateTimeTicks(chargeTime || dateTimeBinaryNow())),
   ]);
 }
@@ -324,8 +390,10 @@ function refreshDailyRoute(user, route, before, beforeTotal, lastUpdateDate, now
 
   const currentBoundaryMs = latestDailyBoundaryMs(ticksToUnixMs(now), route.refreshHourUtc);
   const currentBoundary = unixMsToDateTimeBinary(currentBoundaryMs);
+  const lastBoundaryMs = latestDailyBoundaryMs(ticksToUnixMs(lastUpdateDate), route.refreshHourUtc);
+  const periods = Math.max(0, Math.floor((currentBoundaryMs - lastBoundaryMs) / DAY_MS));
   if (beforeTotal >= max) {
-    return { changed: false, lastUpdateDate: currentBoundary };
+    return { changed: periods > 0, lastUpdateDate: currentBoundary, item: before };
   }
 
   if (!before || options.initializeMissing) {
@@ -333,8 +401,6 @@ function refreshDailyRoute(user, route, before, beforeTotal, lastUpdateDate, now
     return { changed: true, lastUpdateDate: currentBoundary, item };
   }
 
-  const lastBoundaryMs = latestDailyBoundaryMs(ticksToUnixMs(lastUpdateDate), route.refreshHourUtc);
-  const periods = Math.max(0, Math.floor((currentBoundaryMs - lastBoundaryMs) / DAY_MS));
   if (periods <= 0) return { changed: false, lastUpdateDate };
   const gained = BigInt(periods) * amount;
   const nextTotal = beforeTotal + gained > max ? max : beforeTotal + gained;
@@ -372,10 +438,10 @@ function getItemTotal(item) {
 function decodePvpChargePointRefreshReq(ctx, encryptedPayload) {
   const payload = decrypt(ctx, encryptedPayload);
   try {
-    const itemId = readSignedVarInt(payload, 0).value;
-    return { itemId: Number(itemId || 0) || ITEM_IDS.PVP_CHARGE_POINT };
+    const itemId = readSignedVarInt(payload, 0);
+    return { itemId: Number(itemId.value || 0), valid: itemId.offset === payload.length };
   } catch (_) {
-    return { itemId: ITEM_IDS.PVP_CHARGE_POINT };
+    return { itemId: 0, valid: false };
   }
 }
 
@@ -461,14 +527,22 @@ function unixMsToDateTimeBinary(ms) {
 
 module.exports = {
   CHARGE_ITEM_NOT,
+  CONTENTS_DAILY_REFRESH_NOT,
+  WEEKLY_REFRESH_NOT,
   PVP_CHARGE_POINT_REFRESH_REQ,
   PVP_CHARGE_POINT_REFRESH_ACK,
+  PVP_CHARGE_POINT_NOT_FOUND_ERROR,
   ITEM_IDS,
+  DAILY_REFRESH_ITEM_IDS,
   createStaminaHandlers,
   ensureStaminaState,
   hasStaminaState,
   refreshTimedStamina,
   buildChargeItemNotPayload,
+  buildContentsDailyRefreshNotPayload,
+  buildWeeklyRefreshNotPayload,
+  getPendingDailyRefreshItems,
+  clearPendingDailyRefreshItems,
   getChargeItemNotifications,
   buildPvpChargePointRefreshAckPayload,
   getChargeItemLastUpdateDate,

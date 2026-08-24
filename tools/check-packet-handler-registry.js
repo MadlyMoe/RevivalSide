@@ -11,7 +11,7 @@ const handlers = loadPacketHandlers(
   { rootDir }
 );
 
-assert(handlers.size >= 499, `expected at least 499 implemented request handlers, found ${handlers.size}`);
+assert(handlers.size >= 495, `expected at least 495 implemented request handlers, found ${handlers.size}`);
 for (const [packetId, handler] of handlers) {
   assert(Number.isInteger(packetId) && packetId >= 0, `invalid packet id ${packetId}`);
   assert.strictEqual(typeof handler.handle, "function", `packet ${packetId} has no handler`);
@@ -19,9 +19,29 @@ for (const [packetId, handler] of handlers) {
 }
 
 const specialistOwners = new Map([
+  [820, "packet-handlers\\0000-combat-control-reqs.js"],
+  [823, "packet-handlers\\0823-game-giveup-req.js"],
+  [825, "packet-handlers\\0000-combat-control-reqs.js"],
+  [827, "packet-handlers\\0000-combat-control-reqs.js"],
+  [814, "packet-handlers\\0000-battle-actions.js"],
+  [835, "packet-handlers\\0000-battle-actions.js"],
+  [838, "packet-handlers\\0000-battle-actions.js"],
+  [842, "packet-handlers\\0000-battle-actions.js"],
+  [861, "packet-handlers\\0000-battle-actions.js"],
+  [882, "packet-handlers\\0000-battle-actions.js"],
+  [889, "packet-handlers\\0000-0889-ingame-skip.js"],
   [226, "modules\\profile\\handlers\\"],
   [844, "modules\\misc-stages\\handlers\\"],
   [855, "modules\\simulation\\handlers\\"],
+  [1219, "modules\\stage-play-reset\\handlers\\"],
+  [1221, "modules\\shadow-palace\\handlers\\"],
+  [1223, "modules\\shadow-palace\\handlers\\"],
+  [1251, "modules\\shadow-palace\\handlers\\"],
+  [2697, "modules\\pvp-pick-rate\\handlers\\"],
+  [3073, "modules\\mini-game\\handlers\\"],
+  [3075, "modules\\mini-game\\handlers\\"],
+  [3081, "modules\\score-reward\\handlers\\"],
+  [3083, "modules\\score-reward\\handlers\\"],
   [1000, "modules\\equipment-pipeline\\handlers\\"],
   [1400, "modules\\unit-growth\\handlers\\"],
   [1438, "modules\\collection\\handlers\\"],

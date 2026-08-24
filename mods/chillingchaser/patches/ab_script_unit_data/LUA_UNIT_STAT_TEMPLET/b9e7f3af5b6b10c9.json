@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script_unit_data",
+    "fileName": "LUA_UNIT_STAT_TEMPLET.json",
+    "tableName": "LUA_UNIT_STAT_TEMPLET",
+    "format": "json"
+  },
+  "key": {
+    "field": "m_UnitStrID",
+    "value": "NKM_UNIT_CHILLING_CHASER"
+  },
+  "source": {
+    "field": "m_UnitStrID",
+    "value": "NKM_MOB_BOSS_EVENT_ESPR2_NEPHILIM_ESPR2"
+  },
+  "value": {
+    "m_UnitStrID": "NKM_UNIT_CHILLING_CHASER",
+    "m_RespawnCost": 10,
+    "m_RespawnCount": 1,
+    "m_EterniumCost": 0,
+    "m_StatData": {
+      "m_Stat": {
+        "NST_HP": 19063,
+        "NST_ATK": 955,
+        "NST_DEF": 520,
+        "NST_CRITICAL": 876,
+        "NST_HIT": 966,
+        "NST_EVADE": 557,
+        "NST_CRITICAL_DAMAGE_RATE": 0.5,
+        "NST_CRITICAL_DAMAGE_RESIST_RATE": 0,
+        "NST_CRITICAL_RESIST": 0,
+        "NST_HP_REGEN_RATE": 0,
+        "NST_DAMAGE_REDUCE_RATE": 0,
+        "NST_MOVE_SPEED_RATE": 0,
+        "NST_ATTACK_SPEED_RATE": 0,
+        "NST_SKILL_COOL_TIME_REDUCE_RATE": 0,
+        "NST_LONG_RANGE_DAMAGE_REDUCE_RATE": 0,
+        "NST_SHORT_RANGE_DAMAGE_REDUCE_RATE": 0,
+        "NST_DAMAGE_LIMIT_RATE_BY_HP": 0,
+        "NST_ATTACK_COUNT_REDUCE": 0,
+        "NST_DAMAGE_RESIST": 0,
+        "NST_MAIN_STAT_RATE": 0
+      },
+      "m_StatPerLevel": {
+        "NST_HP": 5033,
+        "NST_ATK": 137.52,
+        "NST_DEF": 8.01,
+        "NST_CRITICAL": 12.88,
+        "NST_HIT": 14.21,
+        "NST_EVADE": 8.19
+      }
+    }
+  }
+}

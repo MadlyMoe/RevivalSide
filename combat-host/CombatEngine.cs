@@ -46,9 +46,15 @@ internal sealed class CombatEngine
             "handlePause" => HandlePause(Read<PauseCommandData>(request.Data)),
             "handleUnitSkill" => HandleUnitSkill(Read<UnitSkillCommandData>(request.Data)),
             "handleShipSkill" => HandleShipSkill(Read<ShipSkillCommandData>(request.Data)),
+            "handleCheckDie" => HandleCheckDie(Read<CheckDieCommandData>(request.Data)),
+            "handleUnitRetreat" => HandleUnitRetreat(Read<UnitRetreatCommandData>(request.Data)),
+            "handleTacticalCommand" => HandleTacticalCommand(Read<TacticalCommandData>(request.Data)),
             "buildSync" => BuildSync(Read<SyncCommandData>(request.Data)),
             "buildTimeline" => BuildTimeline(Read<TimelineCommandData>(request.Data)),
+            "buildReplayChunk" => BuildReplayChunk(Read<TimelineCommandData>(request.Data)),
             "buildInitialSync" => BuildInitialSync(Read<BattleCommandData>(request.Data)),
+            "buildIntrudeStart" => BuildIntrudeStart(Read<BattleCommandData>(request.Data)),
+            "buildAsyncPvpStartAck" => BuildAsyncPvpStartAck(Read<AsyncPvpStartAckCommandData>(request.Data)),
             "buildRespawnAck" => BuildRespawnAck(Read<RespawnAckCommandData>(request.Data)),
             "buildSyntheticSync" => BuildSyntheticSync(Read<SyntheticSyncCommandData>(request.Data)),
             "isFinished" => IsFinished(Read<BattleCommandData>(request.Data)),
@@ -171,6 +177,8 @@ internal sealed class CombatEngine
             RaidLevel = stage.RaidLevel != 0 ? stage.RaidLevel : req.RaidLevel,
             MapID = stage.MapID != 0 ? stage.MapID : MapIdForStageDungeon(stage.StageId != 0 ? stage.StageId : req.StageID, stage.DungeonID != 0 ? stage.DungeonID : req.DungeonID),
             GameType = stage.GameType != 0 ? stage.GameType : req.GameType,
+            TeamBLevelAdd = stage.TeamBLevelAdd,
+            TeamBLevelFix = stage.TeamBLevelFix,
             MiscMode = stage.MiscMode ?? "",
             PalaceID = stage.PalaceID,
             FierceBossId = stage.FierceBossId,
@@ -181,6 +189,7 @@ internal sealed class CombatEngine
             ExploreStageId = stage.ExploreStageId,
             PhaseId = stage.PhaseId,
             PhaseIndex = stage.PhaseIndex,
+            RewardMultiply = Math.Max(0, req.RewardMultiply ?? 1),
             BattleConditionIds = stage.BattleConditionIds.Where(id => id > 0).Distinct().ToList(),
             FierceBasePoint = Math.Max(0, stage.FierceBasePoint),
             FierceMaxDamagePoint = Math.Max(0, stage.FierceMaxDamagePoint),
@@ -374,6 +383,36 @@ internal sealed class CombatEngine
         return new HostResponse { Ok = false, Error = managedError ?? "managed ship skill unavailable" };
     }
 
+    private HostResponse HandleCheckDie(CheckDieCommandData data)
+    {
+        if (ManagedCombatBridge.TryHandleCheckDie(data, out var managedResponse, out var managedError))
+        {
+            return managedResponse ?? new HostResponse { Ok = false, Error = managedError ?? "managed die check failed" };
+        }
+
+        return new HostResponse { Ok = false, Error = managedError ?? "managed die check unavailable" };
+    }
+
+    private HostResponse HandleUnitRetreat(UnitRetreatCommandData data)
+    {
+        if (ManagedCombatBridge.TryHandleUnitRetreat(data, out var managedResponse, out var managedError))
+        {
+            return managedResponse ?? new HostResponse { Ok = false, Error = managedError ?? "managed unit retreat failed" };
+        }
+
+        return new HostResponse { Ok = false, Error = managedError ?? "managed unit retreat unavailable" };
+    }
+
+    private HostResponse HandleTacticalCommand(TacticalCommandData data)
+    {
+        if (ManagedCombatBridge.TryHandleTacticalCommand(data, out var managedResponse, out var managedError))
+        {
+            return managedResponse ?? new HostResponse { Ok = false, Error = managedError ?? "managed tactical command failed" };
+        }
+
+        return new HostResponse { Ok = false, Error = managedError ?? "managed tactical command unavailable" };
+    }
+
     private HostResponse BuildSync(SyncCommandData data)
     {
         if (ManagedCombatBridge.TryBuildSync(data, out var managedResponse, out var managedError))
@@ -406,6 +445,13 @@ internal sealed class CombatEngine
             : response ?? new HostResponse { Ok = false, Error = error ?? "managed timeline unavailable" };
     }
 
+    private HostResponse BuildReplayChunk(TimelineCommandData data)
+    {
+        return ManagedCombatBridge.TryBuildReplayChunk(data, out var response, out var error)
+            ? response!
+            : response ?? new HostResponse { Ok = false, Error = error ?? "managed replay chunk unavailable" };
+    }
+
     private HostResponse BuildInitialSync(BattleCommandData data)
     {
         if (ManagedCombatBridge.TryBuildInitialSync(data.DynamicGame, data.BattleState, out var managedResponse, out var managedError))
@@ -434,6 +480,20 @@ internal sealed class CombatEngine
             BattleState = battleState,
             PayloadBase64 = Convert.ToBase64String(payload)
         };
+    }
+
+    private static HostResponse BuildIntrudeStart(BattleCommandData data)
+    {
+        return ManagedCombatBridge.TryBuildIntrudeStart(data.DynamicGame, data.BattleState, out var response, out var error)
+            ? response!
+            : response ?? new HostResponse { Ok = false, Error = error ?? "managed battle re-entry unavailable" };
+    }
+
+    private static HostResponse BuildAsyncPvpStartAck(AsyncPvpStartAckCommandData data)
+    {
+        return ManagedCombatBridge.TryBuildAsyncPvpStartAck(data, out var response, out var error)
+            ? response ?? new HostResponse { Ok = true }
+            : new HostResponse { Ok = false, Error = error ?? "managed async PvP start ACK failed" };
     }
 
     private HostResponse BuildRespawnAck(RespawnAckCommandData data)
@@ -1161,6 +1221,20 @@ internal sealed class ShipSkillCommandData : BattleCommandData
     public ShipSkillReq? Req { get; set; }
 }
 
+internal sealed class CheckDieCommandData : BattleCommandData
+{
+}
+
+internal sealed class UnitRetreatCommandData : BattleCommandData
+{
+    public UnitRetreatReq? Req { get; set; }
+}
+
+internal sealed class TacticalCommandData : BattleCommandData
+{
+    public TacticalCommandReq? Req { get; set; }
+}
+
 internal sealed class SyncCommandData : BattleCommandData
 {
     public double? Delta { get; set; }
@@ -1172,6 +1246,13 @@ internal sealed class TimelineCommandData : BattleCommandData
     public double? Delta { get; set; }
     public int MaxFrames { get; set; } = 300;
     public int StartIndex { get; set; }
+}
+
+internal sealed class AsyncPvpStartAckCommandData : BattleCommandData
+{
+    public string TargetListAckPayloadBase64 { get; set; } = "";
+    public string TargetFriendCode { get; set; } = "0";
+    public bool SimulationGame { get; set; }
 }
 
 internal sealed class RespawnAckCommandData

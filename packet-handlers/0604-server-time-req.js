@@ -1,4 +1,6 @@
+const { sendEventBarDailyInfoNotification } = require("../modules/event-bar");
 const { sendCounterPassLobbyNotifications } = require("../modules/event-pass");
+const { refreshShopLifecycle } = require("../modules/shop");
 
 module.exports = {
   packetId: 604,
@@ -34,7 +36,9 @@ module.exports = {
       ctx.writeSignedVarLong(serverTicks),
       "server-time"
     );
-    sendCounterPassLobbyNotifications(ctx, socket, "server-time-counter-pass", { resendIfNoAck: true });
+    sendCounterPassLobbyNotifications(ctx, socket, "server-time-counter-pass");
+    sendEventBarDailyInfoNotification(ctx, socket, "server-time-event-bar");
+    refreshShopLifecycle(ctx, socket, socket && socket.session && socket.session.user, "server-time-shop");
     return true;
   },
 };

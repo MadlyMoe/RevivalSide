@@ -5,9 +5,12 @@ const os = require("os");
 const path = require("path");
 const vm = require("vm");
 const { createAssetViewer } = require("../server/assetViewer");
-const { EDITOR_SCRIPT } = require("../modules/unity-bundle-compiler");
+const { EDITOR_SCRIPT, normalizeBuildTarget } = require("../modules/unity-bundle-compiler");
 
 async function main() {
+  assert.strictEqual(normalizeBuildTarget(), "windows");
+  assert.strictEqual(normalizeBuildTarget("android"), "android");
+  assert.throws(() => normalizeBuildTarget("ios"), /windows or android/);
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "revivalside-asset-viewer-"));
   const tableDir = path.join(tempDir, "gameplay-jsons", "StreamingAssets", "ab_script", "luac");
   const unitTableDir = path.join(tempDir, "gameplay-jsons", "StreamingAssets", "ab_script_unit_data", "luac");
@@ -350,7 +353,9 @@ async function main() {
     assert.strictEqual(uploaded.file, "assets/source/custom.png");
     const compiler = await requestJson(port, "/mod-side/api/unity-compiler");
     assert.strictEqual(compiler.requiredVersion, "2022.3.62f2");
+    assert.deepStrictEqual(compiler.targets, ["windows", "android"]);
     assert.match(EDITOR_SCRIPT, /TextureImporterType\.Sprite/);
+    assert.match(EDITOR_SCRIPT, /BuildTarget\.Android/);
     const copied = await requestJson(port, "/mod-side/api/mods/test-mod/copy-record", { method: "POST", body: JSON.stringify({ directory: "ab_script", fileName: "LUA_TEST_TABLE.json", recordIndex: 1 }), headers: { "Content-Type": "application/json" } });
     assert.strictEqual(copied.patch.key.field, "m_ID");
     assert.strictEqual(copied.patch.key.value, 2);

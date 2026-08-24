@@ -25,10 +25,16 @@ internal object AndroidPayloadCache {
     private const val MIRROR_MANIFEST = "android-client/payload-manifest.json"
     private const val MAX_MANIFEST_BYTES = 16 * 1024 * 1024
     private const val COPY_BUFFER_BYTES = 1024 * 1024
-    private const val STORAGE_HEADROOM_BYTES = 512L * 1024L * 1024L
+    private const val STORAGE_HEADROOM_BYTES = 2L * 1024L * 1024L * 1024L
     private const val PROGRESS_INTERVAL_MS = 250L
 
-    fun localCdnBaseUrl(httpPort: Int): String = "http://127.0.0.1:$httpPort/patchfiles/"
+    fun localCdnPort(httpPort: Int): Int = httpPort
+
+    fun nodeMirrorPort(httpPort: Int): Int = if (httpPort < 65535) httpPort + 1 else httpPort - 1
+
+    fun localCdnOrigin(httpPort: Int): String = "http://127.0.0.1:${localCdnPort(httpPort)}"
+
+    fun localCdnBaseUrl(httpPort: Int): String = "http://127.0.0.1:${localCdnPort(httpPort)}/patchfiles/"
 
     fun activeRoot(context: Context): File? {
         val contract = runCatching { AndroidClientContract.load(context) }.getOrNull() ?: return null
@@ -102,9 +108,13 @@ internal object AndroidPayloadCache {
 
                     removeStaleCaches(cacheRoot, staging)
                     val available = StatFs(cacheRoot.absolutePath).availableBytes
-                    val required = Math.addExact(contract.payloadTotalBytes, STORAGE_HEADROOM_BYTES)
+                    val required = Math.addExact(
+                        Math.multiplyExact(contract.payloadTotalBytes, 2L),
+                        STORAGE_HEADROOM_BYTES,
+                    )
                     check(available >= required) {
-                        "Not enough free storage. Payload extraction needs ${formatBytes(required)}, but ${formatBytes(available)} is available."
+                        "Not enough free storage. Payload extraction plus Counter:Side installation needs " +
+                            "${formatBytes(required)}, but ${formatBytes(available)} is available."
                     }
                     File(staging, ROOT_MANIFEST).writeBytes(manifestBytes)
                     zip.closeEntry()

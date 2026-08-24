@@ -3,6 +3,7 @@ const { createTickEngine } = require("./tick");
 const { createBattleStateManager, buildCapturedRespawnUnitPools } = require("./battleState");
 const { createDeployHandler } = require("./deploy");
 const { createCsharpCombatHost } = require("./csharpHost");
+const { readSignedVarInt } = require("../modules/packet-codec");
 
 // Combat handler facade.
 //
@@ -22,6 +23,7 @@ function createCombatHandler(options = {}) {
     gameplayTablesDir: config.GAMEPLAY_TABLES_DIR,
     modTablesDir: config.MOD_TABLES_DIR,
     contentsTags: config.CONTENTS_TAGS,
+    openTags: config.OPEN_TAGS,
     dotnetPath: config.CSHARP_COMBAT_HOST_DOTNET,
     responseBufferBytes: config.CSHARP_COMBAT_HOST_RESPONSE_BUFFER_BYTES,
     syncIntervalSeconds: Number(config.MANAGED_HOST_TICK_INTERVAL_MS || 33) / 1000,
@@ -35,10 +37,12 @@ function createCombatHandler(options = {}) {
     defaultDeployedUnitHp: options.defaultDeployedUnitHp,
   });
   let csharpWarningPrinted = false;
+  const managedHostStatus = { enabled: csharpHost.enabled, ready: false, error: "" };
   const modUnitIds = String(process.env.CS_MOD_UNIT_IDS || "").split(",").map(Number).filter((id) => Number.isSafeInteger(id) && id > 0);
   if (csharpHost.enabled) {
     const warmup = csharpHost.request("warmup", {});
     if (warmup.ok) {
+      managedHostStatus.ready = true;
       console.log(`[combat-host] warmup ok host=${csharpHost.hostPath}`);
       if (modUnitIds.length) {
         const validation = csharpHost.request("validateUnitTemplets", { unitIds: modUnitIds });
@@ -46,6 +50,7 @@ function createCombatHandler(options = {}) {
         console.log(`[combat-host] ${validation.summary}`);
       }
     } else {
+      managedHostStatus.error = summarizeHostError(warmup.error);
       if (modUnitIds.length) throw new Error(`[combat-host] active unit mods require a working managed host: ${warmup.error || "warmup failed"}`);
       warnCsharpFallback(warmup.error);
     }
@@ -124,8 +129,10 @@ function createCombatHandler(options = {}) {
       });
       if (response.ok && response.deployed && response.deployed.handled) {
         applyHostState(replay, response);
-        mirrorManagedDeployToBattleState(replay, request.req);
         const ack = (response.packets || []).find((packet) => packet.packetId === 817);
+        if (!ack || !ack.payload) return { handled: false, error: "managed deploy did not return GAME_RESPAWN_ACK" };
+        const errorCode = readSignedVarInt(ack.payload, 0).value;
+        if (errorCode === 0) mirrorManagedDeployToBattleState(replay, request.req);
         const sync = (response.packets || []).find((packet) => packet.packetId === 822);
         const packets = (response.packets || [])
           .filter((packet) => packet && packet.packetId && packet.payload)
@@ -135,6 +142,7 @@ function createCombatHandler(options = {}) {
           mode: response.deployed.mode || "battleState",
           deployed: response.deployed.unit || null,
           spawned: response.deployed.spawned || null,
+          errorCode,
           packets,
           ackPayload: ack && ack.payload,
           syncPayload: sync && sync.payload,
@@ -182,6 +190,18 @@ function createCombatHandler(options = {}) {
 
   function handleShipSkill(request = {}) {
     return handleManagedSkill("handleShipSkill", request, "managed-ship-skill");
+  }
+
+  function handleCheckDie(request = {}) {
+    return handleManagedSkill("handleCheckDie", { ...request, req: request.req || {} }, "managed-check-die");
+  }
+
+  function handleUnitRetreat(request = {}) {
+    return handleManagedSkill("handleUnitRetreat", request, "managed-unit-retreat");
+  }
+
+  function handleTacticalCommand(request = {}) {
+    return handleManagedSkill("handleTacticalCommand", request, "managed-tactical-command");
   }
 
   function disposeBattle(replay) {
@@ -276,6 +296,30 @@ function createCombatHandler(options = {}) {
     return payload ? [{ packetId: constants.NPT_GAME_SYNC_DATA_PACK_NOT, payload, label: "dynamic-game-sync" }] : [];
   }
 
+  function buildReplayChunk(replay, options = {}) {
+    if (!csharpHost.enabled || !replay || !replay.battleState || !replay.dynamicGame || !replay.dynamicGame.managedCombat) {
+      return null;
+    }
+    const response = csharpHost.request("buildReplayChunk", {
+      dynamicGame: replay.dynamicGame,
+      battleState: replay.battleState,
+      delta: options.delta == null ? 0.1 : Number(options.delta),
+      maxFrames: options.maxFrames == null ? 600 : Number(options.maxFrames),
+      startIndex: Number(options.startIndex || 0),
+    });
+    if (!response.ok || !response.timeline) {
+      console.log(`[combat-host] managed replay chunk failed: ${summarizeHostError(response.error)}`);
+      return null;
+    }
+    applyHostState(replay, response);
+    return {
+      timeline: response.timeline,
+      packets: (response.packets || [])
+        .filter((packet) => packet && packet.packetId && packet.payload)
+        .map((packet) => toListenerPacket(packet, "managed-replay")),
+    };
+  }
+
   function buildInitialSync(replay) {
     if (csharpHost.enabled && replay && replay.battleState && replay.dynamicGame && replay.dynamicGame.managedCombat) {
       const response = csharpHost.request("buildInitialSync", {
@@ -318,8 +362,26 @@ function createCombatHandler(options = {}) {
     return payload ? [{ packetId: constants.NPT_GAME_SYNC_DATA_PACK_NOT, payload, label: "dynamic-game-sync" }] : [];
   }
 
+  function buildIntrudeStartPackets(replay) {
+    if (!csharpHost.enabled || !replay || !replay.battleState || !replay.dynamicGame || !replay.dynamicGame.managedCombat) {
+      return [];
+    }
+    const response = csharpHost.request("buildIntrudeStart", {
+      dynamicGame: replay.dynamicGame,
+      battleState: replay.battleState,
+    });
+    if (!response.ok) {
+      console.log(`[combat-host] managed battle re-entry failed: ${summarizeHostError(response.error)}`);
+      return [];
+    }
+    applyHostState(replay, response);
+    return (response.packets || [])
+      .filter((packet) => packet && packet.packetId && packet.payload)
+      .map((packet) => toListenerPacket(packet, "managed-intrude-start"));
+  }
+
   function buildRespawnAck(data = {}) {
-    if (csharpHost.enabled) {
+    if (csharpHost.enabled && !Number(data.errorCode || 0)) {
       const response = csharpHost.request("buildRespawnAck", {
         unitUID: data.unitUID,
         assistUnit: Boolean(data.assistUnit),
@@ -330,8 +392,22 @@ function createCombatHandler(options = {}) {
     return syncBuilder.buildRespawnAck(data);
   }
 
-  function buildGameRespawnAckPayload(unitUID, assistUnit) {
-    return buildRespawnAck({ unitUID, assistUnit });
+  function buildGameRespawnAckPayload(unitUID, assistUnit, errorCode = 0) {
+    return buildRespawnAck({ unitUID, assistUnit, errorCode });
+  }
+
+  function buildAsyncPvpStartAck(replay, options = {}) {
+    if (!csharpHost.enabled || !replay || !replay.dynamicGame || !replay.dynamicGame.managedCombat) return null;
+    const response = csharpHost.request("buildAsyncPvpStartAck", {
+      dynamicGame: replay.dynamicGame,
+      battleState: replay.battleState,
+      targetListAckPayloadBase64: Buffer.from(options.targetListAckPayload || Buffer.alloc(0)).toString("base64"),
+      targetFriendCode: String(options.targetFriendCode || 0),
+      simulationGame: Boolean(options.simulationGame),
+    });
+    if (response.ok && response.payload) return response.payload;
+    console.log(`[combat-host] async PvP start ACK failed: ${summarizeHostError(response.error)}`);
+    return null;
   }
 
   function mergeJoinLobbyAck(officialPayload, localPayload, options = {}) {
@@ -355,6 +431,9 @@ function createCombatHandler(options = {}) {
       filterInactiveEventIntervals: Boolean(options.filterInactiveEventIntervals),
       preserveOfficialContractData: Boolean(options.preserveOfficialContractData),
       overlayLocalContractData: Boolean(options.overlayLocalContractData),
+      overlayLocalPvpRankData: Boolean(options.overlayLocalPvpRankData),
+      overlayLocalAsyncPvpData: Boolean(options.overlayLocalAsyncPvpData),
+      overlayLocalLeaguePvpData: Boolean(options.overlayLocalLeaguePvpData),
     });
     if (!response.ok || !response.payload) {
       return { ok: false, error: response.error || "managed lobby merge failed" };
@@ -736,6 +815,7 @@ function createCombatHandler(options = {}) {
     const battlePlayTime = packet.battlePlayTime ?? packet.BattlePlayTime;
     const fiercePoint = packet.fiercePoint ?? packet.FiercePoint;
     const fiercePenaltyPoint = packet.fiercePenaltyPoint ?? packet.FiercePenaltyPoint;
+    const defencePoint = packet.defencePoint ?? packet.DefencePoint;
     if (battleWin != null) {
       output.battleWin = battleWin;
     }
@@ -750,6 +830,9 @@ function createCombatHandler(options = {}) {
     }
     if (fiercePenaltyPoint != null) {
       output.fiercePenaltyPoint = fiercePenaltyPoint;
+    }
+    if (defencePoint != null) {
+      output.defencePoint = defencePoint;
     }
     if (Array.isArray(battleRecords) && battleRecords.length > 0) {
       output.battleRecords = battleRecords;
@@ -801,20 +884,27 @@ function createCombatHandler(options = {}) {
   }
 
   return {
+    getReadiness: () => ({ ...managedHostStatus }),
     startBattle,
     handleDeploy,
     handlePause,
     handleUnitSkill,
     handleShipSkill,
+    handleCheckDie,
+    handleUnitRetreat,
+    handleTacticalCommand,
     disposeBattle,
     tick,
     buildSync,
     buildGameSync: buildSync,
     buildGameSyncPackets: buildSyncPackets,
+    buildReplayChunk,
     buildInitialBattleSync: buildInitialSync,
     buildInitialBattlePackets: buildInitialPackets,
+    buildIntrudeStartPackets,
     buildRespawnAck,
     buildGameRespawnAckPayload,
+    buildAsyncPvpStartAck,
     mergeJoinLobbyAck,
     normalizeJoinLobbyAck,
     extractJoinLobbyProfile,

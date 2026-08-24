@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script",
+    "fileName": "LUA_SKIN_TEMPLET.json",
+    "tableName": "LUA_SKIN_TEMPLET"
+  },
+  "key": {
+    "field": "m_SkinID",
+    "value": 1006514
+  },
+  "source": {
+    "field": "m_SkinID",
+    "value": 109909
+  },
+  "value": {
+    "m_bEnable": true,
+    "m_OpenTag": "TAG_COMMON_SKIN_UNIT_C_POLICE_LEE_YUMI_SUMMER",
+    "m_SkinID": 1006514,
+    "m_SkinStrID": "NKM_UNIT_C_POLICE_LEE_YUMI_SUMMER_MOD_26049",
+    "m_SkinEquipUnitID": 26049,
+    "m_SkinGrade": "SG_RARE",
+    "m_bLimited": false,
+    "m_ReturnItemID": 101,
+    "m_ReturnItemCount": 1440,
+    "m_bEffect": true,
+    "m_SkinSkillCutIn": "CUTIN_NORMAL",
+    "m_Title": "SI_SKIN_TITLE_NKM_UNIT_C_POLICE_LEE_YUMI_SUMMER",
+    "m_SkinDesc": "SI_SKIN_DESC_NKM_UNIT_C_POLICE_LEE_YUMI_SUMMER",
+    "m_bCubismIllust": false,
+    "m_VoiceBundleName": "AB_UI_SKIN_VOICE_NKM_UNIT_C_POLICE_LEE_YUMI_SUMMER",
+    "m_SpriteBundleName": "AB_UNIT_GAME_SPINE_NKM_UNIT_C_POLICE_LEE_YUMI_SUMMER",
+    "m_SpriteName": "SPINE_NKM_UNIT_C_POLICE_LEE_YUMI_SUMMER",
+    "m_FaceCardName": "AB_UNIT_FACE_CARD_NKM_UNIT_C_POLICE_LEE_YUMI_SUMMER",
+    "m_SpineIllustName": "AB_UNIT_ILLUST_NKM_UNIT_C_POLICE_LEE_YUMI_SUMMER",
+    "m_SpineSDName": "AB_UNIT_SD_SPINE_NKM_UNIT_C_POLICE_LEE_YUMI_SUMMER",
+    "m_InvenIconName": "AB_INVEN_ICON_NKM_UNIT_C_POLICE_LEE_YUMI_SUMMER",
+    "m_HyperSkillCutin": "AB_FX_SKILL_CUTIN_NKM_UNIT_C_POLICE_LEE_YUMI_SUMMER"
+  }
+}

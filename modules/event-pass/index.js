@@ -4,13 +4,17 @@ const {
   readSignedVarInt,
   writeBool,
   writeInt64LE,
+  writeIntList,
   writeNullableObject,
   writeNullableObjectList,
+  writeNullObject,
   writeSignedVarInt,
   buildItemMiscData,
   buildRewardData,
+  toBigInt,
 } = require("../packet-codec");
 const { createEmptyReward, grantRewardByType, mergeReward } = require("../reward");
+const { getMiscItem, spendMiscItem } = require("../inventory");
 
 const ROOT_DIR = path.resolve(__dirname, "..", "..");
 
@@ -33,9 +37,27 @@ const PACKETS = Object.freeze({
   EVENT_PASS_DOT_NOT: 3023,
   EVENT_PASS_LEVEL_UP_REQ: 3024,
   EVENT_PASS_LEVEL_UP_ACK: 3025,
+  REMAIN_PASS_REWARD_REQ: 1668,
+  REMAIN_PASS_REWARD_ACK: 1669,
 });
 
 const ERROR_OK = 0;
+const ERRORS = Object.freeze({
+  NOT_ENABLED: 20716,
+  NO_REWARD: 20679,
+  INSUFFICIENT_MISSIONS: 20682,
+  FINAL_DAILY_COMPLETE: 20683,
+  FINAL_WEEKLY_COMPLETE: 20684,
+  RETRY_DISABLED: 20687,
+  INVALID_MISSION: 20690,
+  ALREADY_PURCHASED: 20693,
+  INVALID_OPERATION: 20694,
+  ADD_EXP: 20696,
+  MAX_RETRY: 20709,
+  INSUFFICIENT_RESOURCE: 109,
+  INVALID_REQUEST: 20191,
+});
+const REMAIN_REWARD_CONTENT = Object.freeze({ EventPass: 0, PrestigeMission: 1 });
 const MISSION_TYPES = Object.freeze({
   Daily: 0,
   Weekly: 1,
@@ -45,8 +67,6 @@ const GENERIC_EVENT_PASS_EXP_ID = 504;
 const TICKS_AT_UNIX_EPOCH = 621355968000000000n;
 const DATE_TIME_LOCAL_MASK = 0x4000000000000000n;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const COUNTER_PASS_NOTIFY_RETRY_MS = 1500;
-
 let cachedTables = null;
 
 function createEventPassHandlers() {
@@ -59,6 +79,7 @@ function createEventPassHandlers() {
     [PACKETS.EVENT_PASS_PURCHASE_CORE_PASS_REQ, "EVENT_PASS_PURCHASE_CORE_PASS_REQ", handlePurchaseCorePassReq],
     [PACKETS.EVENT_PASS_PURCHASE_CORE_PASS_PLUS_REQ, "EVENT_PASS_PURCHASE_CORE_PASS_PLUS_REQ", handlePurchaseCorePassPlusReq],
     [PACKETS.EVENT_PASS_LEVEL_UP_REQ, "EVENT_PASS_LEVEL_UP_REQ", handleLevelUpReq],
+    [PACKETS.REMAIN_PASS_REWARD_REQ, "REMAIN_PASS_REWARD_REQ", handleRemainingPassRewardReq],
   ];
   return handlers.map(([packetId, name, handle]) => ({
     packetId,
@@ -69,12 +90,33 @@ function createEventPassHandlers() {
   }));
 }
 
+function handleRemainingPassRewardReq(ctx, socket, packet) {
+  const user = getSocketUser(ctx, socket);
+  const result = isStrictEmptyRequest(ctx, packet && packet.payload)
+    ? claimRemainingPassRewards(ctx, user)
+    : { errorCode: ERRORS.INVALID_REQUEST, contents: [], reward: null, changed: false };
+  send(
+    ctx,
+    socket,
+    packet,
+    PACKETS.REMAIN_PASS_REWARD_ACK,
+    buildRemainingPassRewardAckPayload(result),
+    "remaining-pass-reward"
+  );
+  if (result.changed) {
+    persist(ctx, { affectsJoinLobby: true });
+    if (ctx && typeof ctx.invalidateJoinLobbyAckPayloadCache === "function") {
+      ctx.invalidateJoinLobbyAckPayloadCache("remaining-pass-reward");
+    }
+  }
+  return true;
+}
+
 function handleEventPassReq(ctx, socket, packet) {
   if (shouldDeferCounterPassForTutorial(ctx, socket, { activeBootstrapOnly: true })) {
     console.log("[counter-pass:req] deferred during tutorial captured bootstrap");
     return true;
   }
-  markCounterPassRequestSeen(socket);
   const user = getSocketUser(ctx, socket);
   const pass = resolveActiveCounterPass(ctx);
   const payload = buildEventPassAckPayload(ctx, user, pass);
@@ -88,17 +130,19 @@ function handleEventPassReq(ctx, socket, packet) {
   }
   send(ctx, socket, packet, PACKETS.EVENT_PASS_ACK, payload, "counter-pass");
   if (pass) sendCounterPassDotNotification(ctx, socket, user, pass, "counter-pass-dot");
-  persist(ctx);
+  if (pass) persist(ctx);
   return true;
 }
 
 function handleLevelCompleteReq(ctx, socket, packet) {
   const user = getSocketUser(ctx, socket);
   const pass = resolveActiveCounterPass(ctx);
-  const payload = buildLevelCompleteAckPayload(ctx, user, pass);
-  send(ctx, socket, packet, PACKETS.EVENT_PASS_LEVEL_COMPLETE_ACK, payload, "counter-pass-level-complete");
-  sendCounterPassDotNotification(ctx, socket, user, pass, "counter-pass-dot");
-  persist(ctx);
+  const result = completePassLevels(ctx, user, pass);
+  send(ctx, socket, packet, PACKETS.EVENT_PASS_LEVEL_COMPLETE_ACK, result.payload, "counter-pass-level-complete");
+  if (result.changed) {
+    sendCounterPassDotNotification(ctx, socket, user, pass, "counter-pass-dot");
+    persist(ctx);
+  }
   return true;
 }
 
@@ -106,9 +150,11 @@ function handleMissionReq(ctx, socket, packet) {
   const user = getSocketUser(ctx, socket);
   const pass = resolveActiveCounterPass(ctx);
   const missionType = decodeMissionType(ctx, packet.payload);
-  const payload = buildMissionAckPayload(ctx, user, pass, missionType);
+  const payload = pass
+    ? buildMissionAckPayload(ctx, user, pass, missionType)
+    : buildMissionErrorPayload(ERRORS.NOT_ENABLED, missionType);
   send(ctx, socket, packet, PACKETS.EVENT_PASS_MISSION_ACK, payload, "counter-pass-mission");
-  persist(ctx);
+  if (pass) persist(ctx);
   return true;
 }
 
@@ -116,10 +162,12 @@ function handleFinalMissionCompleteReq(ctx, socket, packet) {
   const user = getSocketUser(ctx, socket);
   const pass = resolveActiveCounterPass(ctx);
   const missionType = decodeMissionType(ctx, packet.payload);
-  const payload = buildFinalMissionCompleteAckPayload(user, pass, missionType);
-  send(ctx, socket, packet, PACKETS.EVENT_PASS_FINAL_MISSION_COMPLETE_ACK, payload, "counter-pass-final-mission");
-  sendCounterPassDotNotification(ctx, socket, user, pass, "counter-pass-dot");
-  persist(ctx);
+  const result = completeFinalMission(ctx, user, pass, missionType);
+  send(ctx, socket, packet, PACKETS.EVENT_PASS_FINAL_MISSION_COMPLETE_ACK, result.payload, "counter-pass-final-mission");
+  if (result.changed) {
+    sendCounterPassDotNotification(ctx, socket, user, pass, "counter-pass-dot");
+    persist(ctx);
+  }
   return true;
 }
 
@@ -127,57 +175,46 @@ function handleDailyMissionRetryReq(ctx, socket, packet) {
   const user = getSocketUser(ctx, socket);
   const pass = resolveActiveCounterPass(ctx);
   const missionId = decodeSingleInt(ctx, packet.payload);
-  const payload = buildDailyMissionRetryAckPayload(ctx, user, pass, missionId);
-  send(ctx, socket, packet, PACKETS.EVENT_PASS_DAILY_MISSION_RETRY_ACK, payload, "counter-pass-daily-retry");
-  persist(ctx);
+  const result = retryDailyMission(ctx, user, pass, missionId);
+  send(ctx, socket, packet, PACKETS.EVENT_PASS_DAILY_MISSION_RETRY_ACK, result.payload, "counter-pass-daily-retry");
+  if (result.changed) persist(ctx);
   return true;
 }
 
 function handlePurchaseCorePassReq(ctx, socket, packet) {
   const user = getSocketUser(ctx, socket);
   const pass = resolveActiveCounterPass(ctx);
-  const state = pass ? ensureCounterPassState(user, pass) : null;
-  if (state) state.isCorePassPurchased = true;
-  const payload = Buffer.concat([writeSignedVarInt(ERROR_OK), writeNullableObjectList([])]);
-  send(ctx, socket, packet, PACKETS.EVENT_PASS_PURCHASE_CORE_PASS_ACK, payload, "counter-pass-core-pass");
-  sendCounterPassDotNotification(ctx, socket, user, pass, "counter-pass-dot");
-  persist(ctx);
+  const result = purchaseCorePass(user, pass, false);
+  send(ctx, socket, packet, PACKETS.EVENT_PASS_PURCHASE_CORE_PASS_ACK, result.payload, "counter-pass-core-pass");
+  if (result.changed) {
+    sendCounterPassDotNotification(ctx, socket, user, pass, "counter-pass-dot");
+    persist(ctx);
+  }
   return true;
 }
 
 function handlePurchaseCorePassPlusReq(ctx, socket, packet) {
   const user = getSocketUser(ctx, socket);
   const pass = resolveActiveCounterPass(ctx);
-  const state = pass ? ensureCounterPassState(user, pass) : null;
-  if (state) {
-    state.isCorePassPurchased = true;
-    addCounterPassExp(pass, state, Number(pass.corePassPlusExp || 0) || Number(pass.passLevelUpExp || 0) || 0);
+  const result = purchaseCorePass(user, pass, true);
+  send(ctx, socket, packet, PACKETS.EVENT_PASS_PURCHASE_CORE_PASS_PLUS_ACK, result.payload, "counter-pass-core-plus");
+  if (result.changed) {
+    sendCounterPassDotNotification(ctx, socket, user, pass, "counter-pass-dot");
+    persist(ctx);
   }
-  const payload = Buffer.concat([
-    writeSignedVarInt(ERROR_OK),
-    writeSignedVarInt(state ? state.totalExp : 0),
-    writeNullableObjectList([]),
-  ]);
-  send(ctx, socket, packet, PACKETS.EVENT_PASS_PURCHASE_CORE_PASS_PLUS_ACK, payload, "counter-pass-core-plus");
-  sendCounterPassDotNotification(ctx, socket, user, pass, "counter-pass-dot");
-  persist(ctx);
   return true;
 }
 
 function handleLevelUpReq(ctx, socket, packet) {
   const user = getSocketUser(ctx, socket);
   const pass = resolveActiveCounterPass(ctx);
-  const increaseLv = Math.max(1, Number(decodeSingleInt(ctx, packet.payload) || 1) || 1);
-  const state = pass ? ensureCounterPassState(user, pass) : null;
-  if (state) addCounterPassExp(pass, state, increaseLv * (Number(pass.passLevelUpExp || 0) || 1000));
-  const payload = Buffer.concat([
-    writeSignedVarInt(ERROR_OK),
-    writeSignedVarInt(state ? state.totalExp : 0),
-    writeNullableObjectList([]),
-  ]);
-  send(ctx, socket, packet, PACKETS.EVENT_PASS_LEVEL_UP_ACK, payload, "counter-pass-level-up");
-  sendCounterPassDotNotification(ctx, socket, user, pass, "counter-pass-dot");
-  persist(ctx);
+  const increaseLv = Number(decodeSingleInt(ctx, packet.payload));
+  const result = purchasePassLevels(user, pass, increaseLv);
+  send(ctx, socket, packet, PACKETS.EVENT_PASS_LEVEL_UP_ACK, result.payload, "counter-pass-level-up");
+  if (result.changed) {
+    sendCounterPassDotNotification(ctx, socket, user, pass, "counter-pass-dot");
+    persist(ctx);
+  }
   return true;
 }
 
@@ -189,8 +226,7 @@ function sendCounterPassLobbyNotifications(ctx, socket, label = "counter-pass-no
   const session = socket && socket.session;
   const replay = session && session.gameReplay;
   const alreadySent = Boolean((session && session.counterPassNotSent) || (replay && replay.counterPassNotSent));
-  const requestSeen = Boolean((session && session.counterPassReqSeen) || (replay && replay.counterPassReqSeen));
-  if (alreadySent && (!options.resendIfNoAck || requestSeen)) return false;
+  if (alreadySent) return false;
   const pass = resolveActiveCounterPass(ctx);
   if (!pass || !ctx || typeof ctx.sendServerGamePacket !== "function") return false;
   console.log(
@@ -199,7 +235,6 @@ function sendCounterPassLobbyNotifications(ctx, socket, label = "counter-pass-no
   ctx.sendServerGamePacket(socket, PACKETS.EVENT_PASS_NOT, buildEventPassNotPayload(pass), label);
   if (session) session.counterPassNotSent = true;
   if (replay) replay.counterPassNotSent = true;
-  scheduleCounterPassNotificationRetry(ctx, socket, label);
   return true;
 }
 
@@ -236,33 +271,35 @@ function buildEventPassAckPayload(ctx, user, pass) {
   ]);
 }
 
-function buildLevelCompleteAckPayload(ctx, user, pass) {
+function completePassLevels(ctx, user, pass) {
   const reward = createEmptyReward();
   let normalLevel = 0;
   let coreLevel = 0;
-  if (pass) {
-    const state = ensureCounterPassState(user, pass);
-    syncGenericMissionExp(user, state);
-    const currentLevel = getCurrentPassLevel(pass, state);
-    for (const row of getRewardRows(pass, state.rewardNormalLevel + 1, currentLevel)) {
-      grantCounterPassRewardRow(ctx, user, row, "Normal", reward);
-    }
-    state.rewardNormalLevel = Math.max(state.rewardNormalLevel, currentLevel);
-    if (state.isCorePassPurchased) {
-      for (const row of getRewardRows(pass, state.rewardCoreLevel + 1, currentLevel)) {
-        grantCounterPassRewardRow(ctx, user, row, "Core", reward);
-      }
-      state.rewardCoreLevel = Math.max(state.rewardCoreLevel, currentLevel);
-    }
-    normalLevel = state.rewardNormalLevel;
-    coreLevel = state.rewardCoreLevel;
+  if (!pass) return levelCompleteResult(ERRORS.NOT_ENABLED, normalLevel, coreLevel, reward, false);
+  const state = ensureCounterPassState(user, pass);
+  syncGenericMissionExp(user, state);
+  const currentLevel = getCurrentPassLevel(pass, state);
+  const normalRows = getRewardRows(pass, state.rewardNormalLevel + 1, currentLevel);
+  const coreRows = state.isCorePassPurchased ? getRewardRows(pass, state.rewardCoreLevel + 1, currentLevel) : [];
+  if (!normalRows.length && !coreRows.length) {
+    return levelCompleteResult(ERRORS.NO_REWARD, state.rewardNormalLevel, state.rewardCoreLevel, reward, false);
   }
-  return Buffer.concat([
-    writeSignedVarInt(ERROR_OK),
+  for (const row of normalRows) grantCounterPassRewardRow(ctx, user, row, "Normal", reward);
+  for (const row of coreRows) grantCounterPassRewardRow(ctx, user, row, "Core", reward);
+  if (normalRows.length) state.rewardNormalLevel = currentLevel;
+  if (coreRows.length) state.rewardCoreLevel = currentLevel;
+  normalLevel = state.rewardNormalLevel;
+  coreLevel = state.rewardCoreLevel;
+  return levelCompleteResult(ERROR_OK, normalLevel, coreLevel, reward, true);
+}
+
+function levelCompleteResult(errorCode, normalLevel, coreLevel, reward, changed) {
+  return { changed, payload: Buffer.concat([
+    writeSignedVarInt(errorCode),
     writeSignedVarInt(normalLevel),
     writeSignedVarInt(coreLevel),
     writeNullableObject(buildRewardData(reward)),
-  ]);
+  ]) };
 }
 
 function buildMissionAckPayload(ctx, user, pass, missionType) {
@@ -282,40 +319,121 @@ function buildMissionAckPayload(ctx, user, pass, missionType) {
   ]);
 }
 
-function buildFinalMissionCompleteAckPayload(user, pass, missionType) {
+function buildMissionErrorPayload(errorCode, missionType) {
   const type = normalizeMissionType(missionType);
-  let totalExp = 0;
-  if (pass) {
-    const state = ensureCounterPassState(user, pass);
-    const typeName = missionTypeName(type);
-    const rewardExp = type === MISSION_TYPES.Weekly ? pass.weeklyMissionClearRewardExp : pass.dailyMissionClearRewardExp;
-    if (!state.finalMissionCompleted[typeName]) {
-      addCounterPassExp(pass, state, Number(rewardExp || 0) || 0);
-      state.finalMissionCompleted[typeName] = true;
-    }
-    totalExp = state.totalExp;
-  }
-  return Buffer.concat([writeSignedVarInt(ERROR_OK), writeSignedVarInt(totalExp), writeSignedVarInt(type)]);
+  return Buffer.concat([
+    writeSignedVarInt(errorCode), writeBool(false), writeSignedVarInt(type), writeNullableObjectList([]),
+    writeInt64LE(dateTimeBinaryForDate(nextMissionResetDate(new Date(), type))),
+  ]);
 }
 
-function buildDailyMissionRetryAckPayload(ctx, user, pass, missionId) {
-  let missionInfo = { missionId: Number(missionId || 0) || 0, slotIndex: 1, retryCount: 0 };
-  if (pass) {
-    const state = ensureCounterPassState(user, pass);
-    const missions = ensureMissionInfos(ctx, user, pass, state, MISSION_TYPES.Daily);
-    const existing = missions.find((entry) => Number(entry.missionId) === Number(missionId));
-    if (existing) {
-      existing.retryCount = Number(existing.retryCount || 0) + 1;
-      const replacement = findReplacementMissionId(ctx, pass, MISSION_TYPES.Daily, existing.slotIndex, missions.map((entry) => entry.missionId));
-      if (replacement) existing.missionId = replacement;
-      missionInfo = existing;
-    }
+function completeFinalMission(ctx, user, pass, missionType) {
+  const type = normalizeMissionType(missionType);
+  if (!pass) return finalMissionResult(ERRORS.NOT_ENABLED, 0, type, false);
+  const state = ensureCounterPassState(user, pass);
+  const typeName = missionTypeName(type);
+  if (state.finalMissionCompleted[typeName]) {
+    return finalMissionResult(type === MISSION_TYPES.Weekly ? ERRORS.FINAL_WEEKLY_COMPLETE : ERRORS.FINAL_DAILY_COMPLETE, state.totalExp, type, false);
   }
-  return Buffer.concat([
-    writeSignedVarInt(ERROR_OK),
+  const missions = ensureMissionInfos(ctx, user, pass, state, type);
+  const required = type === MISSION_TYPES.Weekly ? pass.weeklyMissionClearCount : pass.dailyMissionClearCount;
+  const completed = missions.filter((mission) => isMissionCompleted(user, mission.missionId)).length;
+  if (completed < required) return finalMissionResult(ERRORS.INSUFFICIENT_MISSIONS, state.totalExp, type, false);
+  const rewardExp = type === MISSION_TYPES.Weekly ? pass.weeklyMissionClearRewardExp : pass.dailyMissionClearRewardExp;
+  addCounterPassExp(pass, state, Number(rewardExp || 0) || 0);
+  state.finalMissionCompleted[typeName] = true;
+  return finalMissionResult(ERROR_OK, state.totalExp, type, true);
+}
+
+function finalMissionResult(errorCode, totalExp, type, changed) {
+  return { changed, payload: Buffer.concat([writeSignedVarInt(errorCode), writeSignedVarInt(totalExp), writeSignedVarInt(type)]) };
+}
+
+function retryDailyMission(ctx, user, pass, missionId) {
+  const empty = { missionId: Number(missionId || 0) || 0, slotIndex: 0, retryCount: 0 };
+  if (!pass) return retryMissionResult(ERRORS.NOT_ENABLED, empty, [], false);
+  const state = ensureCounterPassState(user, pass);
+  const missions = ensureMissionInfos(ctx, user, pass, state, MISSION_TYPES.Daily);
+  const existing = missions.find((entry) => Number(entry.missionId) === Number(missionId));
+  if (!existing) return retryMissionResult(ERRORS.INVALID_MISSION, empty, [], false);
+  if (existing.retryCount >= 8) return retryMissionResult(ERRORS.MAX_RETRY, existing, [], false);
+  const replacement = findReplacementMissionId(ctx, pass, MISSION_TYPES.Daily, existing.slotIndex, missions.map((entry) => entry.missionId));
+  if (!replacement) return retryMissionResult(ERRORS.RETRY_DISABLED, existing, [], false);
+  let costItem = null;
+  if (existing.retryCount >= 3) {
+    costItem = spendIfAffordable(user, 1, 20000);
+    if (!costItem) return retryMissionResult(ERRORS.INSUFFICIENT_RESOURCE, existing, [], false);
+  }
+  if (user.completedMissions && typeof user.completedMissions === "object") delete user.completedMissions[String(existing.missionId)];
+  existing.retryCount += 1;
+  existing.missionId = replacement;
+  return retryMissionResult(ERROR_OK, existing, costItem ? [costItem] : [], true);
+}
+
+function retryMissionResult(errorCode, missionInfo, costItems, changed) {
+  return { changed, payload: Buffer.concat([
+    writeSignedVarInt(errorCode),
     writeNullableObject(buildEventPassMissionInfoData(missionInfo)),
-    writeNullableObjectList([]),
-  ]);
+    writeNullableObjectList(costItems.map(buildItemMiscData)),
+  ]) };
+}
+
+function purchaseCorePass(user, pass, plus) {
+  if (!pass) return purchaseResult(plus, ERRORS.NOT_ENABLED, 0, [], false);
+  const state = ensureCounterPassState(user, pass);
+  if (!plus && state.isCorePassPurchased) return purchaseResult(false, ERRORS.ALREADY_PURCHASED, state.totalExp, [], false);
+  if (plus && state.corePassPlusPurchased) return purchaseResult(true, ERRORS.ALREADY_PURCHASED, state.totalExp, [], false);
+  const itemId = plus ? pass.corePassPlusPriceId : pass.corePassPriceId;
+  let count = plus ? pass.corePassPlusPriceCount : pass.corePassPriceCount;
+  if (plus && state.isCorePassPurchased) count = Math.max(0, count - pass.corePassPlusDiscountCount);
+  const costItem = spendIfAffordable(user, itemId, count);
+  if (!costItem) return purchaseResult(plus, ERRORS.INSUFFICIENT_RESOURCE, state.totalExp, [], false);
+  state.isCorePassPurchased = true;
+  if (plus) {
+    state.corePassPlusPurchased = true;
+    addCounterPassExp(pass, state, pass.corePassPlusExp);
+  }
+  return purchaseResult(plus, ERROR_OK, state.totalExp, [costItem], true);
+}
+
+function purchaseResult(plus, errorCode, totalExp, costItems, changed) {
+  const parts = [writeSignedVarInt(errorCode)];
+  if (plus) parts.push(writeSignedVarInt(totalExp));
+  parts.push(writeNullableObjectList(costItems.map(buildItemMiscData)));
+  return { changed, payload: Buffer.concat(parts) };
+}
+
+function purchasePassLevels(user, pass, increaseLv) {
+  if (!pass) return passLevelResult(ERRORS.NOT_ENABLED, 0, [], false);
+  const state = ensureCounterPassState(user, pass);
+  const currentLevel = getCurrentPassLevel(pass, state);
+  if (!Number.isInteger(increaseLv) || increaseLv <= 0 || currentLevel + increaseLv > pass.passMaxLevel) {
+    return passLevelResult(ERRORS.ADD_EXP, state.totalExp, [], false);
+  }
+  const costItem = spendIfAffordable(user, pass.passLevelUpMiscId, increaseLv * pass.passLevelUpMiscCount);
+  if (!costItem) return passLevelResult(ERRORS.INSUFFICIENT_RESOURCE, state.totalExp, [], false);
+  addCounterPassExp(pass, state, increaseLv * pass.passLevelUpExp);
+  return passLevelResult(ERROR_OK, state.totalExp, [costItem], true);
+}
+
+function passLevelResult(errorCode, totalExp, costItems, changed) {
+  return { changed, payload: Buffer.concat([
+    writeSignedVarInt(errorCode), writeSignedVarInt(totalExp), writeNullableObjectList(costItems.map(buildItemMiscData)),
+  ]) };
+}
+
+function spendIfAffordable(user, itemId, count) {
+  const id = Number(itemId || 0);
+  const amount = Math.max(0, Math.trunc(Number(count || 0)));
+  if (id <= 0 || amount <= 0) return null;
+  const item = getMiscItem(user, id);
+  if (toBigInt(item && item.countFree) + toBigInt(item && item.countPaid) < BigInt(amount)) return null;
+  return spendMiscItem(user, id, amount);
+}
+
+function isMissionCompleted(user, missionId) {
+  const entry = user && user.completedMissions && user.completedMissions[String(missionId)];
+  return Boolean(entry && (entry.completed === true || entry.rewardClaimed === true || Number(entry.completedCount || 0) > 0));
 }
 
 function buildEventPassNotPayload(pass) {
@@ -371,7 +489,15 @@ function normalizePass(row, summary = {}) {
     weeklyMissionMaxSlot: Number(row.WeeklyMissionMaxSlot || 0) || 10,
     weeklyMissionClearCount: Number(row.WeeklyMissionClearCount || 0) || 0,
     weeklyMissionClearRewardExp: Number(row.WeeklyMissionClearRewardExp || 0) || 0,
+    corePassPriceId: Number(row.CorePassPriceID || 0) || 0,
+    corePassPriceCount: Number(row.CorePassPriceCount || 0) || 0,
+    corePassPlusPriceId: Number(row.CorePassPlusPriceID || 0) || 0,
+    corePassPlusPriceCount: Number(row.CorePassPlusPriceCount || 0) || 0,
     corePassPlusExp: Number(row.CorePassPlusExp || 0) || 0,
+    corePassPlusDiscountCount: Math.floor(
+      (Number(row.CorePassPlusExp || 0) / passLevelUpExp) * (Number(row.PassLevelUpMiscCount || 0) || 0) *
+      (Number(row.CorePassDiscountPercent || 0) || 0)
+    ),
     dateStrId: String(row.m_DateStrID || ""),
     startDate,
     endDate,
@@ -385,10 +511,14 @@ function ensureCounterPassState(user, pass) {
   const key = String(Number(pass && pass.eventPassId) || 0);
   const existing = root.counterPass.passes[key] && typeof root.counterPass.passes[key] === "object" ? root.counterPass.passes[key] : {};
   const state = {
+    eventPassId: Number(pass && pass.eventPassId) || Number(existing.eventPassId) || 0,
+    startDate: dateIso(pass && pass.startDate) || String(existing.startDate || ""),
+    endDate: dateIso(pass && pass.endDate) || String(existing.endDate || ""),
     totalExp: nonNegativeInt(existing.totalExp),
     rewardNormalLevel: nonNegativeInt(existing.rewardNormalLevel),
     rewardCoreLevel: nonNegativeInt(existing.rewardCoreLevel),
     isCorePassPurchased: Boolean(existing.isCorePassPurchased),
+    corePassPlusPurchased: Boolean(existing.corePassPlusPurchased),
     genericExpSeen: existing.genericExpSeen == null ? getGenericMissionPassExp(root) : nonNegativeInt(existing.genericExpSeen),
     missions: existing.missions && typeof existing.missions === "object" ? existing.missions : {},
     missionWeeks: existing.missionWeeks && typeof existing.missionWeeks === "object" ? existing.missionWeeks : {},
@@ -403,6 +533,81 @@ function ensureCounterPassState(user, pass) {
   state.finalMissionCompleted.Weekly = Boolean(state.finalMissionCompleted.Weekly);
   root.counterPass.passes[key] = state;
   return state;
+}
+
+function hasRemainingPassReward(ctx, user) {
+  return getRemainingPassRewardCandidates(ctx, user).length > 0;
+}
+
+function claimRemainingPassRewards(ctx, user) {
+  const candidates = getRemainingPassRewardCandidates(ctx, user);
+  if (!candidates.length) {
+    return { errorCode: ERRORS.NO_REWARD, contents: [], reward: null, changed: false };
+  }
+  const reward = createEmptyReward();
+  for (const candidate of candidates) {
+    for (const row of candidate.normalRows) grantCounterPassRewardRow(ctx, user, row, "Normal", reward);
+    for (const row of candidate.coreRows) grantCounterPassRewardRow(ctx, user, row, "Core", reward);
+    if (candidate.normalRows.length) candidate.state.rewardNormalLevel = candidate.currentLevel;
+    if (candidate.coreRows.length) candidate.state.rewardCoreLevel = candidate.currentLevel;
+    candidate.state.remainingRewardsClaimedAt = currentServerDate(ctx).toISOString();
+  }
+  return {
+    errorCode: ERROR_OK,
+    contents: [REMAIN_REWARD_CONTENT.EventPass],
+    reward,
+    changed: true,
+  };
+}
+
+function getRemainingPassRewardCandidates(ctx, user) {
+  const passes = user && user.counterPass && user.counterPass.passes;
+  if (!passes || typeof passes !== "object") return [];
+  const activePass = resolveActiveCounterPass(ctx);
+  const activeId = Number(activePass && activePass.eventPassId) || 0;
+  const now = currentServerDate(ctx);
+  const rows = getTableSet().passRows;
+  const candidates = [];
+  for (const [key, state] of Object.entries(passes)) {
+    if (!state || typeof state !== "object") continue;
+    const eventPassId = Number(state.eventPassId || key) || 0;
+    if (!eventPassId || eventPassId === activeId) continue;
+    const row = rows.find((entry) => Number(entry.EventPassID) === eventPassId);
+    if (!row) continue;
+    const pass = normalizePass(row, {
+      eventPassId,
+      startDate: state.startDate || row.EventPassStartDate,
+      endDate: state.endDate || row.EventPassEndDate,
+    });
+    if (!(pass.endDate instanceof Date) || Number.isNaN(pass.endDate.getTime()) || now < pass.endDate) continue;
+    const currentLevel = getCurrentPassLevel(pass, state);
+    const normalRows = getRewardRows(pass, nonNegativeInt(state.rewardNormalLevel) + 1, currentLevel);
+    const coreRows = state.isCorePassPurchased
+      ? getRewardRows(pass, nonNegativeInt(state.rewardCoreLevel) + 1, currentLevel)
+      : [];
+    if (normalRows.length || coreRows.length) candidates.push({ state, pass, currentLevel, normalRows, coreRows });
+  }
+  return candidates.sort((left, right) => {
+    const byEnd = left.pass.endDate.getTime() - right.pass.endDate.getTime();
+    return byEnd || left.pass.eventPassId - right.pass.eventPassId;
+  });
+}
+
+function buildRemainingPassRewardAckPayload(result = {}) {
+  return Buffer.concat([
+    writeSignedVarInt(Number(result.errorCode) || 0),
+    writeIntList(Array.isArray(result.contents) ? result.contents : []),
+    result.reward ? writeNullableObject(buildRewardData(result.reward)) : writeNullObject(),
+  ]);
+}
+
+function isStrictEmptyRequest(ctx, encryptedPayload) {
+  try {
+    const payload = ctx && typeof ctx.decryptCopy === "function" ? ctx.decryptCopy(encryptedPayload) : encryptedPayload;
+    return Buffer.from(payload || []).length === 0;
+  } catch (_) {
+    return false;
+  }
 }
 
 function syncGenericMissionExp(user, state) {
@@ -617,6 +822,11 @@ function parseDate(value) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function dateIso(value) {
+  const date = value instanceof Date ? value : parseDate(value);
+  return date instanceof Date && !Number.isNaN(date.getTime()) ? date.toISOString() : "";
+}
+
 function normalizeIntList(value) {
   if (Array.isArray(value)) return value.map(Number).filter((entry) => Number.isInteger(entry) && entry > 0);
   const number = Number(value);
@@ -633,33 +843,6 @@ function getSocketUser(ctx, socket) {
   return ctx && typeof ctx.createEphemeralUser === "function" ? ctx.createEphemeralUser() : {};
 }
 
-function markCounterPassRequestSeen(socket) {
-  const session = socket && socket.session;
-  const replay = session && session.gameReplay;
-  if (session) session.counterPassReqSeen = true;
-  if (replay) replay.counterPassReqSeen = true;
-}
-
-function scheduleCounterPassNotificationRetry(ctx, socket, label) {
-  const session = socket && socket.session;
-  if (!session || session.counterPassNotRetryScheduled) return;
-  session.counterPassNotRetryScheduled = true;
-
-  const timer = setTimeout(() => {
-    const replay = session.gameReplay;
-    const requestSeen = Boolean(session.counterPassReqSeen || (replay && replay.counterPassReqSeen));
-    if (requestSeen) return;
-    if (!socket || socket.destroyed || socket.writableEnded) {
-      console.log("[counter-pass:not] no EVENT_PASS_REQ after notify; socket closed before retry");
-      return;
-    }
-    console.log("[counter-pass:not] no EVENT_PASS_REQ after notify; retrying");
-    sendCounterPassLobbyNotifications(ctx, socket, `${label}-retry`, { resendIfNoAck: true });
-  }, COUNTER_PASS_NOTIFY_RETRY_MS);
-
-  if (typeof timer.unref === "function") timer.unref();
-}
-
 function formatDate(date) {
   return date instanceof Date && !Number.isNaN(date.getTime()) ? date.toISOString() : "n/a";
 }
@@ -670,8 +853,11 @@ function send(ctx, socket, packet, packetId, payload, label) {
   }
 }
 
-function persist(ctx) {
-  if (ctx && (!ctx.config || ctx.config.USE_LOCAL_USER_DB) && typeof ctx.saveUserDb === "function") ctx.saveUserDb();
+function persist(ctx, options = {}) {
+  if (ctx && (!ctx.config || ctx.config.USE_LOCAL_USER_DB) && typeof ctx.saveUserDb === "function") {
+    if (options.affectsJoinLobby) ctx.saveUserDb();
+    else ctx.saveUserDb({ affectsJoinLobby: false });
+  }
 }
 
 module.exports = {
@@ -682,4 +868,7 @@ module.exports = {
   buildEventPassAckPayload,
   buildMissionAckPayload,
   buildEventPassNotPayload,
+  hasRemainingPassReward,
+  claimRemainingPassRewards,
+  buildRemainingPassRewardAckPayload,
 };

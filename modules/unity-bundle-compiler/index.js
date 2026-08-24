@@ -17,8 +17,9 @@ function createUnityBundleCompiler(options = {}) {
       requiredVersion,
       editorPath,
       available: Boolean(editorPath),
+      targets: ["windows", "android"],
       message: editorPath
-        ? `Unity ${requiredVersion} is ready for Windows AssetBundle builds.`
+        ? `Unity ${requiredVersion} is ready for Windows and Android AssetBundle builds.`
         : `Install Unity ${requiredVersion} or set CS_UNITY_EDITOR to its Unity.exe.`,
     };
   }
@@ -27,6 +28,7 @@ function createUnityBundleCompiler(options = {}) {
     const current = status();
     if (!current.available) throw httpError(409, current.message);
     const bundleName = validateBundleName(input.bundleName);
+    const target = normalizeBuildTarget(input.target);
     const encryptHeader = input.encryptHeader === true;
     if (encryptHeader && !/\.(?:vkor|vjpn)$/.test(bundleName)) throw httpError(400, "CounterSide voice bundle encryption requires a .vkor or .vjpn bundle name.");
     const requested = Array.isArray(input.assets) ? input.assets : [];
@@ -61,17 +63,18 @@ function createUnityBundleCompiler(options = {}) {
       });
       const unitySpriteAssets = assets.filter((asset) => spriteAssets.has(asset.relativePath.toLowerCase())).map((asset) => `Assets/ModSideSource/${asset.relativePath.replace(/\\/g, "/")}`);
       const specPath = path.join(temporary, "bundle-spec.json");
-      fs.writeFileSync(specPath, JSON.stringify({ bundles: [{ name: bundleName, assets: unityAssets, spriteAssets: unitySpriteAssets }] }), "utf8");
+      fs.writeFileSync(specPath, JSON.stringify({ target, bundles: [{ name: bundleName, assets: unityAssets, spriteAssets: unitySpriteAssets }] }), "utf8");
       await runUnity(current.editorPath, projectRoot, specPath, outputRoot, logPath, options.timeoutMs || 15 * 60 * 1000);
 
       const builtPath = path.join(outputRoot, bundleName);
       if (!fs.existsSync(builtPath)) throw httpError(500, `Unity completed without producing ${bundleName}.`);
-      const destination = path.join(project.root, "assets", "bundles", bundleName);
+      const destination = path.join(project.root, "assets", target === "android" ? "android-bundles" : "bundles", bundleName);
       fs.mkdirSync(path.dirname(destination), { recursive: true });
       const bundle = fs.readFileSync(builtPath);
       fs.writeFileSync(destination, encryptHeader ? transformCounterSideBundleHeader(bundle, bundleName) : bundle);
       return {
         bundleName,
+        target,
         path: path.relative(project.root, destination).replace(/\\/g, "/"),
         bytes: fs.statSync(destination).size,
         encryptedHeader: encryptHeader,
@@ -120,6 +123,12 @@ function validateBundleName(value) {
   return name;
 }
 
+function normalizeBuildTarget(value) {
+  const target = String(value || "windows").trim().toLowerCase();
+  if (target !== "windows" && target !== "android") throw httpError(400, "AssetBundle target must be windows or android.");
+  return target;
+}
+
 function resolveSourceAsset(root, value) {
   const relativePath = String(value || "").replace(/\\/g, "/").replace(/^assets\/source\//, "").replace(/^\/+/, "");
   const filePath = path.resolve(root, relativePath);
@@ -163,7 +172,7 @@ using UnityEngine;
 
 public static class ModSideAssetBundleCompiler
 {
-    [Serializable] private sealed class BundleSpec { public Bundle[] bundles; }
+    [Serializable] private sealed class BundleSpec { public string target; public Bundle[] bundles; }
     [Serializable] private sealed class Bundle { public string name; public string[] assets; public string[] spriteAssets; }
 
     public static void Build()
@@ -191,9 +200,12 @@ public static class ModSideAssetBundleCompiler
         {
             builds[i] = new AssetBundleBuild { assetBundleName = spec.bundles[i].name, assetNames = spec.bundles[i].assets };
         }
+        BuildTarget target = string.Equals(spec.target, "android", StringComparison.OrdinalIgnoreCase)
+            ? BuildTarget.Android
+            : BuildTarget.StandaloneWindows64;
         var manifest = BuildPipeline.BuildAssetBundles(outputPath, builds,
             BuildAssetBundleOptions.ChunkBasedCompression | BuildAssetBundleOptions.DeterministicAssetBundle,
-            BuildTarget.StandaloneWindows64);
+            target);
         if (manifest == null) throw new Exception("BuildPipeline.BuildAssetBundles returned null.");
     }
 
@@ -205,4 +217,4 @@ public static class ModSideAssetBundleCompiler
     }
 }`;
 
-module.exports = { ALLOWED_SOURCE_EXTENSIONS, EDITOR_SCRIPT, REQUIRED_UNITY_VERSION, createUnityBundleCompiler, findUnityEditor, transformCounterSideBundleHeader };
+module.exports = { ALLOWED_SOURCE_EXTENSIONS, EDITOR_SCRIPT, REQUIRED_UNITY_VERSION, createUnityBundleCompiler, findUnityEditor, normalizeBuildTarget, transformCounterSideBundleHeader };

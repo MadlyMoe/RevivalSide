@@ -17,6 +17,8 @@ const {
   readSignedVarInt,
 } = require("../modules/packet-codec");
 const { buildPlayerDeckForGameLoad } = require("../modules/unit");
+const { buildUserProfileData } = require("../modules/profile");
+const { writeFriendDataList } = require("../modules/community");
 const { createCsharpCombatHost } = require("../combat-handler/csharpHost");
 const { findCounterSideManagedDir } = require("../modules/counterside-install");
 const { getDefaultGameplayTablesDir } = require("../modules/gameplay-jsons");
@@ -64,7 +66,11 @@ const handlerContext = {
   createEphemeralUser: () => sourceUser,
   sendGameResponse(_socket, _packet, packetId, payload) { gameResponses.push({ packetId, payload }); },
   sendServerGamePacket(_socket, packetId, payload) { serverPackets.push({ packetId, payload }); },
-  startPrivatePvpMatch() { startRequests += 1; },
+  startPrivatePvpMatch(_room, onAccepted) {
+    startRequests += 1;
+    if (typeof onAccepted === "function") onAccepted();
+    return true;
+  },
 };
 guestSocket.session.user = reservation.member.user;
 const changedConfig = {
@@ -79,6 +85,9 @@ optionHandler.handle(handlerContext, hostSocket, {
 assert.deepStrictEqual(room.config, changedConfig, "host friendly-match options must survive normalization");
 assert(gameResponses.some((entry) => entry.packetId === 4122), "option change must acknowledge the host");
 assert(serverPackets.some((entry) => entry.packetId === 4129), "option change must notify the guest");
+startHandler.handle(handlerContext, hostSocket, { payload: Buffer.alloc(0) });
+assert.strictEqual(readSignedVarInt(gameResponses.at(-1).payload, 0).value, 27307, "host cannot start before both players are ready");
+assert.strictEqual(startRequests, 0, "invalid start request must not reach the match host");
 const readyPayload = Buffer.concat([writeNullableObject(buildDeckIndexData({ deckType: 1, index: 0 })), writeBool(true)]);
 readyHandler.handle(handlerContext, hostSocket, { payload: readyPayload });
 readyHandler.handle(handlerContext, guestSocket, { payload: readyPayload });
@@ -117,12 +126,49 @@ try {
       assert.match(validation.summary || "", new RegExp(`users=2\\[uid=${sourceUser.userUid},friend=${sourceUser.friendCode},ready=False,host=True,state=[^;]+;null\\] observers=0\\[\\] code=${room.code}`));
     }
   }
+  for (const [packetId, payload] of [
+    [4103, writeSignedVarInt(0)],
+    [4105, writeSignedVarInt(0)],
+    [4106, Buffer.concat([writeNullableObject(buildUserProfileData(sourceUser)), writeSignedVarInt(10), writeNullableObject(buildConfig(room.config))])],
+    [4108, Buffer.concat([writeSignedVarInt(0), writeSignedVarLong(BigInt(reservation.member.user.userUid))])],
+    [4109, Buffer.concat([writeSignedVarLong(BigInt(reservation.member.user.userUid)), writeSignedVarInt(1)])],
+    [4111, Buffer.concat([writeSignedVarInt(0), writeSignedVarInt(0), writeString(""), writeSignedVarInt(0), writeString("")])],
+    [4112, writeNullableObject(lobbyData)],
+    [4114, writeSignedVarInt(0)],
+    [4116, Buffer.concat([writeSignedVarInt(0), writeNullableObject(lobbyData)])],
+    [4118, writeSignedVarInt(0)],
+    [4120, Buffer.concat([writeSignedVarInt(0), writeFriendDataList([reservation.member.user])])],
+    [4122, Buffer.concat([writeSignedVarInt(0), writeNullableObject(lobbyData)])],
+    [4124, Buffer.concat([writeSignedVarInt(0), writeSignedVarInt(0), writeString(""), writeSignedVarInt(0), writeString("")])],
+    [4126, Buffer.concat([writeSignedVarInt(0), writeNullableObject(lobbyData)])],
+    [4127, writeSignedVarInt(0)],
+    [4128, Buffer.concat([writeSignedVarLong(BigInt(reservation.member.user.userUid)), writeSignedVarInt(2)])],
+    [4129, writeNullableObject(buildConfig(room.config))],
+    [4131, writeSignedVarInt(0)],
+    [4134, writeSignedVarInt(0)],
+    [4135, Buffer.alloc(0)],
+    [4137, Buffer.concat([writeSignedVarInt(0), writeSignedVarInt(1)])],
+  ]) {
+    const validation = combatHost.request("validatePacket", { packetId, payloadBase64: payload.toString("base64") });
+    assert(validation.ok, `managed client schema rejected invitation packet ${packetId}: ${validation.error || "unknown error"}`);
+  }
   const deckIndex = writeNullableObject(buildDeckIndexData({ deckType: 1, index: 0 }));
   for (const [packetId, payload] of [
     [4100, Buffer.concat([writeBool(false), writeSignedVarLong(0n), writeNullableObject(buildConfig(room.config))])],
     [4102, Buffer.concat([deckIndex, writeBool(true)])],
+    [4104, writeSignedVarLong(BigInt(reservation.member.user.friendCode))],
+    [4107, writeSignedVarLong(BigInt(reservation.member.user.userUid))],
+    [4110, Buffer.concat([writeSignedVarLong(BigInt(sourceUser.userUid)), writeBool(true)])],
+    [4113, Buffer.alloc(0)],
+    [4115, Buffer.concat([writeSignedVarLong(BigInt(reservation.member.user.userUid)), writeSignedVarInt(1)])],
     [4117, deckIndex],
+    [4119, writeString(reservation.member.user.nickname)],
+    [4121, writeNullableObject(buildConfig(room.config))],
     [4123, writeString(room.code)],
+    [4125, writeSignedVarLong(BigInt(reservation.member.user.userUid))],
+    [4130, Buffer.alloc(0)],
+    [4133, Buffer.alloc(0)],
+    [4136, writeSignedVarInt(1)],
   ]) {
     const validation = combatHost.request("validatePacket", { packetId, payloadBase64: payload.toString("base64") });
     assert(validation.ok, `managed client schema rejected request ${packetId}: ${validation.error || "unknown error"}`);

@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script_unit_data",
+    "fileName": "LUA_UNIT_TEMPLET_BASE.json",
+    "tableName": "LUA_UNIT_TEMPLET_BASE"
+  },
+  "key": {
+    "field": "m_UnitStrID",
+    "value": "NKM_UNIT_C_POLICE_LEE_YUMI_7"
+  },
+  "source": {
+    "field": "m_UnitStrID",
+    "value": "NKM_UNIT_C_POLICE_LEE_YUMI"
+  },
+  "value": {
+    "m_FirstOpenTag": "TAG_FIRST_UNIT_C_POLICE_LEE_YUMI_7",
+    "m_BasicOpenTag": "TAG_BASIC_UNIT_C_POLICE_LEE_YUMI_7",
+    "m_UnitID": 26053,
+    "m_UnitStrID": "NKM_UNIT_C_POLICE_LEE_YUMI_7",
+    "m_NKM_UNIT_TYPE": "NUT_NORMAL",
+    "m_NKM_UNIT_STYLE_TYPE": "NUST_COUNTER",
+    "m_NKM_UNIT_ROLE_TYPE": "NURT_DEFENDER",
+    "m_NKM_UNIT_SOURCE_TYPE": "NUST_CONFLICT",
+    "m_bMonster": false,
+    "m_Title": "SI_UNIT_TITLE_POLICE",
+    "m_Name": "MODSIDE_UNIT_NAME_26053",
+    "m_bCubismIllust": false,
+    "m_UnitTempletFileName": "NKM_UNIT_C_POLICE_LEE_YUMI_7",
+    "m_SpriteBundleName": "AB_UNIT_GAME_SPINE_NKM_UNIT_C_POLICE_LEE_YUMI",
+    "m_SpriteName": "SPINE_NKM_UNIT_C_POLICE_LEE_YUMI",
+    "m_FaceCardName": "AB_UNIT_FACE_CARD_NKM_UNIT_C_POLICE_LEE_YUMI",
+    "m_SpineIllustName": "AB_UNIT_ILLUST_NKM_UNIT_C_POLICE_LEE_YUMI",
+    "m_SpineSDName": "AB_UNIT_SD_SPINE_NKM_UNIT_C_POLICE_LEE_YUMI",
+    "m_MiniMapFaceName": "AB_UNIT_MINI_MAP_FACE_NKM_UNIT_C_POLICE_LEE_YUMI",
+    "m_InvenIconName": "AB_INVEN_ICON_NKM_UNIT_C_POLICE_LEE_YUMI",
+    "m_SkillStrID1": "NKM_UNIT_C_POLICE_LEE_YUMI_ATTACK",
+    "m_SkillStrID2": "NKM_UNIT_C_POLICE_LEE_YUMI_PASSIVE",
+    "m_SkillStrID3": "NKM_UNIT_C_POLICE_LEE_YUMI_SKILL",
+    "m_SkillStrID4": "NKM_UNIT_C_POLICE_LEE_YUMI_HYPER",
+    "m_ContractTime": 0,
+    "m_bContractable": true,
+    "m_StarGradeMax": 6,
+    "m_NKM_UNIT_GRADE": "NUG_SSR",
+    "m_OnRemoveItemID_1": 1022,
+    "m_OnRemoveItemCount_1": 15,
+    "m_OnRemoveItemID_2": 0,
+    "m_OnRemoveItemCount_2": 0,
+    "m_NKM_FIND_TARGET_TYPE": "NFTT_NEAR_ENEMY_LAND",
+    "m_bAirUnit": false,
+    "m_bExistVoiceBundle": true,
+    "m_UnitDesc": "SI_UNIT_DESC_C_POLICE_LEE_YUMI",
+    "m_OnRemoveItemID_Contract": 1016,
+    "m_OnRemoveItemCount_Contract": 2,
+    "m_BaseUnitID": 26053,
+    "m_OnExtractItemID_1": 1056,
+    "m_OnExtractItemCount_1": 2,
+    "m_OnExtractItemID_Contract": 1056,
+    "m_OnExtractItemCount_Contract": 18,
+    "m_TeamUp": "TEAM_POLICE",
+    "m_TacticGroup": 0,
+    "m_lstUnitTag": [
+      "NUT_HIT_NEGATIVE",
+      "NUT_ATK_NEGATIVE",
+      "NUT_BARRIER"
+    ]
+  }
+}

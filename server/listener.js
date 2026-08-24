@@ -10,20 +10,34 @@ const { activateInstalledModRuntime } = require("../modules/mod-loader");
 const modRuntime = activateInstalledModRuntime({ rootDir: ROOT_DIR, env: process.env });
 const { loadPacketHandlers } = require("./packetHandlerLoader");
 const { createUserManager } = require("./userManager");
-const { createPrivatePvpManager, PRIVATE_PVP_OPEN_TAGS } = require("../modules/private-pvp");
+const {
+  createPrivatePvpManager,
+  projectUser: projectPrivatePvpUser,
+  remapGuestProjection,
+  PRIVATE_PVP_OPEN_TAGS,
+} = require("../modules/private-pvp");
+const { createPvpMatchmaker } = require("../modules/pvp-matchmaking");
+const leaguePvp = require("../modules/league-pvp");
+const { decodeGameLoadRequest } = require("../modules/game-load/request-codec");
+const { validateGameLoadRewardMultiply } = require("../modules/game-load/authority");
 const { findCounterSideManagedDir } = require("../modules/counterside-install");
 const {
   applyActiveUserSelection,
+  getActiveOrIndexedUser,
+  getActiveUser,
   resolveActiveUserPath,
   writeActiveUserSelection,
 } = require("../modules/user-db-selection");
 const {
+  loadAndroidClientPayloadState,
   loadAndroidClientUpdateState,
   loadFrozenClientPatchState,
+  resolveAndroidClientPayloadFile,
   resolveAndroidClientUpdateResponse,
   resolveFrozenClientPatchResponse,
 } = require("../modules/frozen-client-update");
 const {
+  closeGameplayTableHost,
   getDefaultGameplayTablesDir,
   readGameplayTableRecords,
 } = require("../modules/gameplay-jsons");
@@ -43,6 +57,7 @@ const {
 } = require("../stages/tutorialStage");
 const {
   MAIN_STORY_STAGE_CHAIN,
+  getMainStoryStageByDungeonId,
   getMainStoryStageByStageId,
   isMainStoryStageId,
   isMainStoryDungeonId,
@@ -62,6 +77,7 @@ const {
   DEFAULT_LOCAL_SHOP_BALANCE,
   RESOURCE_ITEM_IDS,
   ensureInventory,
+  grantMiscItem,
   getMiscItems,
   getSkinIds,
   removeDebugSeededCommonResources,
@@ -83,8 +99,13 @@ const {
   addOperatorExp,
   grantUnit,
   buildPlayerDeckForGameLoad,
+  validatePlayerDeckForGameLoad,
 } = require("../modules/unit");
-const { INVENTORY_TYPES, getInventoryCapacity } = require("../modules/inventory-capacity");
+const {
+  INVENTORY_TYPES,
+  getInventoryCapacity,
+  initializeInventoryCapacities,
+} = require("../modules/inventory-capacity");
 const {
   buildUnitData: buildSerializedUnitData,
   buildOperatorData: buildSerializedOperatorData,
@@ -97,13 +118,23 @@ const {
   buildRewardData: buildSerializedRewardData,
   buildMoldItemData: buildSerializedMoldItemData,
   buildCraftSlotData: buildSerializedCraftSlotData,
+  buildEquipTuningCandidateData: buildSerializedEquipTuningCandidateData,
+  buildPotentialOptionCandidateData: buildSerializedPotentialOptionCandidateData,
+  buildShipModuleCandidateData: buildSerializedShipModuleCandidateData,
 } = require("../modules/packet-codec");
 const { getEquipItems, getMoldItems, getCraftSlots } = require("../modules/equipment");
+const {
+  buildCompanyBuffList,
+  buildPrivateGuildData: buildGuildPrivateData,
+  getGuildChatMuteEndDate,
+} = require("../modules/company-buff");
 const {
   ensureAccountProgress,
   grantStageClearExp,
   completeMission: completeAccountMission,
   buildMissionDataEntries: buildAccountMissionDataEntries,
+  getRandomMissionRefreshEntries,
+  getRandomMissionTabIds,
   getAchievePoint,
   recordMissionLogin,
   refreshMissionProgress,
@@ -128,11 +159,18 @@ const {
   getActiveEventShopState,
   filterEventClockShopOpenTags,
   ensureActiveEventShopCurrencies,
+  buildShopChainTabNextResetListPayload,
+  buildConsumerPackageData,
+  getConsumerPackageList,
+  buildShopSubscriptionEntries,
 } = require("../modules/shop");
 const { getShopPurchaseHistories, getShopTotalPaidAmount } = require("../modules/resource");
 const {
   getContentUnlocksForDungeon,
   getEventDeckTemplet,
+  getEventDeckUnitSlotTypes,
+  getEventDeckPlayerUnitSlots,
+  eventDeckHasFreeShipSlot,
   getMissionTabTemplets,
   getMissionTempletsByTabId,
   getRewardGroupRecords,
@@ -149,9 +187,24 @@ const { buildMyOfficeStateData: buildSerializedMyOfficeStateData } = require("..
 const lobbyCustomization = require("../modules/lobby");
 const loginBackground = require("../modules/login-background");
 const simulation = require("../modules/simulation");
+const defence = require("../modules/defence");
+const defenceBattle = require("../modules/defence-battle");
 const stamina = require("../modules/stamina");
+const userRefresh = require("../modules/user-refresh");
 const collection = require("../modules/collection");
 const worldMap = require("../modules/world-map");
+const shadowPalace = require("../modules/shadow-palace");
+const killCount = require("../modules/kill-count");
+const eventBingo = require("../modules/event-bingo");
+const eventCollection = require("../modules/event-collection");
+const eventPass = require("../modules/event-pass");
+const trim = require("../modules/trim");
+const explore = require("../modules/explore");
+const guildDungeon = require("../modules/guild-dungeon");
+const draftPvpVotes = require("../modules/pvp-votes");
+const pvpRank = require("../modules/pvp-rank");
+const asyncPvp = require("../modules/async-pvp");
+const eventPvp = require("../modules/event-pvp");
 const { ensureLoginRewardPosts } = require("../modules/admin");
 const {
   ensureStageFavorites,
@@ -160,12 +213,14 @@ const {
 const {
   buildSupportUnitData: buildPersistedSupportUnitData,
   ensureSupportUnit,
+  getAvailableSupportUsers,
 } = require("../modules/combat-roster");
 const {
   createEventManager,
 } = require("../modules/event-manager");
 const { createServerTime } = require("../modules/server-time");
 const {
+  REQUIRED_CORE_OPEN_TAGS,
   getCapturedContentsTags,
   getCapturedOpenTags,
   getFrozenContentsTags,
@@ -290,11 +345,14 @@ const CONNECT_CHECK_REQ = 602;
 const CONNECT_CHECK_ACK = 603;
 const SERVER_TIME_REQ = 604;
 const SERVER_TIME_ACK = 605;
+const COMMON_FAIL_ACK = 610;
 const GAME_LOAD_ACK = 804;
 const GAME_LOAD_COMPLETE_ACK = 808;
 const GAME_START_NOT = 809;
 const GAME_END_NOT = 811;
+const DEFENCE_GAME_END_NOT = 3906;
 const GAME_PAUSE_ACK = 813;
+const GAME_CHECK_DIE_UNIT_ACK = 815;
 const GAME_RESPAWN_ACK = 817;
 const GAME_SHIP_SKILL_REQ = 818;
 const GAME_SHIP_SKILL_ACK = 819;
@@ -302,6 +360,13 @@ const GAME_GIVEUP_REQ = 823;
 const GAME_GIVEUP_ACK = 824;
 const GAME_USE_UNIT_SKILL_REQ = 829;
 const GAME_USE_UNIT_SKILL_ACK = 830;
+const GAME_EMOTICON_ACK = 836;
+const GAME_EMOTICON_NOT = 837;
+const GAME_UNIT_RETREAT_ACK = 839;
+const GAME_TACTICAL_COMMAND_ACK = 843;
+const GAME_RESTART_ACK = 862;
+const GAME_SURRENDER_ACK = 883;
+const GAME_SURRENDER_NOT = 884;
 const CUTSCENE_DUNGEON_START_REQ = 1200;
 const CUTSCENE_DUNGEON_START_ACK = 1201;
 const CUTSCENE_DUNGEON_CLEAR_REQ = 1202;
@@ -332,8 +397,37 @@ const NGT_TRIM = 23;
 const NGT_PVE_DEFENCE = 26;
 const NGT_EXPLORE = 29;
 const NGS_FINISH = 4;
+const PHASE_ERRORS = Object.freeze({
+  OK: 0,
+  INVALID_STAGE: 66,
+  INSUFFICIENT_CASH: 96,
+  INSUFFICIENT_ETERNIUM: 97,
+  INSUFFICIENT_CREDIT: 98,
+  INSUFFICIENT_INFORMATION: 99,
+  INSUFFICIENT_ITEM: 111,
+  INVALID_REQUEST: 20191,
+  INVALID_EVENT_DECK: 20942,
+  SUPPORT_NOT_FOUND: 27803,
+});
 const NTT_A1 = 1;
 const NTT_B1 = 3;
+const FIERCE_ERRORS = Object.freeze({
+  OK: 0,
+  INVALID_REQUEST: 20191,
+  ALREADY_GOT_REWARD: 20491,
+  INVALID_POINT_REWARD_ID: 20496,
+  INVALID_BOSS_ID: 20500,
+  PROFILE_NOT_EXISTS: 20503,
+  INSUFFICIENT_RANK_REWARD_CONDITION: 20505,
+  INSUFFICIENT_POINT_REWARD_CONDITION: 20506,
+  NO_MORE_RANK_REWARD: 20508,
+  INVALID_LEADERBOARD_BOSS_ID: 20603,
+  PENALTY_BOSS_LEVEL: 21033,
+  PENALTY_BOSS_GROUP: 21034,
+  PENALTY_COUNT: 21035,
+  PENALTY_TYPE: 21036,
+  PENALTY_DUPLICATE_GROUP: 21037,
+});
 
 const CAPTURED_FLOW_DIR =
   process.env.CS_CAPTURED_FLOW_DIR || path.join(ROOT_DIR, "server-data", "captured-flows");
@@ -378,6 +472,7 @@ const MANAGED_HOST_TICK_INTERVAL_MS = Number(process.env.CS_MANAGED_HOST_TICK_IN
 const MANAGED_HOST_PRIME_FRAMES = Number(process.env.CS_MANAGED_HOST_PRIME_FRAMES || 1);
 const DYNAMIC_BATTLE_GAME_UNIT_GROUPS = parseGameUnitGroups(process.env.CS_DYNAMIC_BATTLE_GAME_UNIT_GROUPS || "5,6;8,9;10,11;12,13");
 const CSHARP_COMBAT_HOST = process.env.CS_CSHARP_COMBAT_HOST !== "0";
+const REQUIRE_COMBAT_HOST = process.env.CS_REQUIRE_COMBAT_HOST === "1";
 const CSHARP_COMBAT_HOST_PROJECT = process.env.CS_CSHARP_COMBAT_HOST_PROJECT || path.join(ROOT_DIR, "combat-host", "CombatHost.csproj");
 const CSHARP_COMBAT_HOST_DLL =
   process.env.CS_CSHARP_COMBAT_HOST_DLL || process.env.CS_COMBAT_HOST_PATH || findDefaultCombatHostExecutable(CSHARP_COMBAT_HOST_PROJECT);
@@ -392,6 +487,7 @@ const FROZEN_CLIENT_PATCH_STATE = loadFrozenClientPatchState(COUNTERSIDE_MANAGED
 const ANDROID_CLIENT_UPDATE_STATE = loadAndroidClientUpdateState(
   process.env.CS_ANDROID_CLIENT_UPDATE_DIR || path.join(ROOT_DIR, "server-data", "android-client-update")
 );
+const ANDROID_CLIENT_PAYLOAD_STATE = loadAndroidClientPayloadState(process.env.CS_ANDROID_CLIENT_PAYLOAD_DIR || "");
 if (REQUIRE_FROZEN_CLIENT_PATCH && (!FROZEN_CLIENT_PATCH_STATE || !FROZEN_CLIENT_PATCH_STATE.isFrozenClient)) {
   throw new Error("The controlled frozen client marker and version metadata could not be loaded.");
 }
@@ -437,10 +533,16 @@ const DEFAULT_STARTER_SHIP_ID = 21001; // NKM_SHIP_A_COFFIN_1
 const NEW_ACCOUNT_ROSTER_MODE = resolveNewAccountRosterMode();
 const SEED_NEW_ACCOUNT_TROPHIES = process.env.CS_SEED_NEW_ACCOUNT_TROPHIES === "1";
 const USE_STEAM_TOKEN_AS_ACCESS_TOKEN = process.env.CS_USE_STEAM_TOKEN_AS_ACCESS_TOKEN === "1";
-const REWRITE_CAPTURED_SERVER_INFO = process.env.CS_REWRITE_CAPTURED_SERVER_INFO !== "0";
+let serverInfoMode = normalizeServerInfoMode(
+  process.env.CS_SERVER_INFO_MODE ||
+    (process.env.CS_REWRITE_CAPTURED_SERVER_INFO === "0" ? "official" : "revivalside")
+);
 const MIRROR_PUBLIC_HOST = process.env.CS_HTTP_MIRROR_HOST || "127.0.0.1";
 const MIRROR_PUBLIC_BASE_URL =
   process.env.CS_HTTP_MIRROR_BASE_URL || `http://${MIRROR_PUBLIC_HOST}:${HTTP_MIRROR_PORT}`;
+const ANDROID_CLIENT_CDN_BASE_URL = ensureTrailingSlash(
+  process.env.CS_ANDROID_CLIENT_CDN_BASE_URL || `${MIRROR_PUBLIC_BASE_URL}/patchfiles/`
+);
 const USER_DB_PATH = process.env.CS_USER_DB_PATH || path.join(ROOT_DIR, "server-data", "users.json");
 const ACTIVE_USER_PATH = resolveActiveUserPath(USER_DB_PATH, process.env.CS_ACTIVE_USER_PATH || "");
 const SERVER_TIME_STATE_PATH = process.env.CS_SERVER_TIME_STATE_PATH || path.join(ROOT_DIR, "server-data", "server-time.json");
@@ -525,6 +627,7 @@ const CONTENTS_TAGS = mergeTags(
 );
 const OPEN_TAGS = mergeTags(
   EXPLICIT_OPEN_TAGS,
+  REQUIRED_CORE_OPEN_TAGS,
   REQUIRED_STORY_OPEN_TAGS,
   PRIVATE_PVP_ENABLED ? PRIVATE_PVP_OPEN_TAGS : []
 );
@@ -551,6 +654,8 @@ const privatePvp = createPrivatePvpManager({
     privatePvp.broadcastState(room, createPacketContext());
   },
 });
+const pvpMatchmaking = createPvpMatchmaker({ logger: (message) => console.log(message) });
+const leaguePvpMatchmaking = leaguePvp.createLeaguePvpMatchmaker({ logger: (message) => console.log(message) });
 const runtimeEventManager = createRuntimeEventManager(eventManager);
 const LOGIN_BACKGROUND_MODE = String(process.env.CS_LOGIN_BACKGROUND || loginBackground.AUTO).trim();
 const LOGIN_BACKGROUND_CATALOG = loginBackground.getLoginBackgroundCatalog({ rootDir: ROOT_DIR, env: process.env });
@@ -588,6 +693,7 @@ const capturedRespawnUnitPools = buildCombatCapturedRespawnUnitPools(capturedGam
 const capturedCombatReplayEntries = buildCapturedCombatReplayEntries(capturedGameFlow);
 const capturedFlowMirror = loadCapturedFlowMirror(CAPTURED_FLOW_DIR);
 const gameplayUnitStats = loadGameplayUnitStats(UNIT_TABLE_PATH);
+let userDbRevision = 0;
 const userDb = loadUserDb(USER_DB_PATH);
 applyActiveUserSelection(userDb, ACTIVE_USER_PATH);
 const repairedDeckReferenceProfiles = repairUserDbDeckReferences(userDb);
@@ -600,6 +706,7 @@ const joinLobbyAckPayloadCache = new Map();
 const lobbySessionPreparationCache = new Map();
 const prewarmedJoinLobbyAckPayloads = new Map();
 const localProgressResetUsers = new Set();
+const activeClientSockets = new Set();
 let cachedDungeonCatalog = null;
 let cachedStageCatalog = null;
 let cachedMiscStageCatalog = null;
@@ -628,6 +735,7 @@ if (process.env.CS_DUMP_JOIN_LOBBY_ACK_PAYLOAD) {
 // Combat simulation is isolated behind combat-handler. This listener keeps the
 // networking responsibilities: packet routing, encryption/framing, capture replay
 // ordering, and socket writes.
+closeGameplayTableHost();
 const combatHandler = createCombatHandler({
   constants: {
     HEART_BIT_ACK,
@@ -648,6 +756,7 @@ const combatHandler = createCombatHandler({
     GAMEPLAY_TABLES_DIR,
     MOD_TABLES_DIR: modRuntime.currentRoot,
     CONTENTS_TAGS: getEffectiveContentsTags(CONTENTS_TAGS),
+    OPEN_TAGS: getEffectiveOpenTags(OPEN_TAGS),
   },
   combatStateId: COMBAT_STATE_ID,
   defaultCombatStats: DEFAULT_COMBAT_STATS,
@@ -674,6 +783,7 @@ const userManager = USER_MANAGER_ENABLED
       makeAccessToken,
       makeToken,
       invalidateJoinLobbyAckPayloadCache,
+      onActiveUserChanged: recycleClientSessionsForProfileSwitch,
     })
   : null;
 
@@ -704,8 +814,12 @@ let lastAckContentsVersion = "";
 let lastAckContentsTags = [];
 let runtimeConfigPrinted = false;
 
-startTcpServer();
-startHttpMirror();
+if (process.env.CS_LISTENER_TEST_MODE !== "1") {
+  startTcpServer();
+  startHttpMirror();
+}
+
+module.exports = { createPacketContext, handleFallbackPacket, buildCommonFailAckPayload };
 
 function startTcpServer() {
   const onConnection = (socket) => {
@@ -720,6 +834,7 @@ function startTcpServer() {
       nextServerSequence: 1,
     };
     lastSteamAccessToken = "";
+    activeClientSockets.add(socket);
 
     console.log(`\n[+] Client connected: ${socket.remoteAddress}:${socket.remotePort}`);
     logRuntimeConfig();
@@ -731,6 +846,9 @@ function startTcpServer() {
 
     socket.on("end", () => console.log("[*] Client ended socket"));
     socket.on("close", (hadError) => {
+      activeClientSockets.delete(socket);
+      pvpMatchmaking.handleSocketClose(socket);
+      leaguePvpMatchmaking.handleSocketClose(socket, createPacketContext());
       const privatePvpRoom = privatePvp.getRoom(socket);
       stopGameSyncTimers(socket);
       privatePvp.handleSocketClose(socket, createPacketContext());
@@ -745,6 +863,15 @@ function startTcpServer() {
 
   for (const host of [...new Set([GAME_LISTEN_HOST, PRIVATE_PVP_LISTEN_HOST].filter(Boolean))]) {
     net.createServer(onConnection).listen(PORT, host, () => console.log(`[+] Listening on ${host}:${PORT}`));
+  }
+}
+
+function recycleClientSessionsForProfileSwitch(user) {
+  const sockets = [...activeClientSockets].filter((socket) => socket && !socket.destroyed);
+  console.log(`[user-db] active profile switched uid=${user && user.userUid || "(none)"}; recycling sockets=${sockets.length}`);
+  for (const socket of sockets) {
+    stopGameSyncTimers(socket);
+    socket.destroy();
   }
 }
 
@@ -887,10 +1014,13 @@ function logRuntimeConfig() {
   console.log(
     `[cfg] androidClientUpdate=${ANDROID_CLIENT_UPDATE_STATE ? `${ANDROID_CLIENT_UPDATE_STATE.sourceVersion}->${ANDROID_CLIENT_UPDATE_STATE.version}` : "unavailable"}`
   );
+  console.log(
+    `[cfg] androidClientPayload=${ANDROID_CLIENT_PAYLOAD_STATE ? `${ANDROID_CLIENT_PAYLOAD_STATE.manifest.id} files=${ANDROID_CLIENT_PAYLOAD_STATE.manifest.fileCount}` : "unavailable"} cdn=${ANDROID_CLIENT_CDN_BASE_URL}`
+  );
 }
 
 function startHttpMirror() {
-  if (!capturedFlowMirror && !userManager && !ANDROID_CLIENT_UPDATE_STATE && !PRIVATE_PVP_ENABLED) {
+  if (!capturedFlowMirror && !userManager && !ANDROID_CLIENT_UPDATE_STATE && !ANDROID_CLIENT_PAYLOAD_STATE && !PRIVATE_PVP_ENABLED) {
     console.log(`[mirror] disabled; no manifest at ${path.join(CAPTURED_FLOW_DIR, "manifest.json")}`);
     return;
   }
@@ -901,6 +1031,7 @@ function startHttpMirror() {
         if (PRIVATE_PVP_ENABLED && (await privatePvp.handleHttpJoin(req, res))) return;
         if (userManager && (await userManager.handle(req, res))) return;
         if (serveEventManagerDiagnostics(req, res)) return;
+        if (serveAndroidClientPayload(req, res)) return;
         if (serveFrozenClientPatchMetadata(req, res)) return;
         if (capturedFlowMirror) {
           serveCapturedFlow(req, res, capturedFlowMirror);
@@ -935,6 +1066,77 @@ function startHttpMirror() {
   }
 }
 
+function serveAndroidClientPayload(req, res) {
+  if (req.method !== "GET" && req.method !== "HEAD") return false;
+  const requestUrl = new URL(req.url || "/", MIRROR_PUBLIC_BASE_URL);
+  const response = resolveAndroidClientPayloadFile(requestUrl.pathname, ANDROID_CLIENT_PAYLOAD_STATE);
+  if (!response) return false;
+
+  if (response.body) {
+    res.writeHead(200, {
+      "Content-Type": response.contentType,
+      "Content-Length": response.body.length,
+      "Cache-Control": "no-store",
+      ETag: `"${response.sha256}"`,
+      "X-RevivalSide-Asset-Update": response.label,
+    });
+    if (req.method === "HEAD") res.end();
+    else res.end(response.body);
+    return true;
+  }
+
+  const etag = `"${response.sha256}"`;
+  if (!req.headers.range && req.headers["if-none-match"] === etag) {
+    res.writeHead(304, { ETag: etag, "Cache-Control": "public, max-age=31536000, immutable" });
+    res.end();
+    return true;
+  }
+  const range = parseHttpRange(req.headers.range, response.size);
+  if (range === null) {
+    res.writeHead(416, { "Content-Range": `bytes */${response.size}`, "Cache-Control": "no-store" });
+    res.end();
+    return true;
+  }
+  const start = range ? range.start : 0;
+  const end = range ? range.end : response.size - 1;
+  const length = response.size ? end - start + 1 : 0;
+  const headers = {
+    "Content-Type": response.contentType,
+    "Content-Length": length,
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "public, max-age=31536000, immutable",
+    ETag: etag,
+    "X-Content-SHA256": response.sha256,
+    "X-RevivalSide-Asset-Update": response.label,
+  };
+  if (range) headers["Content-Range"] = `bytes ${start}-${end}/${response.size}`;
+  res.writeHead(range ? 206 : 200, headers);
+  if (req.method === "HEAD" || response.size === 0) {
+    res.end();
+  } else {
+    const input = fs.createReadStream(response.filePath, { start, end });
+    input.on("error", (error) => res.destroy(error));
+    input.pipe(res);
+  }
+  console.log(`[mirror] ANDROID ${requestUrl.pathname} ${length}b ${range ? "range" : "full"}`);
+  return true;
+}
+
+function parseHttpRange(value, size) {
+  if (!value) return undefined;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(String(value).trim());
+  if (!match || size <= 0) return null;
+  if (!match[1]) {
+    const suffixLength = Number(match[2]);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return null;
+    return { start: Math.max(0, size - suffixLength), end: size - 1 };
+  }
+  const start = Number(match[1]);
+  const end = match[2] ? Number(match[2]) : size - 1;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= size || end < start) return null;
+  return { start, end: Math.min(end, size - 1) };
+}
+
 function serveFrozenClientPatchMetadata(req, res) {
   if (req.method !== "GET" && req.method !== "HEAD") return false;
   const requestUrl = new URL(req.url || "/", MIRROR_PUBLIC_BASE_URL);
@@ -965,13 +1167,36 @@ async function serveLauncherApi(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/launcher/api/health") {
+    const combatReadiness = combatHandler.getReadiness();
     sendJsonResponse(res, 200, {
-      ok: true,
+      ok: !REQUIRE_COMBAT_HOST || combatReadiness.ready,
       port: PORT,
       httpPort: HTTP_MIRROR_PORT,
+      serverInfoMode,
+      combatHost: combatReadiness,
+      androidClient: {
+        payloadId: ANDROID_CLIENT_PAYLOAD_STATE ? ANDROID_CLIENT_PAYLOAD_STATE.manifest.id : "",
+        patchVersion: ANDROID_CLIENT_PAYLOAD_STATE ? ANDROID_CLIENT_PAYLOAD_STATE.manifest.patchVersion : "",
+        cdn: ANDROID_CLIENT_CDN_BASE_URL,
+      },
       userManagerPath: userManager ? userManager.basePath : "",
       serverTime: serverTime.getSummary(),
     });
+    return true;
+  }
+
+  if ((req.method === "GET" || req.method === "POST") && url.pathname === "/launcher/api/server-info-mode") {
+    const requestedMode = url.searchParams.get("mode");
+    if (requestedMode != null) {
+      const normalizedMode = normalizeServerInfoMode(requestedMode);
+      if (normalizedMode !== String(requestedMode).trim().toLowerCase()) {
+        sendJsonResponse(res, 400, { ok: false, error: "mode must be revivalside or official" });
+        return true;
+      }
+      serverInfoMode = normalizedMode;
+      console.log(`[server-info] mode=${serverInfoMode}`);
+    }
+    sendJsonResponse(res, 200, { ok: true, serverInfoMode });
     return true;
   }
 
@@ -1044,6 +1269,11 @@ function warmLauncherRuntime() {
     const userUid = String((user && user.userUid) || "(ephemeral)");
     try {
       const preparedUser = ensureUserDefaults(user);
+      const cachedPayload = takePrewarmedJoinLobbyAckPayload(preparedUser, { consume: false });
+      if (cachedPayload) {
+        warmed.push({ userUid, bytes: cachedPayload.length });
+        continue;
+      }
       prepareTutorialLogin(preparedUser);
       prepareUserLobbySession(preparedUser, { source: "launcher-warmup", force: true });
       const payload = prewarmJoinLobbyAckPayload(preparedUser, { source: "launcher-warmup" });
@@ -1054,17 +1284,6 @@ function warmLauncherRuntime() {
     } catch (error) {
       failed.push({
         userUid,
-        error: summarizeErrorLine(error && error.stack ? error.stack : error),
-      });
-    }
-  }
-
-  if (USE_LOCAL_USER_DB && warmed.length > 0) {
-    try {
-      saveUserDb();
-    } catch (error) {
-      failed.push({
-        userUid: "(save)",
         error: summarizeErrorLine(error && error.stack ? error.stack : error),
       });
     }
@@ -1263,6 +1482,7 @@ function rememberPrewarmedJoinLobbyAckPayload(user, payload, source = "warmup") 
     source,
     preparedAtMs: Date.now(),
     stateKey: getLobbyPreparationStateKey(getServerNowDate(), getMissionClockOptions()),
+    userDbRevision,
   });
   return true;
 }
@@ -1272,13 +1492,20 @@ function takePrewarmedJoinLobbyAckPayload(user, options = {}) {
   if (!cacheKey) return null;
   const entry = prewarmedJoinLobbyAckPayloads.get(cacheKey);
   if (!entry || !Buffer.isBuffer(entry.payload)) return null;
-  const ttlMs = clampInt(process.env.CS_PREWARMED_JOIN_LOBBY_ACK_TTL_MS, 1000, 600000, 300000);
+  // A clean Android install can spend hours downloading the client payload after
+  // the launcher warmup. The entry is single-use, so keeping it for that install
+  // window avoids rebuilding the large lobby ACK without leaving reusable state.
+  const ttlMs = clampInt(process.env.CS_PREWARMED_JOIN_LOBBY_ACK_TTL_MS, 1000, 86400000, 14400000);
   const stateKey = getLobbyPreparationStateKey(getServerNowDate(), getMissionClockOptions());
-  if (entry.stateKey !== stateKey || Date.now() - Number(entry.preparedAtMs || 0) > ttlMs) {
+  if (
+    entry.stateKey !== stateKey ||
+    Number(entry.userDbRevision) !== userDbRevision ||
+    Date.now() - Number(entry.preparedAtMs || 0) > ttlMs
+  ) {
     prewarmedJoinLobbyAckPayloads.delete(cacheKey);
     return null;
   }
-  if (options.consume !== false) prewarmedJoinLobbyAckPayloads.delete(cacheKey);
+  if (options.consume === true) prewarmedJoinLobbyAckPayloads.delete(cacheKey);
   console.log(
     `[JOIN_LOBBY_ACK prewarm] hit source=${entry.source || "warmup"} uid=${
       user && user.userUid ? user.userUid : "(ephemeral)"
@@ -1441,10 +1668,26 @@ function handlePacket(socket, packet) {
 }
 
 function handleFallbackPacket(ctx, socket, packet) {
+  if (!isProtectedAccountProtocolPacket(packet && packet.packetId)) {
+    console.log(
+      `[common-fail] unsupported request packetId=${packet.packetId} sequence=${packet.sequence} payloadSize=${packet.payloadSize}; errorCode=20136`
+    );
+    ctx.sendGameResponse(socket, packet, COMMON_FAIL_ACK, buildCommonFailAckPayload(), "common-fail");
+    return true;
+  }
   console.log(
-    `[official-missing] no sniffed handler/response for packetId=${packet.packetId} sequence=${packet.sequence} payloadSize=${packet.payloadSize}; no response sent`
+    `[official-missing] protected Account packetId=${packet.packetId} sequence=${packet.sequence} payloadSize=${packet.payloadSize}; no response sent`
   );
   return true;
+}
+
+function buildCommonFailAckPayload(errorCode = 20136) {
+  return writeSignedVarInt(errorCode);
+}
+
+function isProtectedAccountProtocolPacket(packetId) {
+  const id = Number(packetId);
+  return Number.isInteger(id) && id >= 200 && id <= 254;
 }
 
 function sendResponse(socket, sequence, packetId, builder) {
@@ -1472,6 +1715,8 @@ function sendGameResponse(socket, packet, packetId, payload, label) {
 function createPacketContext() {
   return {
     privatePvp,
+    pvpMatchmaking,
+    leaguePvpMatchmaking,
     constants: {
       LOGIN_ACK,
       JOIN_LOBBY_REQ,
@@ -1482,11 +1727,13 @@ function createPacketContext() {
       HEART_BIT_ACK,
       CONNECT_CHECK_ACK,
       SERVER_TIME_ACK,
+      COMMON_FAIL_ACK,
       GAME_LOAD_ACK,
       GAME_LOAD_COMPLETE_ACK,
       GAME_START_NOT,
       GAME_END_NOT,
       GAME_PAUSE_ACK,
+      GAME_CHECK_DIE_UNIT_ACK,
       GAME_RESPAWN_ACK,
       GAME_SHIP_SKILL_REQ,
       GAME_SHIP_SKILL_ACK,
@@ -1494,6 +1741,13 @@ function createPacketContext() {
       GAME_GIVEUP_ACK,
       GAME_USE_UNIT_SKILL_REQ,
       GAME_USE_UNIT_SKILL_ACK,
+      GAME_EMOTICON_ACK,
+      GAME_EMOTICON_NOT,
+      GAME_UNIT_RETREAT_ACK,
+      GAME_TACTICAL_COMMAND_ACK,
+      GAME_RESTART_ACK,
+      GAME_SURRENDER_ACK,
+      GAME_SURRENDER_NOT,
       MISSION_COMPLETE_REQ,
       MISSION_COMPLETE_ACK,
       CUTSCENE_DUNGEON_START_ACK,
@@ -1580,6 +1834,13 @@ function createPacketContext() {
     maybeTransitionTutorialReplayToDynamic,
     peekCapturedGamePacketId,
     sendServerGamePacket,
+    findClientSocketByUserUid(userUid) {
+      const target = String(userUid || "");
+      return [...activeClientSockets].find((clientSocket) =>
+        clientSocket && !clientSocket.destroyed && clientSocket.session && clientSocket.session.user &&
+        String(clientSocket.session.user.userUid || "") === target
+      ) || null;
+    },
     buildDynamicGameLoadPayload,
     sendDynamicGameLoadAck,
     startDynamicBattleManager,
@@ -1587,7 +1848,18 @@ function createPacketContext() {
     handleDynamicBattlePause,
     handleDynamicBattleUnitSkill,
     handleDynamicBattleShipSkill,
+    handleDynamicBattleCheckDie,
+    handleDynamicBattleUnitRetreat,
+    handleDynamicBattleTacticalCommand,
     startPrivatePvpMatch,
+    startStandardPvpMatch,
+    startLeaguePvpMatch,
+    startEventPvpMatch,
+    cancelEventPvpMatch,
+    exitEventPvpMatch,
+    startAsyncPvpBattle,
+    buildSimulatedPvpTestResult,
+    finishAsyncPvpSimulation,
     finishPrivatePvpGiveup,
     resetPrivatePvpMatch,
     applyCombatControls,
@@ -1601,6 +1873,10 @@ function createPacketContext() {
     maybeSendTutorialCutsceneClear,
     logGameLoadReq,
     decodeGameLoadReq,
+    validateGameLoadRewardMultiply,
+    getGameLoadStageAuthorityDescriptor,
+    validatePlayerDeckForGameLoad,
+    preparePhaseGameLoad,
     decodeGameRespawnReq,
     decodeGameUnitSkillReq,
     decodeGameShipSkillReq,
@@ -1611,11 +1887,19 @@ function createPacketContext() {
     buildGameSyncPackets,
     buildInitialBattleSync,
     buildInitialBattlePackets,
+    buildIntrudeStartPackets: (...args) => combatHandler.buildIntrudeStartPackets(...args),
     ensureGameStartPackets,
     deployStageLineup,
     buildGameRespawnAckPayload,
     buildGamePauseAckPayload,
+    buildGameLoadCompleteAckPayload,
     buildDynamicGameEndNotPayload,
+    buildAsyncPvpGameEndNotPayload: asyncPvp.buildAsyncPvpGameEndNotPayload,
+    buildStandardPvpGameEndNotPayloadForSocket,
+    buildBattleGameRecordData,
+    markStandardPvpMatchFinished,
+    sendDynamicFinishStateSync,
+    maybeRecordDynamicBattleClear,
     sendRaidStateDataForSocket,
     stopGameSyncTimers,
     abandonDynamicBattle,
@@ -1627,11 +1911,14 @@ function createPacketContext() {
     buildCapturedReconnectAck,
     buildLoginAck,
     buildLoginLikePayload,
+    getEffectiveOpenTags,
     buildJoinLobbyAckPayload,
     buildMinimalJoinLobbyPayload,
+    extractNullableGameDataFromGameLoadAckPayload,
     invalidateJoinLobbyAckPayloadCache,
     prepareUserLobbySession,
     prewarmJoinLobbyAckPayload,
+    rememberPrewarmedJoinLobbyAckPayload,
     takePrewarmedJoinLobbyAckPayload,
     hasTutorialProgress,
     shouldUseLocalJoinLobbyAck,
@@ -1653,7 +1940,6 @@ function createPacketContext() {
     buildGreetingMessageAckPayload,
     buildFavoritesStageAckPayload,
     buildDefenceInfoAckPayload,
-    buildShadowPalaceStartAckPayload,
     buildPhaseStartAckPayload,
     buildTrimStartAckPayload,
     buildFierceDataAckPayload,
@@ -1673,6 +1959,8 @@ function createPacketContext() {
     recordMissionComplete,
     buildCutsceneDungeonStartAckPayload,
     buildCutsceneDungeonClearAckPayload,
+    isValidCutsceneDungeonId,
+    commitCutsceneDungeonClear,
     resolveCutsceneDungeonId,
     resolveCutsceneClearDungeonId,
     recordTutorialCutsceneClear,
@@ -2804,20 +3092,36 @@ function sendStaminaChargeNotifications(socket, label = "stamina-charge", option
   const user = socket && socket.session && socket.session.user;
   if (!user) return false;
   const now = dateTimeBinaryNow();
-  const result = stamina.refreshTimedStamina(user, {
-    now,
-    initializeMissing: false,
-  });
+  const refreshBatch = userRefresh.prepareUserRefreshNotifications(user, { now });
+  const selectedItemIds = (Array.isArray(options.itemIds) && options.itemIds.length > 0
+    ? options.itemIds
+    : stamina.getTimedStaminaRoutes(user).map((route) => route.itemId)
+  )
+    .map(Number)
+    .filter((itemId) => !stamina.DAILY_REFRESH_ITEM_IDS.includes(itemId));
+  const result = selectedItemIds.length > 0
+    ? stamina.refreshTimedStamina(user, {
+        now,
+        itemIds: selectedItemIds,
+        initializeMissing: false,
+      })
+    : { changed: false, updates: [] };
   const updates =
-    options.includeUnchanged === true
-      ? stamina.getChargeItemNotifications(user, { now, itemIds: options.itemIds })
+    options.includeUnchanged === true && selectedItemIds.length > 0
+      ? stamina.getChargeItemNotifications(user, { now, itemIds: selectedItemIds })
       : result.updates || [];
-  if (updates.length === 0) return false;
+  let sent = false;
+  for (const notification of refreshBatch.packets) {
+    sendServerGamePacket(socket, notification.packetId, notification.payload, `${label}-${notification.scope}-refresh`);
+    sent = true;
+  }
+  const notificationStateChanged = refreshBatch.commit();
   for (const update of updates) {
     sendServerGamePacket(socket, stamina.CHARGE_ITEM_NOT, stamina.buildChargeItemNotPayload(update), label);
+    sent = true;
   }
-  if (result.changed && USE_LOCAL_USER_DB) saveUserDb();
-  return true;
+  if ((refreshBatch.changed || result.changed || notificationStateChanged) && USE_LOCAL_USER_DB) saveUserDb();
+  return sent;
 }
 
 function sendManagedOrImmediatePackets(socket, packets) {
@@ -2836,6 +3140,7 @@ function sendManagedOrImmediatePackets(socket, packets) {
     sendRaidStateDataForSocket(socket, "managed-raid-end");
     stopGameSyncTimers(socket);
     markPrivatePvpMatchFinished(socket);
+    markStandardPvpMatchFinished(socket);
   }
 }
 
@@ -2846,23 +3151,42 @@ function sendManagedOrImmediatePacket(socket, packetId, payload, label, meta = {
       if (!member.socket || member.socket.destroyed) continue;
       sendServerGamePacket(
         member.socket,
-        packetId,
+        managedCombatPacketId(member.socket, packetId),
         normalizeManagedCombatPayload(member.socket, packetId, payload, label, meta),
         label
       );
     }
     return;
   }
-  sendServerGamePacket(socket, packetId, normalizeManagedCombatPayload(socket, packetId, payload, label, meta), label);
+  sendServerGamePacket(
+    socket,
+    managedCombatPacketId(socket, packetId),
+    normalizeManagedCombatPayload(socket, packetId, payload, label, meta),
+    label
+  );
+}
+
+function managedCombatPacketId(socket, packetId) {
+  if (packetId !== GAME_END_NOT) return packetId;
+  const dynamicGame = socket && socket.session && socket.session.gameReplay && socket.session.gameReplay.dynamicGame;
+  if ([asyncPvp.NGT_ASYNC_PVP, asyncPvp.NGT_PVP_STRATEGY, asyncPvp.NGT_PVP_STRATEGY_REVENGE, asyncPvp.NGT_PVP_STRATEGY_NPC].includes(Number(dynamicGame && dynamicGame.gameType || 0))) {
+    return asyncPvp.PACKETS.GAME_END_NOT;
+  }
+  return isDefenceDynamicGame(dynamicGame) ? DEFENCE_GAME_END_NOT : packetId;
 }
 
 function sendPendingGameStartSync(socket, label) {
   const replay = socket.session && socket.session.gameReplay;
   if (!replay || !replay.pendingGameStartBootstrap || !replay.dynamicGame) return false;
-  replay.pendingGameStartBootstrap = false;
   const queuedPackets = Array.isArray(replay.pendingGameStartPackets) ? replay.pendingGameStartPackets : [];
-  replay.pendingGameStartPackets = [];
   const packets = ensureGameStartPackets(queuedPackets.length > 0 ? queuedPackets : buildInitialBattlePackets(replay), replay, socket).filter(Boolean);
+  if (packets.length === 0) {
+    replay.pendingGameStartBootstrap = false;
+    replay.pendingGameStartPackets = [];
+    return false;
+  }
+  replay.pendingGameStartBootstrap = false;
+  replay.pendingGameStartPackets = [];
   sendManagedOrImmediatePackets(
     socket,
     packets.map((item) => ({
@@ -2889,6 +3213,22 @@ function normalizeManagedCombatPayload(socket, packetId, payload, label, meta = 
   if (packetId !== GAME_END_NOT) return payload;
   const replay = socket.session && socket.session.gameReplay;
   if (!replay || !replay.dynamicGame) return payload;
+  if ([asyncPvp.NGT_ASYNC_PVP, asyncPvp.NGT_PVP_STRATEGY, asyncPvp.NGT_PVP_STRATEGY_REVENGE, asyncPvp.NGT_PVP_STRATEGY_NPC].includes(Number(replay.dynamicGame.gameType || 0))) {
+    const battleState = replay.battleState || {};
+    const managedBattleRecords = extractManagedBattleRecords(meta);
+    const managedBattleWin = extractManagedBattleWin(meta);
+    const managedBattlePlayTime = extractManagedBattlePlayTime(meta);
+    return asyncPvp.buildAsyncPvpGameEndNotPayload(createPacketContext(), socket, replay, {
+      ...meta,
+      battleState: buildBattleGameRecordState(battleState, { managedBattleRecords }),
+      ...(typeof managedBattleWin === "boolean" ? { win: managedBattleWin } : {}),
+      ...(managedBattlePlayTime > 0 ? { playTime: managedBattlePlayTime } : {}),
+    }) || payload;
+  }
+  const standardPvpMatch = pvpMatchmaking.getMatch(socket) || leaguePvpMatchmaking.getMatch(socket);
+  if (standardPvpMatch && [6, leaguePvp.NGT_PVP_LEAGUE, leaguePvp.NGT_PVP_UNLIMITED, eventPvp.NGT_PVP_EVENT].includes(Number(replay.dynamicGame.gameType || 0))) {
+    return buildStandardPvpGameEndNotPayloadForSocket(socket, replay, meta) || payload;
+  }
   const privatePvpRoom = privatePvp.getRoom(socket);
   const privatePvpMember = privatePvp.getMember(socket);
   if (privatePvpRoom && privatePvpMember && Number(replay.dynamicGame.gameType || 0) === 18) {
@@ -2906,19 +3246,34 @@ function normalizeManagedCombatPayload(socket, packetId, payload, label, meta = 
   const managedBattlePlayTime = extractManagedBattlePlayTime(meta);
   const managedFiercePoint = extractManagedFiercePoint(meta, "point");
   const managedFiercePenaltyPoint = extractManagedFiercePoint(meta, "penalty");
+  const managedDefencePoint = extractManagedDefencePoint(meta);
+  const managedTrimPoint = extractManagedTrimPoint(meta);
   const gameRecordOverride = {
     ...(managedBattleRecords.length > 0 ? { managedBattleRecords } : {}),
     ...(typeof managedBattleWin === "boolean" ? { managedBattleWin, win: managedBattleWin } : {}),
     ...(managedBattlePlayTime > 0 ? { managedBattlePlayTime } : {}),
     ...(managedFiercePoint >= 0 ? { managedFiercePoint, fiercePoint: managedFiercePoint } : {}),
     ...(managedFiercePenaltyPoint >= 0 ? { managedFiercePenaltyPoint, fiercePenaltyPoint: managedFiercePenaltyPoint } : {}),
+    ...(managedDefencePoint >= 0 ? { managedDefencePoint, defencePoint: managedDefencePoint } : {}),
+    ...(managedTrimPoint >= 0 ? { managedTrimPoint, trimPoint: managedTrimPoint } : {}),
   };
+  if (managedBattleRecords.length > 0) replay.managedBattleRecords = managedBattleRecords;
   if (managedBattleRecords.length > 0) {
     console.log(
       `[dynamic-game-end] using managed battle records=${managedBattleRecords.length} win=${
         typeof managedBattleWin === "boolean" ? (managedBattleWin ? 1 : 0) : "unknown"
       } playTime=${managedBattlePlayTime || 0}`
     );
+  }
+
+  if (isDefenceDynamicGame(replay.dynamicGame)) {
+    const defenceEnd = buildDefenceGameEndNotPayload(replay, {
+      user: socket.session && socket.session.user,
+      fallbackWin: false,
+      preferFallbackWin: false,
+      ...gameRecordOverride,
+    });
+    return defenceEnd || payload;
   }
 
   // NKCGameServerLocal flushes a local-only GAME_END_NOT. The online flow
@@ -2972,6 +3327,18 @@ function extractManagedFiercePoint(meta = {}, kind = "point") {
     kind === "penalty"
       ? meta && (meta.fiercePenaltyPoint ?? meta.FiercePenaltyPoint ?? meta.managedFiercePenaltyPoint ?? meta.ManagedFiercePenaltyPoint)
       : meta && (meta.fiercePoint ?? meta.FiercePoint ?? meta.managedFiercePoint ?? meta.ManagedFiercePoint);
+  const numeric = finiteNumber(explicit, -1);
+  return numeric >= 0 ? Math.round(numeric) : -1;
+}
+
+function extractManagedDefencePoint(meta = {}) {
+  const explicit = meta && (meta.defencePoint ?? meta.DefencePoint ?? meta.managedDefencePoint ?? meta.ManagedDefencePoint);
+  const numeric = finiteNumber(explicit, -1);
+  return numeric >= 0 ? Math.round(numeric) : -1;
+}
+
+function extractManagedTrimPoint(meta = {}) {
+  const explicit = meta && (meta.trimPoint ?? meta.TrimPoint ?? meta.managedTrimPoint ?? meta.ManagedTrimPoint);
   const numeric = finiteNumber(explicit, -1);
   return numeric >= 0 ? Math.round(numeric) : -1;
 }
@@ -3033,8 +3400,10 @@ function abandonDynamicBattle(socket, label = "abandon") {
   const replay = socket && socket.session && socket.session.gameReplay;
   if (!replay || !replay.dynamicGame) return false;
   const dynamicGame = replay.dynamicGame;
+  guildDungeon.abandonBattle(createPacketContext(), socket, dynamicGame);
   const hadActiveTimer = Boolean(replay.dynamicBattleTimer || replay.syntheticSyncTimer || replay.officialCombatReplayTimer);
   stopGameSyncTimers(socket);
+  combatHandler.disposeBattle(replay);
   replay.pendingGameStartBootstrap = false;
   replay.pendingGameStartPackets = [];
   replay.loadCompleteReceived = false;
@@ -3067,6 +3436,7 @@ function startDynamicBattleManager(socket, label) {
     },
     onGameEndPacketSent(socket) {
       markPrivatePvpMatchFinished(socket);
+      markStandardPvpMatchFinished(socket);
       maybeRecordDynamicBattleClear(socket);
       sendRaidStateDataForSocket(socket, "managed-raid-end");
     },
@@ -3081,7 +3451,7 @@ function startDynamicBattleManager(socket, label) {
       if (!payload) return false;
       withSocketPacketBurst(socket, () => {
         sendDynamicFinishStateSync(socket, finishedState, "dynamic-finish-state");
-        sendServerGamePacket(socket, GAME_END_NOT, payload, "dynamic-game-end");
+        sendManagedOrImmediatePacket(socket, GAME_END_NOT, payload, "dynamic-game-end");
       });
       maybeRecordDynamicBattleClear(socket, finishedState);
       sendRaidStateDataForSocket(socket, "dynamic-raid-end");
@@ -3265,6 +3635,12 @@ function buildDynamicGameLoadPayload(socket, req, stage) {
   replay.tutorialClearRecorded = false;
   replay.stageClearLoot = null;
   replay.lastDynamicGameEndResult = null;
+  replay.shadowPalaceBattleResult = null;
+  replay.killCountBattleResult = null;
+  replay.trimBattleResult = null;
+  replay.exploreBattleResult = null;
+  replay.guildDungeonResultPersisted = false;
+  replay.managedBattleRecords = null;
   replay.managedGameLoadAckPayload = null;
   const gameLoadAckTemplate = getCapturedServerPayloadTemplate(GAME_LOAD_ACK);
   const nativeTutorialLoad =
@@ -3311,6 +3687,9 @@ function buildDynamicGameLoadPayload(socket, req, stage) {
     if (Array.isArray(battleConditionIds)) replay.dynamicGame.battleConditionIds = battleConditionIds;
     Object.assign(replay.dynamicGame, fierceScorePlan);
     replay.dynamicGame.isTryAssist = Boolean(req && req.isTryAssist);
+    replay.dynamicGame.buffList = Array.isArray(req && req.buffList) ? [...req.buffList] : [];
+    replay.dynamicGame.raidCostItemId = Number(req && req.raidCostItemId || 0);
+    replay.dynamicGame.raidCostCount = Number(req && req.raidCostCount || 0);
   }
   applySavedCombatControls(socket);
   const capturedTutorialBootstrap =
@@ -3365,7 +3744,66 @@ function sendDynamicGameLoadAck(socket, req, stage) {
   return true;
 }
 
-function startPrivatePvpMatch(room) {
+function buildPvpCombatModifierFields(users, gameStatRateId, includeBanUp = true) {
+  const candidates = Array.isArray(users) ? users : [users];
+  const source = includeBanUp
+    ? candidates.map(getStoredPvpBanResult).find((value) => value)
+    : null;
+  return {
+    gameStatRateId: String(gameStatRateId || "PVP_STAT_DEFAULT"),
+    unitBans: normalizePvpCombatModifiers(source && source.unitBanList, ["unitId", "m_UnitID"], ["banLevel", "m_BanLevel"]),
+    shipBans: normalizePvpCombatModifiers(source && source.shipBanList, ["shipGroupId", "m_ShipGroupID"], ["banLevel", "m_BanLevel"]),
+    operatorBans: normalizePvpCombatModifiers(source && source.operatorBanList, ["operatorId", "m_OperatorID"], ["banLevel", "m_BanLevel"]),
+    unitUps: normalizePvpCombatModifiers(source && source.unitUpList, ["unitId", "m_UnitID"], ["upLevel", "m_UpLevel"]),
+  };
+}
+
+function getStoredPvpBanResult(user) {
+  const direct = user && user.pvpBanResult;
+  if (direct && typeof direct === "object") return direct;
+  const imported = user && user.officialSnapshot && user.officialSnapshot.packet && user.officialSnapshot.packet.pvpBanResult;
+  return imported && typeof imported === "object" ? imported : null;
+}
+
+function normalizePvpCombatModifiers(values, idKeys, levelKeys) {
+  const rows = Array.isArray(values) ? values : values && typeof values === "object" ? Object.values(values) : [];
+  return rows.map((row) => {
+    const data = row && typeof row === "object" ? row : {};
+    const id = idKeys.map((key) => Number(data[key] || 0)).find((value) => Number.isInteger(value) && value > 0) || 0;
+    const level = levelKeys.map((key) => Number(data[key] || 0)).find((value) => Number.isInteger(value) && value > 0) || 0;
+    return id > 0 && level > 0 ? { id, level } : null;
+  }).filter(Boolean).map((entry) => {
+    if (idKeys.includes("shipGroupId")) return { shipGroupId: entry.id, banLevel: entry.level };
+    if (idKeys.includes("operatorId")) return { operatorId: entry.id, banLevel: entry.level };
+    if (levelKeys.includes("upLevel")) return { unitId: entry.id, upLevel: entry.level };
+    return { unitId: entry.id, banLevel: entry.level };
+  });
+}
+
+function getRankPvpGameStatRateId(user, asyncMode = false) {
+  const state = asyncMode ? pvpRank.getAsyncPvpState(user) : pvpRank.getPvpRankState(user);
+  const ctx = createPacketContext();
+  const season = state.seasonId > 0
+    ? (asyncMode ? pvpRank.getAsyncSeasonById(ctx, user, state.seasonId) : pvpRank.getSeasonById(ctx, user, state.seasonId))
+    : (asyncMode ? pvpRank.getActiveAsyncSeason(ctx, user) : pvpRank.getActiveSeason(ctx, user));
+  const tier = season && (
+    pvpRank.getTierByTier(season.rankGroup, state.leagueTierId) ||
+    pvpRank.getTierByScore(season.rankGroup, state.score)
+  );
+  return String(tier && tier.row && tier.row.m_GameStatRateID || "PVP_STAT_DEFAULT");
+}
+
+function getLeaguePvpGameStatRateId(user) {
+  const state = leaguePvp.getLeaguePvpState(user);
+  const season = leaguePvp.getLeagueSeasonById(state.seasonId);
+  const tier = season && leaguePvp.loadLeagueCatalog().tiers.find((row) =>
+    Number(row && row.m_RankGroup) === Number(season.rankGroup) &&
+    Number(row && row.m_LeagueTier) === Number(state.leagueTierId)
+  );
+  return String(tier && tier.m_GameStatRateID || "PVP_STAT_DEFAULT");
+}
+
+function startPrivatePvpMatch(room, onAccepted) {
   if (!room || room.matchStarted) return false;
   const players = room.members.filter((entry) => !entry.observer);
   if (players.length !== 2 || players.some((entry) => !entry.socket || entry.socket.destroyed)) {
@@ -3410,6 +3848,7 @@ function startPrivatePvpMatch(room) {
     respawnCostB1: 10,
     playerDeck,
     playerDeckB,
+    ...buildPvpCombatModifierFields([playerA.user, playerB.user], "PVP_STAT_DEFAULT", room.config.applyBanUpSystem),
     ignoreGameLoadTemplate: true,
   };
   const result = buildDynamicGameLoadPayload(playerA.socket, req, stage);
@@ -3420,6 +3859,7 @@ function startPrivatePvpMatch(room) {
     console.log(`[private-pvp] room=${room.code} CombatHost failed to create the authoritative match`);
     return false;
   }
+  if (typeof onAccepted === "function") onAccepted();
   room.replay = result.replay;
   room.gameDataPayload = extractNullableGameDataFromGameLoadAckPayload(result.payload);
   room.matchStarted = true;
@@ -3429,6 +3869,578 @@ function startPrivatePvpMatch(room) {
     `[private-pvp] started room=${room.code} gameUID=${String(result.replay.dynamicGame.gameUID || 0)} map=${PRIVATE_PVP_MAP_ID} A=${playerA.user.userUid} B=${playerB.user.userUid}`
   );
   return true;
+}
+
+function startStandardPvpMatch(match) {
+  if (!match || match.matchStarted) return false;
+  const playerA = match.members.find((entry) => Number(entry.teamType) === 1) || match.members[0];
+  if (!playerA || !playerA.socket || playerA.socket.destroyed) return failStandardPvpMatch(match, 95);
+  if (match.bot && match.members.length === 1) {
+    const botUser = remapGuestProjection(projectPrivatePvpUser(playerA.user), { members: [{ user: playerA.user }] });
+    if (!botUser) return failStandardPvpMatch(match, 95);
+    botUser.nickname = `${String(playerA.user && playerA.user.nickname || "Player").slice(0, 20)} Bot`;
+    match.members.push({
+      socket: null,
+      user: botUser,
+      ticket: null,
+      teamType: 3,
+      observer: false,
+      loaded: true,
+      playerState: 2,
+      bot: true,
+    });
+  }
+  const playerB = match.members.find((entry) => Number(entry.teamType) === 3);
+  if (!playerB || (!match.bot && (!playerB.socket || playerB.socket.destroyed))) {
+    return failStandardPvpMatch(match, 95);
+  }
+
+  const playerDeck = buildPlayerDeckForGameLoad(
+    playerA.user,
+    { selectDeckIndex: playerA.ticket.req.selectDeckIndex },
+    { deckIndex: { deckType: 2, index: playerA.ticket.req.selectDeckIndex }, strictSelection: true }
+  );
+  const playerBDeckIndex = playerB.ticket ? playerB.ticket.req.selectDeckIndex : playerA.ticket.req.selectDeckIndex;
+  const playerDeckB = buildPlayerDeckForGameLoad(
+    playerB.user,
+    { selectDeckIndex: playerBDeckIndex },
+    { deckIndex: { deckType: 2, index: playerBDeckIndex }, strictSelection: true }
+  );
+  if (!playerDeck || !playerDeckB) return failStandardPvpMatch(match, 95);
+
+  const replay = createGameReplayState();
+  replay.inGameFlow = true;
+  match.replay = replay;
+  for (const member of match.members) {
+    if (!member.socket) continue;
+    member.socket.session.standardPvpMatch = match;
+    member.socket.session.standardPvpMember = member;
+    member.socket.session.privatePvpTeamType = member.teamType;
+    member.socket.session.gameReplay = replay;
+    // The existing two-player combat transport is intentionally shared with
+    // friendly PvP; only the matchmaking and result authority differ.
+    if (!match.bot) {
+      member.socket.session.privatePvpRoom = match;
+      member.socket.session.privatePvpMember = member;
+    }
+  }
+
+  const req = { stageID: 0, dungeonID: 0, gameType: 6, selectDeckIndex: playerA.ticket.req.selectDeckIndex };
+  const stage = {
+    stageId: 0,
+    dungeonID: 0,
+    mapID: PRIVATE_PVP_MAP_ID,
+    gameType: 6,
+    miscMode: "rank-pvp",
+    initialRemainGameTime: 180,
+    respawnCostA1: 10,
+    respawnCostB1: 10,
+    playerDeck,
+    playerDeckB,
+    ...buildPvpCombatModifierFields([playerA.user, playerB.user], getRankPvpGameStatRateId(playerA.user)),
+    ignoreGameLoadTemplate: true,
+  };
+  const result = buildDynamicGameLoadPayload(playerA.socket, req, stage);
+  if (!result || !result.replay || !result.replay.dynamicGame || !result.replay.dynamicGame.managedCombat) {
+    clearStandardPvpSessions(match);
+    return failStandardPvpMatch(match, 95);
+  }
+  match.replay = result.replay;
+  match.gameDataPayload = extractNullableGameDataFromGameLoadAckPayload(result.payload);
+  match.matchStarted = true;
+  match.state = "active";
+  result.replay.dynamicGame.standardPvp = true;
+  result.replay.dynamicGame.botMatch = Boolean(match.bot);
+  result.replay.dynamicGame.autoRespawnEnabledB = true;
+  pvpMatchmaking.complete(match);
+  for (const member of match.members) {
+    if (!member.socket || member.socket.destroyed) continue;
+    member.socket.session.gameReplay = result.replay;
+    sendServerGamePacket(member.socket, 2604, match.gameDataPayload, "pvp-match-complete");
+  }
+  console.log(
+    `[pvp-match] started match=${match.id} gameUID=${String(result.replay.dynamicGame.gameUID || 0)} bot=${match.bot ? 1 : 0} A=${playerA.user.userUid} B=${playerB.user.userUid}`
+  );
+  return true;
+}
+
+function startLeaguePvpMatch(match) {
+  if (!match || match.matchStarted || match.roomState !== leaguePvp.DRAFT_STATE.DRAFT_COMPLETE) return false;
+  const playerA = match.members.find((entry) => Number(entry.teamType) === 1);
+  const playerB = match.members.find((entry) => Number(entry.teamType) === 3);
+  if (
+    !playerA || !playerB || !playerA.socket || playerA.socket.destroyed ||
+    !playerB.socket || playerB.socket.destroyed
+  ) return failLeaguePvpMatch(match, leaguePvp.ERRORS.LEAGUE_MISS_MATCH);
+
+  const playerDeck = leaguePvp.buildDraftPlayerDeck(playerA);
+  const playerDeckB = leaguePvp.buildDraftPlayerDeck(playerB);
+  if (!playerDeck || !playerDeckB) return failLeaguePvpMatch(match, leaguePvp.ERRORS.LEAGUE_MISS_MATCH);
+
+  const replay = createGameReplayState();
+  replay.inGameFlow = true;
+  match.replay = replay;
+  match.standardPvp = true;
+  for (const member of match.members) {
+    const session = member.socket && member.socket.session;
+    if (!session) continue;
+    session.standardPvpMatch = match;
+    session.standardPvpMember = member;
+    session.privatePvpRoom = match;
+    session.privatePvpMember = member;
+    session.privatePvpTeamType = member.teamType;
+    session.gameReplay = replay;
+  }
+
+  const gameType = Number(match.gameType) === leaguePvp.NGT_PVP_UNLIMITED
+    ? leaguePvp.NGT_PVP_UNLIMITED
+    : leaguePvp.NGT_PVP_LEAGUE;
+  const req = {
+    stageID: 0,
+    dungeonID: 0,
+    gameType,
+    selectDeckIndex: playerA.ticket.req.selectDeckIndex,
+  };
+  const stage = {
+    stageId: 0,
+    dungeonID: 0,
+    mapID: PRIVATE_PVP_MAP_ID,
+    gameType,
+    miscMode: "league-pvp",
+    initialRemainGameTime: 180,
+    respawnCostA1: 10,
+    respawnCostB1: 10,
+    playerDeck,
+    playerDeckB,
+    ...buildPvpCombatModifierFields([playerA.user, playerB.user], getLeaguePvpGameStatRateId(playerA.user)),
+    ignoreGameLoadTemplate: true,
+  };
+  const result = buildDynamicGameLoadPayload(playerA.socket, req, stage);
+  if (!result || !result.replay || !result.replay.dynamicGame || !result.replay.dynamicGame.managedCombat) {
+    clearStandardPvpSessions(match);
+    return failLeaguePvpMatch(match, leaguePvp.ERRORS.LEAGUE_MISS_MATCH);
+  }
+
+  match.replay = result.replay;
+  match.gameDataPayload = extractNullableGameDataFromGameLoadAckPayload(result.payload);
+  if (!leaguePvpMatchmaking.activate(match)) {
+    clearStandardPvpSessions(match);
+    return failLeaguePvpMatch(match, leaguePvp.ERRORS.LEAGUE_MISS_MATCH);
+  }
+  result.replay.dynamicGame.standardPvp = true;
+  result.replay.dynamicGame.leaguePvp = true;
+  result.replay.dynamicGame.autoRespawnEnabledB = false;
+  for (const member of match.members) {
+    if (!member.socket || member.socket.destroyed) continue;
+    member.socket.session.gameReplay = result.replay;
+    sendServerGamePacket(member.socket, 2604, match.gameDataPayload, "league-pvp-match-complete");
+  }
+  console.log(
+    `[league-pvp] started match=${match.id} gameType=${gameType} gameUID=${String(result.replay.dynamicGame.gameUID || 0)} A=${playerA.user.userUid} B=${playerB.user.userUid}`
+  );
+  return true;
+}
+
+function startEventPvpMatch(socket, user, request, season) {
+  if (!socket || !socket.session || !user || !request || !season) return false;
+  const selection = request.eventDeckData || {};
+  const selectedSlots = Object.keys(selection.units || {}).map(Number).filter(Number.isInteger);
+  const playerDeck = buildPlayerDeckForGameLoad(
+    user,
+    { selectDeckIndex: 0 },
+    {
+      deckIndex: { deckType: 0, index: 0 },
+      strictSelection: true,
+      allowedUnitSlots: selectedSlots,
+      slotUnitUids: selection.units,
+      shipUid: selection.shipUid,
+      operatorUid: selection.operatorUid,
+      leaderIndex: selection.leaderIndex,
+    }
+  );
+  const botUser = remapGuestProjection(projectPrivatePvpUser(user), { members: [{ user }] });
+  if (botUser) botUser.nickname = `${String(user.nickname || "Player").slice(0, 20)} Bot`;
+  const playerDeckB = botUser && buildPlayerDeckForGameLoad(
+    botUser,
+    { selectDeckIndex: 0 },
+    { deckIndex: { deckType: 2, index: 0 }, strictSelection: true }
+  );
+  if (!playerDeck || !playerDeckB) return false;
+
+  const previousReplay = socket.session.gameReplay;
+  const replay = createGameReplayState();
+  replay.inGameFlow = true;
+  const member = { socket, user, ticket: null, teamType: 1, observer: false, loaded: true, playerState: 2 };
+  const match = {
+    id: `event-${String(user.userUid || 0)}-${Date.now()}`,
+    standardPvp: true,
+    eventPvp: true,
+    bot: true,
+    season,
+    state: "matched",
+    matchStarted: false,
+    matchFinished: false,
+    battleStarted: false,
+    replay,
+    gameDataPayload: null,
+    resultStates: new Map(),
+    members: [member, {
+      socket: null,
+      user: botUser,
+      ticket: null,
+      teamType: 3,
+      observer: false,
+      loaded: true,
+      playerState: 2,
+      bot: true,
+    }],
+  };
+  socket.session.standardPvpMatch = match;
+  socket.session.standardPvpMember = member;
+  socket.session.privatePvpTeamType = 1;
+  socket.session.gameReplay = replay;
+
+  const req = { stageID: 0, dungeonID: 0, gameType: eventPvp.NGT_PVP_EVENT, selectDeckIndex: 0 };
+  const stage = {
+    stageId: 0,
+    dungeonID: 0,
+    mapID: PRIVATE_PVP_MAP_ID,
+    gameType: eventPvp.NGT_PVP_EVENT,
+    miscMode: "event-pvp",
+    eventDeckId: Number(season.EventDeckID || 0),
+    usesHybridEventDeck: true,
+    eventDeckFreeUnitSlots: getEventDeckPlayerUnitSlots(Number(season.EventDeckID || 0)),
+    eventDeckFreeShipSlot: eventDeckHasFreeShipSlot(Number(season.EventDeckID || 0)),
+    battleConditionIds: (Array.isArray(season.BattleConditionID) ? season.BattleConditionID : [])
+      .map(getBattleConditionIdByStrId)
+      .filter((value) => value > 0),
+    initialRemainGameTime: 180,
+    respawnCostA1: 10,
+    respawnCostB1: 10,
+    playerDeck,
+    playerDeckB,
+    ...buildPvpCombatModifierFields(user, season.GameStateRateID, season.bForcedBanIgnore !== true),
+    ignoreGameLoadTemplate: true,
+  };
+  const result = buildDynamicGameLoadPayload(socket, req, stage);
+  if (!result || !result.replay || !result.replay.dynamicGame || !result.replay.dynamicGame.managedCombat) {
+    if (result && result.replay && result.replay.dynamicGame) abandonDynamicBattle(socket, "event-pvp-start-failed");
+    clearStandardPvpSessions(match);
+    socket.session.gameReplay = previousReplay;
+    return false;
+  }
+
+  match.replay = result.replay;
+  match.gameDataPayload = extractNullableGameDataFromGameLoadAckPayload(result.payload);
+  match.matchStarted = true;
+  match.state = "active";
+  result.replay.dynamicGame.standardPvp = true;
+  result.replay.dynamicGame.eventPvp = true;
+  result.replay.dynamicGame.eventPvpSeasonId = Number(season.seasonID || 0);
+  result.replay.dynamicGame.autoRespawnEnabledB = true;
+  socket.session.gameReplay = result.replay;
+  sendServerGamePacket(socket, eventPvp.PACKETS.COMPLETE_NOT, match.gameDataPayload, "event-pvp-match-complete");
+  return true;
+}
+
+function cancelEventPvpMatch(socket) {
+  const match = pvpMatchmaking.getMatch(socket);
+  if (!match || !match.eventPvp || match.matchStarted || match.matchFinished) return false;
+  match.matchFinished = true;
+  match.state = "cancelled";
+  clearStandardPvpSessions(match);
+  return true;
+}
+
+function exitEventPvpMatch(socket) {
+  const match = pvpMatchmaking.getMatch(socket);
+  if (!match || !match.eventPvp || match.matchFinished) return false;
+  match.matchFinished = true;
+  match.state = "exited";
+  if (match.replay && match.replay.dynamicGame) abandonDynamicBattle(socket, "event-pvp-exit");
+  clearStandardPvpSessions(match);
+  return true;
+}
+
+function startAsyncPvpBattle(socket, user, targetUser, req, options = {}) {
+  if (!socket || !socket.session || !user || !targetUser || !req) return null;
+  const playerDeck = buildPlayerDeckForGameLoad(
+    user,
+    { selectDeckIndex: req.selectDeckIndex },
+    { deckIndex: { deckType: asyncPvp.NDT_PVP, index: req.selectDeckIndex }, strictSelection: true }
+  );
+  const playerDeckB = buildPlayerDeckForGameLoad(
+    targetUser,
+    { selectDeckIndex: 0 },
+    { deckIndex: { deckType: asyncPvp.NDT_PVP_DEFENCE, index: 0 }, strictSelection: true }
+  );
+  if (!playerDeck || !playerDeckB) return null;
+
+  const previousReplay = socket.session.gameReplay;
+  const replay = createGameReplayState();
+  replay.inGameFlow = true;
+  socket.session.gameReplay = replay;
+  const stage = {
+    stageId: 0,
+    dungeonID: 0,
+    mapID: PRIVATE_PVP_MAP_ID,
+    gameType: Number(req.gameType),
+    miscMode: "async-pvp",
+    initialRemainGameTime: 180,
+    respawnCostA1: 10,
+    respawnCostB1: 10,
+    playerDeck,
+    playerDeckB,
+    ...buildPvpCombatModifierFields([user, targetUser], getRankPvpGameStatRateId(user, true)),
+    ignoreGameLoadTemplate: true,
+  };
+  const result = buildDynamicGameLoadPayload(socket, req, stage);
+  if (!result || !result.replay || !result.replay.dynamicGame || !result.replay.dynamicGame.managedCombat) {
+    if (result && result.replay && result.replay.dynamicGame) abandonDynamicBattle(socket, "async-pvp-start-failed");
+    socket.session.gameReplay = previousReplay;
+    return null;
+  }
+  result.replay.dynamicGame.asyncPvp = true;
+  result.replay.dynamicGame.autoRespawnEnabledB = true;
+  const startAckPayload = combatHandler.buildAsyncPvpStartAck(result.replay, {
+    targetListAckPayload: options.targetListAckPayload,
+    targetFriendCode: req.targetFriendCode,
+    simulationGame: req.simulationGame,
+  });
+  if (!startAckPayload) {
+    abandonDynamicBattle(socket, "async-pvp-start-ack-failed");
+    socket.session.gameReplay = previousReplay;
+    return null;
+  }
+  return {
+    ok: true,
+    replay: result.replay,
+    gameDataPayload: extractNullableGameDataFromGameLoadAckPayload(result.payload),
+    startAckPayload,
+  };
+}
+
+function buildSimulatedPvpTestResult(socket, user, req = {}) {
+  const failure = (errorCode = asyncPvp.ERRORS.INVALID_GAME_DATA) => ({
+    errorCode,
+    changed: false,
+    payload: simulation.buildStartSimulatedPvpTestAckPayload(createPacketContext(), user, req, { errorCode }),
+  });
+  if (!socket || !socket.session || !user || !req.valid) return failure(asyncPvp.ERRORS.INVALID_REQUEST);
+
+  const userUidA = toBigInt(req.playerUserUidA || 0);
+  const userUidB = toBigInt(req.playerUserUidB || 0);
+  if (userUidA <= 0n || userUidB <= 0n || userUidA === userUidB || userUidA !== toBigInt(user.userUid || 0)) {
+    return failure(asyncPvp.ERRORS.INVALID_REQUEST);
+  }
+  const targetUser = Object.values(userDb.users || {}).find(
+    (candidate) => candidate && toBigInt(candidate.userUid || 0) === userUidB
+  );
+  if (!targetUser) return failure(asyncPvp.ERRORS.TARGET_NOT_FOUND);
+
+  const previousReplay = socket.session.gameReplay;
+  if (previousReplay && previousReplay.dynamicGame && previousReplay.dynamicBattleResultSent !== true) {
+    return failure(asyncPvp.ERRORS.INVALID_GAME_DATA);
+  }
+
+  const deckReq = { selectDeckIndex: 0 };
+  const validationOptions = { deckType: asyncPvp.NDT_PVP_DEFENCE, requiredState: 0, requireFullDeck: true };
+  const ownValidation = validatePlayerDeckForGameLoad(user, deckReq, validationOptions);
+  const targetValidation = validatePlayerDeckForGameLoad(targetUser, deckReq, validationOptions);
+  if (!ownValidation.valid || !targetValidation.valid) return failure(asyncPvp.ERRORS.INVALID_GAME_DATA);
+
+  const buildOptions = {
+    deckIndex: { deckType: asyncPvp.NDT_PVP_DEFENCE, index: 0 },
+    strictSelection: true,
+  };
+  const playerDeck = buildPlayerDeckForGameLoad(user, deckReq, buildOptions);
+  const playerDeckB = buildPlayerDeckForGameLoad(targetUser, deckReq, buildOptions);
+  if (!playerDeck || !playerDeckB) return failure(asyncPvp.ERRORS.INVALID_GAME_DATA);
+
+  const replay = createGameReplayState();
+  replay.inGameFlow = true;
+  socket.session.gameReplay = replay;
+  let activeReplay = replay;
+  try {
+    const loadReq = { stageID: 0, dungeonID: 0, gameType: simulation.NGT_PVE_SIMULATED, selectDeckIndex: 0 };
+    const stage = {
+      stageId: 0,
+      dungeonID: 0,
+      mapID: PRIVATE_PVP_MAP_ID,
+      gameType: simulation.NGT_PVE_SIMULATED,
+      miscMode: "pve-simulated",
+      initialRemainGameTime: 180,
+      respawnCostA1: 10,
+      respawnCostB1: 10,
+      playerDeck,
+      playerDeckB,
+      ignoreGameLoadTemplate: true,
+    };
+    const loaded = buildDynamicGameLoadPayload(socket, loadReq, stage);
+    if (!loaded || !loaded.replay || !loaded.replay.dynamicGame || !loaded.replay.dynamicGame.managedCombat) {
+      return failure(asyncPvp.ERRORS.INVALID_GAME_DATA);
+    }
+    activeReplay = loaded.replay;
+    activeReplay.dynamicGame.autoRespawnEnabled = true;
+    activeReplay.dynamicGame.autoRespawnEnabledB = true;
+    activeReplay.dynamicGame.autoSkillType = 1;
+    activeReplay.dynamicGame.autoSkillTypeB = 1;
+
+    const packets = [];
+    let timeline = null;
+    let nextFrameIndex = 0;
+    for (let chunkIndex = 0; chunkIndex < 8; chunkIndex += 1) {
+      const chunk = combatHandler.buildReplayChunk(activeReplay, {
+        delta: 0.1,
+        maxFrames: 600,
+        startIndex: nextFrameIndex,
+      });
+      if (!chunk || !chunk.timeline) return failure(asyncPvp.ERRORS.INVALID_GAME_DATA);
+      timeline = chunk.timeline;
+      packets.push(...chunk.packets);
+      nextFrameIndex += 600;
+      if (timeline.finished) break;
+    }
+    const loadComplete = packets.find((packet) => Number(packet.packetId) === GAME_LOAD_COMPLETE_ACK);
+    const syncPayloads = packets
+      .filter((packet) => Number(packet.packetId) === NPT_GAME_SYNC_DATA_PACK_NOT && Buffer.isBuffer(packet.payload))
+      .map((packet) => packet.payload);
+    const finalFrame = timeline && Array.isArray(timeline.frames) ? timeline.frames[timeline.frames.length - 1] : null;
+    if (!timeline || !timeline.finished || !loadComplete || !syncPayloads.length || !finalFrame) {
+      return failure(asyncPvp.ERRORS.INVALID_GAME_DATA);
+    }
+
+    const winTeam = Number(timeline.winTeam || finalFrame.winTeam || 0);
+    const pvpResult = winTeam === 1 ? 0 : winTeam === 3 ? 1 : 2;
+    const playTime = Math.max(0, Number(finalFrame.playTime || finalFrame.gameTime || 0) || 0);
+    const managedRecords = Array.isArray(timeline.records) ? timeline.records : [];
+    const recordState = buildBattleGameRecordState(activeReplay.battleState || {}, { managedBattleRecords: managedRecords });
+    const history = buildSimulatedPvpHistory(user, targetUser, activeReplay, pvpResult);
+    const payload = simulation.buildStartSimulatedPvpTestAckPayload(createPacketContext(), user, req, {
+      gameDataPayload: extractNullableGameDataFromGameLoadAckPayload(loaded.payload),
+      gameRuntimeDataPayload: extractNullableGameRuntimeDataFromLoadCompletePayload(loadComplete.payload),
+      syncPayloads,
+      pvpResult,
+      gameEndTime: playTime,
+      gameRecordPayload: writeNullableObject(buildBattleGameRecordData(activeReplay, recordState, { playTime })),
+      history,
+    });
+    user.pvp = user.pvp && typeof user.pvp === "object" ? user.pvp : {};
+    user.pvp.asyncHistory = Array.isArray(user.pvp.asyncHistory) ? user.pvp.asyncHistory : [];
+    user.pvp.asyncHistory.unshift(history);
+    user.pvp.asyncHistory = user.pvp.asyncHistory.slice(0, 30);
+    return { errorCode: 0, changed: true, payload };
+  } catch (err) {
+    console.log(`[simulated-pvp] managed replay failed: ${summarizeErrorLine(err)}`);
+    return failure(asyncPvp.ERRORS.INVALID_GAME_DATA);
+  } finally {
+    if (activeReplay && activeReplay.dynamicGame) abandonDynamicBattle(socket, "simulated-pvp-replay");
+    socket.session.gameReplay = previousReplay;
+  }
+}
+
+function buildSimulatedPvpHistory(user, targetUser, replay, result) {
+  const ownDeck = getProfileDefenceDeck(user);
+  const targetDeck = getProfileDefenceDeck(targetUser);
+  return {
+    gameUid: String(replay && replay.dynamicGame && replay.dynamicGame.gameUID || 0),
+    myUserLevel: Math.max(1, Number(user && user.level || 1) || 1),
+    targetUserLevel: Math.max(1, Number(targetUser && targetUser.level || 1) || 1),
+    targetNickName: String(targetUser && targetUser.nickname || ""),
+    result: Number(result || 0),
+    gainScore: 0,
+    myTier: 0,
+    myScore: 0,
+    targetTier: 0,
+    targetScore: 0,
+    regdateTick: String(dateTimeTicksNow()),
+    myDeckPayloadBase64: defence.buildAsyncDeckData({ ...user, defenceDeck: ownDeck }).toString("base64"),
+    targetDeckPayloadBase64: defence.buildAsyncDeckData({ ...targetUser, defenceDeck: targetDeck }).toString("base64"),
+    gameType: simulation.NGT_PVE_SIMULATED,
+    targetFriendCode: String(targetUser && targetUser.friendCode || 0),
+    sourceGuildUid: "0",
+    sourceGuildName: "",
+    sourceGuildBadgeId: "0",
+    targetGuildUid: "0",
+    targetGuildName: "",
+    targetGuildBadgeId: "0",
+    forfeitured: false,
+    targetTitleId: Math.max(0, Number(targetUser && targetUser.titleId || 0) || 0),
+  };
+}
+
+function getProfileDefenceDeck(user) {
+  const decks = user && user.army && user.army.deckSets && user.army.deckSets[String(asyncPvp.NDT_PVP_DEFENCE)];
+  return Array.isArray(decks) && decks[0] && typeof decks[0] === "object" ? decks[0] : null;
+}
+
+function extractNullableGameRuntimeDataFromLoadCompletePayload(payload) {
+  const raw = Buffer.isBuffer(payload) ? payload : Buffer.from(payload || []);
+  const errorCode = readSignedVarInt(raw, 0);
+  if (errorCode.value !== 0 || errorCode.offset >= raw.length) throw new Error("managed load-complete ACK failed");
+  const isIntrude = raw.readUInt8(errorCode.offset);
+  if (isIntrude !== 0 && isIntrude !== 1) throw new Error("managed load-complete ACK has a noncanonical bool");
+  const start = errorCode.offset + 1;
+  if (start >= raw.length || raw.readUInt8(start) === 0 || raw.length <= start + 1) {
+    throw new Error("managed load-complete ACK has no runtime data");
+  }
+  const rewardMultiply = readSignedVarInt(raw, raw.length - 1);
+  if (rewardMultiply.offset !== raw.length) throw new Error("managed load-complete ACK has an invalid reward multiplier");
+  return raw.subarray(start, raw.length - 1);
+}
+
+function finishAsyncPvpSimulation(socket) {
+  const replay = socket && socket.session && socket.session.gameReplay;
+  const meta = replay && replay.asyncPvpBattle;
+  if (!replay || !replay.dynamicGame || !meta || !meta.simulationGame || meta.resultRecorded) return false;
+  const playerDeck = replay.dynamicGame.playerDeck || {};
+  const playerPower = Math.max(0, Number(playerDeck.operationPower || 0) || 0) ||
+    (Array.isArray(playerDeck.units) ? playerDeck.units : [])
+      .reduce((sum, unit) => sum + Math.max(1, Number(unit && unit.level || 1) || 1) * 1000, 0);
+  const win = playerPower >= Math.max(0, Number(meta.targetSnapshot && meta.targetSnapshot.operationPower || 0) || 0);
+  const battleState = replay.battleState || {};
+  normalizeBattleResultState(battleState, win);
+  battleState.gameTime = 1;
+  replay.battleState = battleState;
+  const payload = asyncPvp.buildAsyncPvpGameEndNotPayload(createPacketContext(), socket, replay, {
+    battleState,
+    win,
+    battleWinTeam: win ? 1 : 3,
+    playTime: 1,
+  });
+  if (!payload) return false;
+  sendServerGamePacket(socket, asyncPvp.PACKETS.GAME_END_NOT, payload, "async-pvp-simulation-end");
+  replay.dynamicBattleResultSent = true;
+  abandonDynamicBattle(socket, "async-pvp-simulation");
+  return true;
+}
+
+function failStandardPvpMatch(match, errorCode) {
+  pvpMatchmaking.fail(match);
+  for (const member of match && match.members || []) {
+    if (member.socket && !member.socket.destroyed) {
+      sendServerGamePacket(member.socket, 2605, writeSignedVarInt(errorCode), "pvp-match-failed");
+    }
+  }
+  return false;
+}
+
+function failLeaguePvpMatch(match, errorCode) {
+  clearStandardPvpSessions(match);
+  leaguePvpMatchmaking.fail(match, createPacketContext(), errorCode);
+  return false;
+}
+
+function clearStandardPvpSessions(match) {
+  for (const member of match && match.members || []) {
+    const session = member.socket && member.socket.session;
+    if (!session) continue;
+    delete session.standardPvpMatch;
+    delete session.standardPvpMember;
+    if (session.privatePvpRoom === match) delete session.privatePvpRoom;
+    if (session.privatePvpMember === member) delete session.privatePvpMember;
+    delete session.privatePvpTeamType;
+  }
 }
 
 function finishPrivatePvpGiveup(socket) {
@@ -3444,14 +4456,18 @@ function finishPrivatePvpGiveup(socket) {
   sendDynamicFinishStateSync(socket, replay.battleState, "private-pvp-giveup-finish");
   for (const viewer of room.members) {
     if (!viewer.socket || viewer.socket.destroyed) continue;
+    const payload = room.standardPvp
+      ? buildStandardPvpGameEndNotPayload(replay, room, viewer, winTeam, { battleWinTeam: winTeam, giveup: true })
+      : buildPrivatePvpGameEndNotPayload(replay, viewer, winTeam, { battleWinTeam: winTeam });
     sendServerGamePacket(
       viewer.socket,
       GAME_END_NOT,
-      buildPrivatePvpGameEndNotPayload(replay, viewer, winTeam, { battleWinTeam: winTeam }),
-      "private-pvp-giveup-end"
+      payload,
+      room.standardPvp ? "pvp-match-giveup-end" : "private-pvp-giveup-end"
     );
   }
   markPrivatePvpMatchFinished(socket);
+  markStandardPvpMatchFinished(socket);
   return true;
 }
 
@@ -3492,9 +4508,10 @@ function resetPrivatePvpMatch(room) {
 
 function handleDynamicBattleRespawn(socket, req) {
   const replay = socket.session && socket.session.gameReplay;
-  if (!replay || !DYNAMIC_BATTLE_MANAGER || !req) return false;
+  if (!replay || !replay.dynamicGame || !DYNAMIC_BATTLE_MANAGER || !req) return false;
   const result = combatHandler.handleDeploy({ replay, req, teamType: socket.session.privatePvpTeamType || 1 });
-  if (!result || !result.handled) return false;
+  if (!result || !result.handled || !result.ackPayload) return false;
+  const errorCode = Number(result.errorCode ?? readSignedVarInt(result.ackPayload, 0).value);
   if (result.mode === "managed-local-server") {
     const packets = Array.isArray(result.packets) ? result.packets : [];
     if (packets.length > 0) {
@@ -3502,17 +4519,21 @@ function handleDynamicBattleRespawn(socket, req) {
     } else if (result.ackPayload) {
       sendServerGamePacket(socket, GAME_RESPAWN_ACK, result.ackPayload, "managed-respawn");
     }
-    startDynamicBattleManager(socket, "respawn");
-    console.log(`[combat-host] deploy accepted unitUID=${req.unitUID} packets=${packets.length}`);
+    if (errorCode === 0) {
+      replay.lastRespawnReq = req;
+      startDynamicBattleManager(socket, "respawn");
+    }
+    console.log(`[combat-host] deploy ${errorCode === 0 ? "accepted" : `rejected error=${errorCode}`} unitUID=${req.unitUID} packets=${packets.length}`);
     return true;
   }
   const ackLabel = result.mode === "battleState" ? "battle-continuation-respawn" : "battle-manager-respawn";
   sendServerGamePacket(socket, GAME_RESPAWN_ACK, result.ackPayload, ackLabel);
-  if (result.syncPayload) {
+  if (errorCode === 0) replay.lastRespawnReq = req;
+  if (errorCode === 0 && result.syncPayload) {
     sendServerGamePacket(socket, NPT_GAME_SYNC_DATA_PACK_NOT, result.syncPayload, "battle-continuation-deploy-sync");
   }
   if (result.mode === "battleState") {
-    if (result.deployed) {
+    if (errorCode === 0 && result.deployed) {
       console.log(
         `[battle-continuation] deploy unitUID=${req.unitUID} gameUnitUID=${result.deployed.gameUnitUID} x=${result.deployed.x.toFixed(
           2
@@ -3520,9 +4541,9 @@ function handleDynamicBattleRespawn(socket, req) {
       );
       startDynamicBattleManager(socket, "deploy");
     } else {
-      console.log(`[battle-continuation] respawn acked without active battleState unitUID=${req.unitUID}`);
+      console.log(`[battle-continuation] respawn rejected error=${errorCode} unitUID=${req.unitUID}`);
     }
-  } else if (result.spawned && result.spawned.length) {
+  } else if (errorCode === 0 && result.spawned && result.spawned.length) {
     startDynamicBattleManager(socket, "respawn");
     console.log(
       `[battle-manager] deploy gameUnitUIDs=${result.spawned.map((unit) => unit.gameUnitUID).join(",")} unitUID=${req.unitUID} x=${result.spawned[0].x.toFixed(
@@ -3537,16 +4558,20 @@ function handleDynamicBattleRespawn(socket, req) {
 
 function handleDynamicBattlePause(socket, req) {
   const replay = socket.session && socket.session.gameReplay;
-  if (!replay || !DYNAMIC_BATTLE_MANAGER || !req) return false;
+  if (!replay || !replay.dynamicGame || !DYNAMIC_BATTLE_MANAGER || !req) return false;
   // 812 is part of the combat timeline. Forward it to NKCGameServerLocal so
   // tutorial prompt pauses affect client and server together. The Node pump
   // stays alive; it must not add a second transport-level pause on top.
-  replay.dynamicBattlePaused = Boolean(req.isPause);
   const result = combatHandler.handlePause({ replay, req });
-  if (result && result.handled) {
+  if (result && result.handled && result.ackPayload) {
+    const errorCode = readSignedVarInt(result.ackPayload, 0).value;
     sendManagedOrImmediatePackets(socket, result.packets);
-  } else {
+    if (errorCode === 0) replay.dynamicBattlePaused = Boolean(req.isPause);
+  } else if (!replay.dynamicGame.managedCombat) {
+    replay.dynamicBattlePaused = Boolean(req.isPause);
     sendServerGamePacket(socket, GAME_PAUSE_ACK, buildGamePauseAckPayload(req.isPause, req.isPauseEvent), "battle-manager-pause");
+  } else {
+    return false;
   }
   replay.pauseCount += 1;
   console.log(`[battle-manager] pause=${req.isPause ? 1 : 0} pauseEvent=${req.isPauseEvent ? 1 : 0} pump=alive`);
@@ -3558,29 +4583,23 @@ function handleDynamicBattlePause(socket, req) {
 
 function handleDynamicBattleUnitSkill(socket, req) {
   const replay = socket.session && socket.session.gameReplay;
-  if (!replay || !DYNAMIC_BATTLE_MANAGER || !req) return false;
+  if (!replay || !replay.dynamicGame || !DYNAMIC_BATTLE_MANAGER || !req) return false;
   const result = combatHandler.handleUnitSkill({ replay, req, teamType: socket.session.privatePvpTeamType || 1 });
-  if (result && result.handled) {
+  if (result && result.handled && (result.packets || []).some((packet) => packet.packetId === GAME_USE_UNIT_SKILL_ACK)) {
     sendManagedOrImmediatePackets(socket, result.packets);
     console.log(
       `[combat-host] unit skill gameUnitUID=${req.gameUnitUID} packets=${(result.packets || []).length}`
     );
     return true;
   }
-  sendServerGamePacket(
-    socket,
-    GAME_USE_UNIT_SKILL_ACK,
-    buildGameUnitSkillAckPayload(req.gameUnitUID, 0, 0),
-    "battle-manager-unit-skill"
-  );
-  return true;
+  return false;
 }
 
 function handleDynamicBattleShipSkill(socket, req) {
   const replay = socket.session && socket.session.gameReplay;
-  if (!replay || !DYNAMIC_BATTLE_MANAGER || !req) return false;
+  if (!replay || !replay.dynamicGame || !DYNAMIC_BATTLE_MANAGER || !req) return false;
   const result = combatHandler.handleShipSkill({ replay, req, teamType: socket.session.privatePvpTeamType || 1 });
-  if (result && result.handled) {
+  if (result && result.handled && (result.packets || []).some((packet) => packet.packetId === GAME_SHIP_SKILL_ACK)) {
     sendManagedOrImmediatePackets(socket, result.packets);
     console.log(
       `[combat-host] ship skill gameUnitUID=${req.gameUnitUID} shipSkillID=${req.shipSkillID} x=${req.skillPosX.toFixed(
@@ -3589,12 +4608,33 @@ function handleDynamicBattleShipSkill(socket, req) {
     );
     return true;
   }
-  sendServerGamePacket(
-    socket,
-    GAME_SHIP_SKILL_ACK,
-    buildGameShipSkillAckPayload(req.gameUnitUID, req.shipSkillID, req.skillPosX, 0),
-    "battle-manager-ship-skill"
-  );
+  return false;
+}
+
+function handleDynamicBattleCheckDie(socket) {
+  const replay = socket.session && socket.session.gameReplay;
+  if (!replay || !DYNAMIC_BATTLE_MANAGER) return false;
+  const result = combatHandler.handleCheckDie({ replay, teamType: socket.session.privatePvpTeamType || 1 });
+  if (!result || !result.handled) return false;
+  sendManagedOrImmediatePackets(socket, result.packets);
+  return true;
+}
+
+function handleDynamicBattleUnitRetreat(socket, req) {
+  const replay = socket.session && socket.session.gameReplay;
+  if (!replay || !DYNAMIC_BATTLE_MANAGER || !req) return false;
+  const result = combatHandler.handleUnitRetreat({ replay, req, teamType: socket.session.privatePvpTeamType || 1 });
+  if (!result || !result.handled) return false;
+  sendManagedOrImmediatePackets(socket, result.packets);
+  return true;
+}
+
+function handleDynamicBattleTacticalCommand(socket, req) {
+  const replay = socket.session && socket.session.gameReplay;
+  if (!replay || !DYNAMIC_BATTLE_MANAGER || !req) return false;
+  const result = combatHandler.handleTacticalCommand({ replay, req, teamType: socket.session.privatePvpTeamType || 1 });
+  if (!result || !result.handled) return false;
+  sendManagedOrImmediatePackets(socket, result.packets);
   return true;
 }
 
@@ -3633,11 +4673,55 @@ function maybeSendTutorialCutsceneClear(socket, payload) {
 function readCutsceneDungeonReq(payload) {
   try {
     const decrypted = decryptCopy(payload);
-    return readSignedVarInt(decrypted, 0).value;
+    const dungeon = readSignedVarInt(decrypted, 0);
+    return {
+      valid: dungeon.offset === decrypted.length && writeSignedVarInt(dungeon.value).equals(decrypted),
+      dungeonId: Number(dungeon.value),
+    };
   } catch (err) {
     console.log(`[CUTSCENE_DUNGEON_REQ] decode failed: ${err.message}`);
-    return 0;
+    return { valid: false, dungeonId: 0 };
   }
+}
+
+function getCutsceneStage(dungeonId) {
+  const resolvedDungeonId = positiveInt(dungeonId);
+  if (!resolvedDungeonId || !getDungeonTableEntry(resolvedDungeonId)) return null;
+  const stage = getMainStoryStageByDungeonId(resolvedDungeonId) || getGenericStageForRequest({ dungeonID: resolvedDungeonId });
+  const stageId = positiveInt(stage && stage.stageId) || stageIdForDungeonId(resolvedDungeonId);
+  return isCutsceneOnlyDungeon(resolvedDungeonId, stageId) ? { ...stage, stageId, dungeonID: resolvedDungeonId } : null;
+}
+
+function isValidCutsceneDungeonId(dungeonId) {
+  return Boolean(getCutsceneStage(dungeonId));
+}
+
+function commitCutsceneDungeonClear(socket, dungeonId) {
+  const user = socket && socket.session && socket.session.user;
+  const stage = getCutsceneStage(dungeonId);
+  if (!user || !stage) return { changed: false, alreadyCleared: false };
+  const key = String(stage.dungeonID);
+  const alreadyCleared = Boolean(
+    (user.dungeonClear && user.dungeonClear[key]) ||
+      (user.clearConditions && user.clearConditions.dungeons && user.clearConditions.dungeons[key] && user.clearConditions.dungeons[key].cleared)
+  );
+  if (alreadyCleared) return { changed: false, alreadyCleared: true };
+
+  let changed = recordPersistentCutsceneViewForUser(user, stage.dungeonID, stage.stageId, { save: false });
+  if (recordGameplayUnlockClearForUser(user, stage.dungeonID, stage.stageId, { save: false })) changed = true;
+  if (isTutorialDungeonId(stage.dungeonID)) {
+    if (recordTutorialDungeonClearForUser(user, stage.dungeonID, stage.stageId, {}, { save: false })) changed = true;
+  } else if (isMainStoryDungeonId(stage.dungeonID)) {
+    if (recordMainStoryDungeonClearForUser(user, stage.dungeonID, stage.stageId, {}, { save: null })) changed = true;
+    grantStageClearExp(user, stage.stageId, stage.dungeonID);
+    trackStageClearMissionProgress(user, stage.dungeonID, stage.stageId, {});
+    sendStageClearMissionUpdate(socket, user);
+  }
+  if (changed) {
+    invalidateJoinLobbyAckPayloadCache("cutscene-dungeon-clear");
+    if (USE_LOCAL_USER_DB) saveUserDb();
+  }
+  return { changed, alreadyCleared: false };
 }
 
 function isKnownNonTutorialDungeonId(dungeonId) {
@@ -3732,18 +4816,6 @@ function scrubTutorialEpisodeClearProgress(user) {
     if (Object.prototype.hasOwnProperty.call(user.stagePlayData, String(stage.stageId))) {
       delete user.stagePlayData[String(stage.stageId)];
       changed = true;
-    }
-    for (const containerName of ["mainStory", "episode1"]) {
-      const container = user[containerName];
-      if (!container || !container.stages || typeof container.stages !== "object") continue;
-      const state = container.stages[String(stage.stageId)];
-      if (!state) continue;
-      if (state.completed || state.completedAt || state.bestClearTimeSec) {
-        state.completed = false;
-        state.completedAt = "";
-        state.bestClearTimeSec = 0;
-        changed = true;
-      }
     }
   }
   if (user.clearConditions && typeof user.clearConditions === "object") {
@@ -3900,6 +4972,9 @@ function maybeRecordRaidBattleResultForReplay(replay, override = {}, resolvedWin
     gameUID,
     battleKey,
     tryAssist: Boolean(dynamicGame.isTryAssist || override.isTryAssist),
+    buffList: Array.isArray(dynamicGame.buffList) ? dynamicGame.buffList : [],
+    raidCostItemId: dynamicGame.raidCostItemId == null ? undefined : Number(dynamicGame.raidCostItemId),
+    raidCostCount: dynamicGame.raidCostCount == null ? undefined : Number(dynamicGame.raidCostCount),
   });
   replay.raidBattleResult = { battleKey, result };
   if (USE_LOCAL_USER_DB) saveUserDb();
@@ -3933,7 +5008,20 @@ function sendRaidStateDataForSocket(socket, label = "raid-state") {
 function maybeRecordDynamicBattleClear(socket, overrideState = null) {
   const replay = socket && socket.session && socket.session.gameReplay;
   if (!replay || !replay.dynamicGame || replay.dynamicGame.tutorial) return false;
+  if ([
+    6,
+    leaguePvp.NGT_PVP_LEAGUE,
+    leaguePvp.NGT_PVP_UNLIMITED,
+    eventPvp.NGT_PVP_EVENT,
+    asyncPvp.NGT_ASYNC_PVP,
+    asyncPvp.NGT_PVP_STRATEGY,
+    asyncPvp.NGT_PVP_STRATEGY_REVENGE,
+    asyncPvp.NGT_PVP_STRATEGY_NPC,
+  ].includes(Number(replay.dynamicGame.gameType || 0))) return false;
   if (Number(replay.dynamicGame.diveStageID || 0) > 0 || Number(replay.dynamicGame.gameType || 0) === NGT_DIVE) return false;
+  if (String(replay.dynamicGame.miscMode || "").startsWith("guild-dungeon")) {
+    return guildDungeon.commitBattleResult(createPacketContext(), socket, replay, overrideState);
+  }
   if (isRaidDynamicGame(replay.dynamicGame)) {
     const lastEnd = replay.lastDynamicGameEndResult || null;
     if (!lastEnd) return false;
@@ -3953,11 +5041,126 @@ function maybeRecordDynamicBattleClear(socket, overrideState = null) {
     Number(lastEnd.stageId || 0) === dynamicStageId;
   const battleState = (lastEndMatches && lastEnd.battleState) || overrideState || replay.battleState || {};
   const authoritativeWin = Boolean(lastEndMatches && lastEnd.win === true && !lastEnd.giveup);
-  if (!authoritativeWin && !isBattleWin(battleState)) return false;
-  return (
+  const killCountSaved = commitKillCountBattleResult(socket);
+  if (Number(replay.dynamicGame.gameType || 0) === NGT_PHASE || String(replay.dynamicGame.miscMode || "") === "phase") {
+    const result = replay.phaseBattleResult;
+    if (!result || result.valid !== true) return killCountSaved;
+    if (result.changed && !result.persisted) {
+      result.persisted = true;
+      const user = socket && socket.session && socket.session.user;
+      if (result.completed) {
+        const progressState = {
+          ...battleState,
+          gameTime: result.totalPlayTime,
+          GameTime: result.totalPlayTime,
+          missionResult1: result.clearData.missionResult1,
+          missionResult2: result.clearData.missionResult2,
+          missionResults: {
+            missionResult1: result.clearData.missionResult1,
+            missionResult2: result.clearData.missionResult2,
+          },
+        };
+        const storyStage = getMainStoryStageByStageId(result.stageId);
+        const recorded = storyStage
+          ? recordMainStoryDungeonClearForUser(user, result.dungeonId, result.stageId, progressState, { save: null })
+          : recordGenericDungeonClearForUser(user, result.dungeonId, result.stageId, progressState, { save: false });
+        if (recorded) {
+          grantStageClearExp(user, result.stageId, result.dungeonId, { exp: result.loot.userExp });
+          recordGameplayUnlockClearForUser(user, result.dungeonId, result.stageId, { save: false });
+          trackStageClearMissionProgress(user, result.dungeonId, result.stageId, progressState);
+          sendStageClearMissionUpdate(socket, user);
+        }
+      }
+      replay.stageReqItemCostPersisted = replay.stageReqItemCostChanged === true;
+      invalidateJoinLobbyAckPayloadCache("phase-battle-result");
+      if (USE_LOCAL_USER_DB) saveUserDb();
+      return true;
+    }
+    return killCountSaved;
+  }
+  if (String(replay.dynamicGame.miscMode || "").toLowerCase() === "trim" || Number(replay.dynamicGame.gameType || 0) === NGT_TRIM) {
+    const result = replay.trimBattleResult;
+    if (!result || result.valid !== true) return killCountSaved;
+    if (result.changed && !result.persisted) {
+      result.persisted = true;
+      invalidateJoinLobbyAckPayloadCache("trim-battle-result");
+      if (USE_LOCAL_USER_DB) saveUserDb();
+      return true;
+    }
+    return killCountSaved;
+  }
+  if (String(replay.dynamicGame.miscMode || "").toLowerCase() === "explore" || Number(replay.dynamicGame.gameType || 0) === NGT_EXPLORE) {
+    const result = replay.exploreBattleResult;
+    if (!result || result.valid !== true) return killCountSaved;
+    if (result.changed && !result.persisted) {
+      result.persisted = true;
+      invalidateJoinLobbyAckPayloadCache("explore-battle-result");
+      if (USE_LOCAL_USER_DB) saveUserDb();
+      return true;
+    }
+    return killCountSaved;
+  }
+  if (isDefenceDynamicGame(replay.dynamicGame) && !authoritativeWin) {
+    const user = socket && socket.session && socket.session.user;
+    const changed = recordMiscStageClearForUser(user, dynamicDungeonId, dynamicStageId, battleState);
+    replay.stageReqItemCostPersisted = replay.stageReqItemCostChanged === true;
+    invalidateJoinLobbyAckPayloadCache("defence-battle-result");
+    if (USE_LOCAL_USER_DB) saveUserDb();
+    return changed || killCountSaved;
+  }
+  const shadowBattleResult = replay.shadowPalaceBattleResult;
+  if (shadowBattleResult && shadowBattleResult.persisted) return killCountSaved;
+  if (shadowBattleResult && shadowBattleResult.valid === false) return killCountSaved;
+  if (!authoritativeWin && !isBattleWin(battleState)) {
+    if (!shadowBattleResult || !shadowBattleResult.changed) {
+      return commitStageReqItemCostForReplay(replay) || killCountSaved;
+    }
+    shadowBattleResult.persisted = true;
+    replay.stageReqItemCostPersisted = replay.stageReqItemCostChanged === true;
+    invalidateJoinLobbyAckPayloadCache("shadow-palace-battle-result");
+    if (USE_LOCAL_USER_DB) saveUserDb();
+    console.log(
+      `[shadow-palace-progress] loss uid=${socket && socket.session && socket.session.user && socket.session.user.userUid || "(none)"} palaceID=${shadowBattleResult.palaceId} dungeonID=${dynamicDungeonId} life=${shadowBattleResult.life}`
+    );
+    return true;
+  }
+  const saved =
     recordMainStoryDungeonClear(socket, lastEndMatches ? lastEnd.dungeonId : undefined, battleState) ||
-    recordGenericDungeonClear(socket, lastEndMatches ? lastEnd.dungeonId : undefined, battleState)
-  );
+    recordGenericDungeonClear(socket, lastEndMatches ? lastEnd.dungeonId : undefined, battleState);
+  if (shadowBattleResult && saved) {
+    shadowBattleResult.persisted = true;
+    invalidateJoinLobbyAckPayloadCache("shadow-palace-battle-result");
+  }
+  return saved || killCountSaved;
+}
+
+function commitKillCountBattleResult(socket) {
+  const replay = socket && socket.session && socket.session.gameReplay;
+  const result = replay && replay.killCountBattleResult;
+  if (!result || !result.eligible) return false;
+  if (result.changed && !result.persisted) {
+    result.persisted = true;
+    invalidateJoinLobbyAckPayloadCache("kill-count-battle-result");
+    if (USE_LOCAL_USER_DB) saveUserDb();
+  }
+  if (!result.pushed) {
+    result.pushed = true;
+    sendServerGamePacket(
+      socket,
+      killCount.PACKETS.SERVER_KILL_COUNT_NOT,
+      killCount.buildServerKillCountNotPayload({ userDb }),
+      "kill-count-server-total"
+    );
+  }
+  return result.changed;
+}
+
+function commitStageReqItemCostForReplay(replay) {
+  if (!replay || replay.stageReqItemCostChanged !== true || replay.stageReqItemCostPersisted === true) return false;
+  replay.stageReqItemCostPersisted = true;
+  invalidateJoinLobbyAckPayloadCache("battle-entry-cost");
+  if (USE_LOCAL_USER_DB) saveUserDb();
+  return true;
 }
 
 function recordMainStoryDungeonClear(socket, dungeonId, battleState = null) {
@@ -3967,6 +5170,7 @@ function recordMainStoryDungeonClear(socket, dungeonId, battleState = null) {
   if (!resolvedDungeonId || !isMainStoryDungeonId(resolvedDungeonId) || isTutorialDungeonId(resolvedDungeonId)) return false;
   const resolvedStageId = stageIdForDungeonId(resolvedDungeonId);
   const user = socket && socket.session && socket.session.user;
+  const rewardMultiply = Math.max(1, Math.trunc(Number(dynamicGame.rewardMultiply || 1)) || 1);
   const state = battleState || (replay && replay.battleState) || {};
   const missionResults = resolveDungeonMissionResults(resolvedDungeonId, {
     stageId: resolvedStageId,
@@ -3982,10 +5186,11 @@ function recordMainStoryDungeonClear(socket, dungeonId, battleState = null) {
   const saved = recordMainStoryDungeonClearForUser(user, resolvedDungeonId, resolvedStageId, state, {
     save: null,
     forceMissionSuccess: false,
+    playCountDelta: rewardMultiply,
   });
   if (saved) {
-    const userExp = getDungeonUserExpReward(resolvedDungeonId);
-    maybeGrantBattleStageClearLoot(replay, user, resolvedDungeonId, resolvedStageId, state);
+    const stageLoot = maybeGrantBattleStageClearLoot(replay, user, resolvedDungeonId, resolvedStageId, state);
+    const userExp = stageLoot ? stageLoot.userExp : getDungeonUserExpReward(resolvedDungeonId) * rewardMultiply;
     grantStageClearExp(user, resolvedStageId, resolvedDungeonId, userExp > 0 ? { exp: userExp } : undefined);
     recordGameplayUnlockClearForUser(user, resolvedDungeonId, resolvedStageId, { save: false });
     trackStageClearMissionProgress(user, resolvedDungeonId, resolvedStageId, state);
@@ -4005,6 +5210,7 @@ function recordGenericDungeonClear(socket, dungeonId, battleState = null) {
   if (!resolvedDungeonId || isTutorialDungeonId(resolvedDungeonId) || isMainStoryDungeonId(resolvedDungeonId)) return false;
   const resolvedStageId = Number(dynamicGame.stageID || stageIdForDungeonId(resolvedDungeonId) || 0);
   const user = socket && socket.session && socket.session.user;
+  const rewardMultiply = Math.max(1, Math.trunc(Number(dynamicGame.rewardMultiply || 1)) || 1);
   if (!user || typeof user !== "object") return false;
   const state = battleState || (replay && replay.battleState) || {};
   const missionResults = resolveDungeonMissionResults(resolvedDungeonId, {
@@ -4018,12 +5224,13 @@ function recordGenericDungeonClear(socket, dungeonId, battleState = null) {
     state.missionResult2 = missionResults.missionResult2;
     state.missionResults = { ...missionResults };
   }
-  const userExp = getDungeonUserExpReward(resolvedDungeonId);
-  maybeGrantBattleStageClearLoot(replay, user, resolvedDungeonId, resolvedStageId, state);
+  const stageLoot = maybeGrantBattleStageClearLoot(replay, user, resolvedDungeonId, resolvedStageId, state);
+  const userExp = stageLoot ? stageLoot.userExp : getDungeonUserExpReward(resolvedDungeonId) * rewardMultiply;
   grantStageClearExp(user, resolvedStageId, resolvedDungeonId, userExp > 0 ? { exp: userExp } : undefined);
   const saved = recordGenericDungeonClearForUser(user, resolvedDungeonId, resolvedStageId, state, {
     save: false,
     forceMissionSuccess: false,
+    playCountDelta: rewardMultiply,
   });
   if (saved) {
     recordGameplayUnlockClearForUser(user, resolvedDungeonId, resolvedStageId, { save: false });
@@ -4047,6 +5254,7 @@ function recordGenericDungeonClearForUser(user, dungeonId, stageId, battleState 
 
   const previousClear = user.dungeonClear[String(resolvedDungeonId)] || {};
   const previousStagePlay = user.stagePlayData[String(resolvedStageId)] || {};
+  const playCountDelta = Math.max(1, Math.trunc(Number(options.playCountDelta || 1)) || 1);
   const bestClearTimeSec = Math.max(0, Math.round(Number((battleState && (battleState.gameTime || battleState.GameTime)) || 0)));
   const missionResults =
     battleState && battleState.missionResults && typeof battleState.missionResults === "object"
@@ -4080,8 +5288,11 @@ function recordGenericDungeonClearForUser(user, dungeonId, stageId, battleState 
   if (resolvedStageId > 0) {
     user.stagePlayData[String(resolvedStageId)] = {
       stageId: resolvedStageId,
-      playCount: Number(previousStagePlay.playCount || 0) + 1,
-      totalPlayCount: Number(previousStagePlay.totalPlayCount || 0) + 1,
+      playCount: Number(previousStagePlay.playCount || 0) + playCountDelta,
+      restoreCount: Number(previousStagePlay.restoreCount || 0),
+      bestKillCount: Number(previousStagePlay.bestKillCount || 0),
+      nextResetDate: previousStagePlay.nextResetDate || "0",
+      totalPlayCount: Number(previousStagePlay.totalPlayCount || 0) + playCountDelta,
       bestClearTimeSec: bestRecordedClearTimeSec,
     };
     user.unlockedStageIds = Array.isArray(user.unlockedStageIds) ? user.unlockedStageIds : [];
@@ -4100,11 +5311,13 @@ function recordMiscStageClearForUser(user, dungeonId, stageId, battleState = {})
   const playTime = Math.max(0, Math.round(Number((battleState && (battleState.gameTime || battleState.GameTime)) || 0)));
   if (miscStage.mode === "shadow") {
     state.shadow = state.shadow && typeof state.shadow === "object" ? state.shadow : {};
-    state.shadow.currentPalaceId = positiveInt(miscStage.palaceID);
-    state.shadow.life = Math.max(1, positiveInt(state.shadow.life) || 3);
+    const palaceId = positiveInt(miscStage.palaceID);
+    const nextDungeonId = nextShadowDungeonId(palaceId, dungeonId);
+    state.shadow.currentPalaceId = nextDungeonId ? palaceId : 0;
+    state.shadow.life = Math.max(0, Number(state.shadow.life == null ? 3 : state.shadow.life) || 0);
     state.shadow.rewardMultiply = Math.max(1, positiveInt(state.shadow.rewardMultiply) || 1);
     state.shadow.palaces = state.shadow.palaces && typeof state.shadow.palaces === "object" ? state.shadow.palaces : {};
-    const palaceKey = String(positiveInt(miscStage.palaceID));
+    const palaceKey = String(palaceId);
     const palace = state.shadow.palaces[palaceKey] && typeof state.shadow.palaces[palaceKey] === "object" ? state.shadow.palaces[palaceKey] : {};
     const dungeonDataList = Array.isArray(palace.dungeonDataList) ? palace.dungeonDataList.slice() : [];
     const existingIndex = dungeonDataList.findIndex((entry) => positiveInt(entry && entry.dungeonId) === positiveInt(dungeonId));
@@ -4112,13 +5325,14 @@ function recordMiscStageClearForUser(user, dungeonId, stageId, battleState = {})
     const data = {
       dungeonId: positiveInt(dungeonId),
       recentTime: playTime,
-      bestTime: previous.bestTime > 0 && playTime > 0 ? Math.min(previous.bestTime, playTime) : playTime || positiveInt(previous.bestTime),
+      bestTime: Math.max(0, Number(previous.bestTime || 0) || 0),
     };
     if (existingIndex >= 0) dungeonDataList[existingIndex] = data;
     else dungeonDataList.push(data);
     state.shadow.palaces[palaceKey] = {
-      palaceId: positiveInt(miscStage.palaceID),
-      currentDungeonId: nextShadowDungeonId(miscStage.palaceID, dungeonId),
+      ...palace,
+      palaceId,
+      currentDungeonId: nextDungeonId,
       dungeonDataList,
     };
     return true;
@@ -4178,70 +5392,154 @@ function recordMiscStageClearForUser(user, dungeonId, stageId, battleState = {})
   if (miscStage.mode === "defence") {
     state.defence = state.defence && typeof state.defence === "object" ? state.defence : {};
     const defenceId = positiveInt(miscStage.defenceTempletId);
-    state.defence[String(defenceId)] = {
+    const previous = state.defence[String(defenceId)] && typeof state.defence[String(defenceId)] === "object"
+      ? state.defence[String(defenceId)]
+      : {};
+    const gameScore = Math.max(0, Number(battleState && (battleState.defenceScore ?? battleState.DefenceScore ?? battleState.killCount ?? 0)) || 0);
+    const next = {
+      ...previous,
       defenceTempletId: defenceId,
-      bestScore: Math.max(Number((state.defence[String(defenceId)] || {}).bestScore || 0), 1),
-      missionResult1: true,
-      missionResult2: true,
+      bestScore: Math.max(Number(previous.bestScore || 0), gameScore),
+      missionResult1: previous.missionResult1 === true || battleState.missionResult1 === true,
+      missionResult2: previous.missionResult2 === true || battleState.missionResult2 === true,
     };
-    return true;
+    state.defence[String(defenceId)] = next;
+    return JSON.stringify(previous) !== JSON.stringify(next);
   }
   return false;
 }
 
 function buildDungeonSkipAckPayload(socket, req = {}) {
   const user = socket && socket.session && socket.session.user;
-  const dungeonId = Number(req.dungeonId || 0);
-  const stage = getGenericStageForRequest({ dungeonID: dungeonId }) || getGenericStageForRequest({ stageID: stageIdForDungeonId(dungeonId), dungeonID: dungeonId });
-  const stageId = Number((stage && stage.stageId) || stageIdForDungeonId(dungeonId) || 0);
-  const skipCount = clamp(Number(req.skip || 1) || 1, 1, 99);
-  const unitUids = Array.isArray(req.unitUids) ? req.unitUids : [];
-  const rewardSets = [];
-  const costItems = spendStageReqItemCost(user, stageId, { multiplier: skipCount });
-  const battleState = {
-    gameTime: 0,
-    missionResult1: true,
-    missionResult2: true,
-    missionResults: { missionResult1: true, missionResult2: true },
-    forceMissionSuccess: true,
-  };
-
-  for (let index = 0; index < skipCount; index += 1) {
-    const fakeReplay = {
-      dynamicGame: {
-        dungeonID: dungeonId,
-        stageID: stageId,
-        playerDeck: {
-          units: unitUids.map((unitUid, slotIndex) => ({ unitUid, slotIndex })),
-        },
-      },
-      battleState,
-    };
-    const loot = grantStageClearLoot(user, dungeonId, stageId, { replay: fakeReplay, save: false });
-    grantStageClearExp(user, stageId, dungeonId, loot.userExp > 0 ? { exp: loot.userExp } : undefined);
-    if (isMainStoryDungeonId(dungeonId) && !isTutorialDungeonId(dungeonId)) {
-      recordMainStoryDungeonClearForUser(user, dungeonId, stageId, battleState, {
-        save: null,
-        forceMissionSuccess: true,
-      });
-    } else {
-      recordGenericDungeonClearForUser(user, dungeonId, stageId, battleState, {
-        save: false,
-        forceMissionSuccess: true,
-      });
-    }
-    recordGameplayUnlockClearForUser(user, dungeonId, stageId, { save: false });
-    trackStageClearMissionProgress(user, dungeonId, stageId, battleState);
-    rewardSets.push(buildDungeonRewardSet(user, dungeonId, stageId, battleState, loot));
+  const stage = getDungeonSkipStageDescriptor(req && req.dungeonId);
+  if (stage && stage.cost && req && req.valid) {
+    stamina.refreshTimedStamina(user, {
+      now: dateTimeBinaryNow(),
+      itemIds: [stage.cost.itemId],
+      initializeMissing: true,
+    });
   }
-
+  const result = simulation.executeDungeonSkip(user, req, {
+    stage,
+    spendCost(validation) {
+      return spendStageReqItemCost(user, validation.stage.stageId, {
+        dungeonID: validation.dungeonId,
+        multiplier: validation.skip,
+      }).map(buildItemMiscData);
+    },
+    clearOnce(validation) {
+      const battleState = {
+        gameTime: 0,
+        missionResult1: true,
+        missionResult2: true,
+        missionResults: { missionResult1: true, missionResult2: true },
+        forceMissionSuccess: true,
+      };
+      const fakeReplay = {
+        dynamicGame: {
+          dungeonID: validation.dungeonId,
+          stageID: validation.stage.stageId,
+          playerDeck: {
+            units: validation.unitUids.map((unitUid, slotIndex) => ({ unitUid, slotIndex })),
+          },
+        },
+        battleState,
+      };
+      const loot = grantStageClearLoot(user, validation.dungeonId, validation.stage.stageId, {
+        replay: fakeReplay,
+        save: false,
+      });
+      grantStageClearExp(
+        user,
+        validation.stage.stageId,
+        validation.dungeonId,
+        loot.userExp > 0 ? { exp: loot.userExp } : undefined
+      );
+      if (isMainStoryDungeonId(validation.dungeonId) && !isTutorialDungeonId(validation.dungeonId)) {
+        recordMainStoryDungeonClearForUser(user, validation.dungeonId, validation.stage.stageId, battleState, {
+          save: null,
+          forceMissionSuccess: true,
+        });
+      } else {
+        recordGenericDungeonClearForUser(user, validation.dungeonId, validation.stage.stageId, battleState, {
+          save: false,
+          forceMissionSuccess: true,
+        });
+      }
+      recordGameplayUnlockClearForUser(user, validation.dungeonId, validation.stage.stageId, { save: false });
+      trackStageClearMissionProgress(user, validation.dungeonId, validation.stage.stageId, battleState);
+      return buildDungeonRewardSet(user, validation.dungeonId, validation.stage.stageId, battleState, loot);
+    },
+    buildStagePlayData(validation) {
+      const play = user && user.stagePlayData && user.stagePlayData[String(validation.stage.stageId)];
+      return buildStagePlayData(validation.stage.stageId, play || {});
+    },
+    buildUpdatedUnits(validation) {
+      return validation.ownedUnits.map(buildUnitLoyaltyUpdateData);
+    },
+  });
+  if (!result.valid) {
+    if (result.error) console.log(`[dungeon-skip] rejected: ${result.error}`);
+    return simulation.buildDungeonSkipAckPayload(result.errorCode);
+  }
+  invalidateJoinLobbyAckPayloadCache("dungeon-skip");
   if (USE_LOCAL_USER_DB) saveUserDb();
+  return simulation.buildDungeonSkipAckPayload(0, result);
+}
+
+function getDungeonSkipStageDescriptor(dungeonId) {
+  const numericDungeonId = positiveInt(dungeonId);
+  if (!numericDungeonId) return null;
+  const stage =
+    getGenericStageForRequest({ dungeonID: numericDungeonId }) ||
+    getGenericStageForRequest({ stageID: stageIdForDungeonId(numericDungeonId), dungeonID: numericDungeonId });
+  if (!stage) return null;
+  const stageRow = getStageTableEntry(stage.stageId);
+  const dungeon = getDungeonTableEntry(numericDungeonId);
+  const cost = getStageReqItemCost(stage.stageId, { dungeonID: numericDungeonId });
+  return {
+    stageId: Number(stage.stageId || 0),
+    dungeonId: numericDungeonId,
+    stageType: String((stageRow && stageRow.m_StageType) || stage.stageType || ""),
+    activeBattleSkip: stageRow && stageRow.m_bActiveBattleSkip === true,
+    noAutoRepeat: stageRow && stageRow.m_bNoAutoRepeat === true,
+    rewardMultiplyMax: Math.max(0, Number(dungeon && dungeon.m_RewardMultiplyMax) || 0),
+    enterLimit: Math.max(0, Number(stageRow && stageRow.m_EnterLimit) || 0),
+    eventDeckId: positiveInt(stage.eventDeckId),
+    cost,
+  };
+}
+
+function getGameLoadStageAuthorityDescriptor(stage = {}) {
+  const stageId = positiveInt(stage.stageId || stage.stageID);
+  const dungeonId = positiveInt(stage.dungeonID || stage.dungeonId);
+  const stageRow = stageId ? getStageTableEntry(stageId) : null;
+  const dungeon = dungeonId ? getDungeonTableEntry(dungeonId) : null;
+  const gameType = Number(stage.gameType || 0);
+  const mode = String(stage.miscMode || "").toLowerCase();
+  const specialAuthority =
+    stage.tutorial === true ||
+    stage.cutsceneOnly === true ||
+    [NGT_DIVE, NGT_RAID, NGT_RAID_SOLO, NGT_SHADOW_PALACE, NGT_FIERCE, NGT_TRIM, NGT_EXPLORE].includes(gameType) ||
+    ["dive", "raid", "shadow", "fierce", "trim", "explore"].includes(mode);
+  return {
+    authoritative: !specialAuthority,
+    allowZeroRewardMultiply: specialAuthority,
+    stageId,
+    dungeonId,
+    rewardMultiplyMax: Math.max(0, Number(dungeon && dungeon.m_RewardMultiplyMax) || 0),
+    enterLimit: Math.max(0, Number(stageRow && stageRow.m_EnterLimit) || 0),
+    cost: getStageReqItemCost(stageId, { dungeonID: dungeonId }),
+  };
+}
+
+function buildUnitLoyaltyUpdateData(unit = {}) {
   return Buffer.concat([
-    writeSignedVarInt(0),
-    stageId ? writeNullableObject(buildStagePlayData(stageId, battleState)) : writeNullObject(),
-    writeObjectList(rewardSets.map((rewardSet) => writeNullableObject(rewardSet))),
-    writeObjectList(costItems.map((item) => writeNullableObject(buildItemMiscData(item)))), // costItems
-    writeObjectList([]), // updatedUnits
+    writeSignedVarLong(toBigInt(unit.unitUid || unit.m_UnitUID || 0)),
+    writeSignedVarInt(Math.max(0, Number(unit.loyalty || 0) || 0)),
+    writeSignedVarInt(Math.max(0, Number(unit.officeRoomId || 0) || 0)),
+    writeSignedVarInt(Math.max(0, Number(unit.officeGrade || 0) || 0)),
+    writeInt64LE(toBigInt(unit.officeGaugeStartTime || unit.heartGaugeStartTime || 0)),
   ]);
 }
 
@@ -4264,7 +5562,8 @@ function buildDungeonRewardSet(user, dungeonId, stageId, battleState = {}, loot 
 }
 
 function buildCutsceneDungeonStartAckPayload(dungeonId) {
-  const stageId = stageIdForDungeonId(dungeonId);
+  const stage = getCutsceneStage(dungeonId);
+  const stageId = positiveInt(stage && stage.stageId);
   return Buffer.concat([
     writeSignedVarInt(0),
     stageId ? writeNullableObject(buildStagePlayData(stageId)) : writeNullObject(),
@@ -4320,6 +5619,19 @@ function buildDynamicGameEndNotPayload(replay, override = {}) {
   const dungeonId = Number(requestedDungeonId || resolveDungeonIdForStageProgress(stageId, dynamicGame) || 0);
   if (!dungeonId && !stageId) return null;
   const isRaidGame = isRaidDynamicGame(dynamicGame);
+  const isShadowGame =
+    positiveInt(dynamicGame.palaceID || dynamicGame.palaceId) > 0 ||
+    Number(dynamicGame.gameType || 0) === NGT_SHADOW_PALACE ||
+    String(dynamicGame.miscMode || "") === "shadow";
+  const isTrimGame =
+    Number(dynamicGame.gameType || 0) === NGT_TRIM ||
+    String(dynamicGame.miscMode || "").toLowerCase() === "trim";
+  const isExploreGame =
+    Number(dynamicGame.gameType || 0) === NGT_EXPLORE ||
+    String(dynamicGame.miscMode || "").toLowerCase() === "explore";
+  const isGuildDungeonGame = String(dynamicGame.miscMode || "").startsWith("guild-dungeon");
+  const isPhaseGame = Number(dynamicGame.gameType || 0) === NGT_PHASE || String(dynamicGame.miscMode || "") === "phase";
+  const rewardMultiply = Math.max(1, Math.trunc(Number(dynamicGame.rewardMultiply || 1)) || 1);
   const gameRecordState = buildBattleGameRecordState(battleState, override);
   const playTime = getBattleEndPlayTime(battleState, override);
   const missionBattleState = buildBattleMissionState(gameRecordState, { playTime });
@@ -4370,14 +5682,65 @@ function buildDynamicGameEndNotPayload(replay, override = {}) {
   const raidBattleResult = isRaidGame ? maybeRecordRaidBattleResultForReplay(replay, { ...override, battleState }, win) : null;
   const isDiveGame = !isRaidGame && (Number(dynamicGame.diveStageID || 0) > 0 || Number(dynamicGame.gameType || 0) === NGT_DIVE);
   const diveBattleResult = isDiveGame ? worldMap.completeDiveBattle(override.user, dynamicGame, battleState, { win, now: dateTimeBinaryNow() }) : null;
-  const stageLoot = !isRaidGame && !isDiveGame && win ? getOrGrantStageClearLoot(replay, override.user, dungeonId, stageId, { save: false }) : null;
+  let trimBattleResult = null;
+  if (isTrimGame) {
+    const battleKey = `${dynamicGame.gameUID || 0}:${dungeonId}`;
+    if (replay.trimBattleResult && replay.trimBattleResult.battleKey === battleKey) {
+      trimBattleResult = replay.trimBattleResult;
+    } else {
+      trimBattleResult = trim.recordTrimBattleResult(override.user, {
+        dungeonId,
+        win,
+        giveup: Boolean(override.giveup),
+        trimPoint: override.trimPoint ?? override.managedTrimPoint,
+        battleState: missionBattleState,
+      }, { now: getServerNowDate() });
+      trimBattleResult.battleKey = battleKey;
+      replay.trimBattleResult = trimBattleResult;
+    }
+  }
+  let exploreBattleResult = null;
+  if (isExploreGame) {
+    const battleKey = `${dynamicGame.gameUID || 0}:${dungeonId}`;
+    if (replay.exploreBattleResult && replay.exploreBattleResult.battleKey === battleKey) {
+      exploreBattleResult = replay.exploreBattleResult;
+    } else {
+      exploreBattleResult = explore.recordExploreBattleResult({}, override.user, {
+        dungeonId,
+        win,
+        giveup: Boolean(override.giveup),
+        currentHp: override.exploreCurrentHp,
+        scoreDelta: override.exploreScoreDelta,
+        enhancePointDelta: override.exploreEnhancePointDelta,
+      });
+      exploreBattleResult.battleKey = battleKey;
+      replay.exploreBattleResult = exploreBattleResult;
+    }
+  }
+  const phaseBattleResult = isPhaseGame
+    ? recordPhaseBattleResult(replay, override.user, {
+        stageId,
+        dungeonId,
+        win,
+        giveup: Boolean(override.giveup),
+        playTime,
+        battleState: missionBattleState,
+      })
+    : null;
+  const stageLoot = !isRaidGame && !isDiveGame && !isTrimGame && !isExploreGame && !isGuildDungeonGame && !isPhaseGame && win
+    ? getOrGrantStageClearLoot(replay, override.user, dungeonId, stageId, { save: false })
+    : null;
   const costItems = isRaidGame
     ? (raidBattleResult && raidBattleResult.costItems) || []
     : isDiveGame
       ? []
-      : spendStageReqItemCostForReplay(replay, override.user, stageId);
-  const episodeCompleteData = !isRaidGame && !isDiveGame && win ? buildMainStoryEpisodeCompleteDataForStage(override.user, stageId) : null;
-  const isPhaseGame = Number(dynamicGame.gameType || 0) === NGT_PHASE || String(dynamicGame.miscMode || "") === "phase";
+      : isShadowGame || isTrimGame || isExploreGame || isGuildDungeonGame || (isPhaseGame && !phaseBattleResult.terminated)
+        ? []
+        : spendStageReqItemCostForReplay(replay, override.user, stageId);
+  const episodeCompleteData = !isRaidGame && !isDiveGame && !isTrimGame && !isExploreGame && !isGuildDungeonGame &&
+    (!isPhaseGame || phaseBattleResult.completed) && win
+    ? buildMainStoryEpisodeCompleteDataForStage(override.user, stageId)
+    : null;
   const fierceResult = buildFierceResultState({
     dynamicGame,
     battleState: missionBattleState,
@@ -4386,6 +5749,13 @@ function buildDynamicGameEndNotPayload(replay, override = {}) {
     fiercePoint: override.fiercePoint ?? override.managedFiercePoint,
     fiercePenaltyPoint: override.fiercePenaltyPoint ?? override.managedFiercePenaltyPoint,
   });
+  const killCountResult = isGuildDungeonGame
+    ? { delta: 0n, data: null }
+    : killCount.recordBattleKillCount(
+        { userDb },
+        override.user,
+        { stageId, battleState: missionBattleState, replay }
+      );
   return Buffer.concat([
     writeBool(win), // win
     writeBool(Boolean(override.giveup || false)), // giveup
@@ -4402,11 +5772,13 @@ function buildDynamicGameEndNotPayload(replay, override = {}) {
           })
         )
       : writeNullObject(),
-    !isRaidGame && isPhaseGame
+    !isRaidGame && isPhaseGame && phaseBattleResult.completed
       ? writeNullableObject(
           buildPhaseClearData(stageId, {
-            win,
-            ...missionResults,
+            ...phaseBattleResult.clearData,
+            reward: phaseBattleResult.loot.reward,
+            missionReward: phaseBattleResult.loot.missionReward,
+            oneTimeRewards: phaseBattleResult.loot.oneTimeRewards,
           })
         )
       : writeNullObject(), // phaseClearData
@@ -4419,28 +5791,161 @@ function buildDynamicGameEndNotPayload(replay, override = {}) {
     writeNullableObject(buildBattleGameRecordData(replay, gameRecordState, { playTime, fiercePoint: fierceResult.accquirePoint })), // gameRecord
     writeObjectList([]), // updatedUnits
     writeObjectList(costItems.map((item) => writeNullableObject(buildItemMiscData(item)))), // costItemDataList
-    stageId ? writeNullableObject(buildStagePlayData(stageId, { ...missionBattleState, gameTime: playTime })) : writeNullObject(),
-    writeNullableObject(buildShadowGameResultData(dynamicGame, missionBattleState)), // shadowGameResult
+    stageId && (!isPhaseGame || phaseBattleResult.completed)
+      ? writeNullableObject(
+          buildProjectedStagePlayData(
+            override.user,
+            stageId,
+            { ...missionBattleState, gameTime: playTime },
+            win && !isRaidGame && !isDiveGame && !isShadowGame && !isTrimGame && !isExploreGame && !isGuildDungeonGame &&
+              (!isPhaseGame || phaseBattleResult.completed) ? rewardMultiply : 1
+          )
+        )
+      : writeNullObject(),
+    writeNullableObject(
+      buildShadowGameResultData(dynamicGame, missionBattleState, {
+        user: override.user,
+        replay,
+        win,
+      })
+    ), // shadowGameResult
     writeNullableObject(buildFierceResultData(fierceResult)), // fierceResultData
-    isPhaseGame
+    isPhaseGame && phaseBattleResult.nextState
       ? writeNullableObject(
           buildPhaseModeState(
-            stageId,
-            Math.max(0, Number(dynamicGame.phaseIndex || 0) || 0),
-            dungeonId,
-            playTime,
-            0n
+            phaseBattleResult.nextState.stageId,
+            phaseBattleResult.nextState.phaseIndex,
+            phaseBattleResult.nextState.dungeonId,
+            phaseBattleResult.nextState.totalPlayTime,
+            phaseBattleResult.nextState.supportingUserUid
           )
         )
       : writeNullObject(), // phaseModeState
-    writeSignedVarLong(0n), // killCountDelta
-    writeNullObject(), // killCountData
-    writeNullObject(), // trimModeState
+    writeSignedVarLong(toBigInt(killCountResult.delta)), // killCountDelta
+    killCountResult.data
+      ? writeNullableObject(killCount.buildKillCountData(killCountResult.data))
+      : writeNullObject(), // killCountData
+    trimBattleResult && trimBattleResult.modeState
+      ? writeNullableObject(trim.buildTrimModeState(trimBattleResult.modeState))
+      : writeNullObject(), // trimModeState
     writeFloatLE(playTime), // totalPlayTime
-    writeNullObject(), // explore
-    writeNullObject(), // exploreSquad
-    writeSignedVarInt(0), // exploreEnhancePoint
+    exploreBattleResult && exploreBattleResult.valid && exploreBattleResult.state
+      ? writeNullableObject(explore.buildExploreData(exploreBattleResult.state))
+      : writeNullObject(), // explore
+    exploreBattleResult && exploreBattleResult.valid && exploreBattleResult.squad
+      ? writeNullableObject(explore.buildExploreSquadData(exploreBattleResult.squad))
+      : writeNullObject(), // exploreSquad
+    writeSignedVarInt(exploreBattleResult && exploreBattleResult.valid ? Number(exploreBattleResult.enhancePoint) || 0 : 0),
   ]);
+}
+
+function buildDefenceGameEndNotPayload(replay, override = {}) {
+  const dynamicGame = replay && replay.dynamicGame;
+  if (!isDefenceDynamicGame(dynamicGame)) return null;
+  const battleState = override.battleState || replay.battleState || {};
+  const dungeonId = positiveInt(override.dungeonID || dynamicGame.dungeonID);
+  const stageId = positiveInt(override.stageID || dynamicGame.stageID || stageIdForDungeonId(dungeonId));
+  const defenceId = positiveInt(dynamicGame.defenceTempletId || dynamicGame.DefenceTempletId);
+  if (!dungeonId || !defenceId) return null;
+
+  const managedBattleRecords = Array.isArray(override.managedBattleRecords) ? override.managedBattleRecords : [];
+  const gameRecordState = buildBattleGameRecordState(battleState, override);
+  const playTime = getBattleEndPlayTime(battleState, override);
+  const managedWin = resolveBattleWin(gameRecordState, override);
+  const defence = loadMiscStageCatalog().defenceById.get(defenceId) || {};
+  const clearScore = Math.max(0, Number(defence.m_ClearScore || 0) || 0);
+  const reportedScore = finiteNumber(override.defencePoint ?? override.managedDefencePoint, -1);
+  const recordScore = calculateDefenceBattleScore(managedBattleRecords.length > 0 ? managedBattleRecords : gameRecordState);
+  const gameScore = Math.max(0, Math.round(reportedScore >= 0 ? reportedScore : recordScore), managedWin && clearScore > 0 ? clearScore : 0);
+  const win = clearScore > 0 ? gameScore >= clearScore : managedWin;
+  const scoreState = {
+    ...(battleState && typeof battleState === "object" ? battleState : {}),
+    gameTime: playTime,
+    GameTime: playTime,
+    defenceScore: gameScore,
+    killCount: gameScore,
+    teamAKillCount: gameScore,
+    win,
+    Win: win,
+  };
+  const missionResults = resolveDungeonMissionResults(dungeonId, {
+    stageId,
+    win,
+    battleState: scoreState,
+  });
+  scoreState.missionResult1 = missionResults.missionResult1;
+  scoreState.missionResult2 = missionResults.missionResult2;
+  scoreState.missionResults = { ...missionResults };
+  if (battleState && typeof battleState === "object") Object.assign(battleState, scoreState);
+
+  const user = override.user;
+  const previous = getSavedDefenceRecord(user, defenceId);
+  const bestScore = Math.max(gameScore, Number(previous && previous.bestScore || 0) || 0);
+  const stageLoot = win ? getOrGrantStageClearLoot(replay, user, dungeonId, stageId, { save: false }) : null;
+  const costItems = spendStageReqItemCostForReplay(replay, user, stageId);
+  replay.lastDynamicGameEndResult = {
+    win,
+    giveup: Boolean(override.giveup || false),
+    dungeonId,
+    stageId,
+    battleState: scoreState,
+  };
+
+  const gameEndData = Buffer.concat([
+    writeBool(win),
+    writeBool(Boolean(override.giveup || false)),
+    writeBool(Boolean(override.restart || false)),
+    writeNullableObject(buildDungeonClearData(dungeonId, {
+      stageId,
+      win,
+      battleState: scoreState,
+      ...missionResults,
+      reward: stageLoot && stageLoot.reward,
+      unitExp: stageLoot ? stageLoot.unitExp : 0,
+    })),
+    writeNullableObject(buildBattleDeckIndexData(replay)),
+    writeNullableObject(buildBattleGameRecordData(replay, gameRecordState, { playTime })),
+    writeObjectList([]),
+    writeObjectList(costItems.map((item) => writeNullableObject(buildItemMiscData(item)))),
+    writeSignedVarLong(0n),
+    writeNullObject(),
+    writeFloatLE(playTime),
+  ]);
+  console.log(`[defence-game-end] defenceID=${defenceId} score=${gameScore} best=${bestScore} win=${win ? 1 : 0}`);
+  return defenceBattle.buildDefenceGameEndNotPayload(gameEndData, defenceId, gameScore, bestScore);
+}
+
+function calculateDefenceBattleScore(source = {}) {
+  const records = Array.isArray(source)
+    ? source
+    : Array.isArray(source && (source.unitRecords || source.UnitRecords))
+      ? source.unitRecords || source.UnitRecords
+      : Object.values(source && (source.unitRecords || source.UnitRecords) || {});
+  let teamAKills = 0;
+  let teamBDeaths = 0;
+  for (const record of records) {
+    if (!record || typeof record !== "object") continue;
+    const teamType = Number(record.teamType ?? record.TeamType ?? record.team ?? record.Team ?? 0);
+    const kills = Math.max(0, Number(record.recordKillCount ?? record.RecordKillCount ?? 0) || 0);
+    const deaths = Math.max(0, Number(record.recordDieCount ?? record.RecordDieCount ?? 0) || 0);
+    if (isATeamType(teamType)) teamAKills += kills;
+    else if (isBTeamType(teamType)) teamBDeaths += deaths;
+  }
+  return Math.max(teamAKills, teamBDeaths);
+}
+
+function getSavedDefenceRecord(user, defenceId) {
+  const records = user && user.miscStages && user.miscStages.defence;
+  return records && typeof records === "object" ? records[String(defenceId)] || null : null;
+}
+
+function isDefenceDynamicGame(dynamicGame = {}) {
+  return Boolean(
+    dynamicGame &&
+      (Number(dynamicGame.gameType || dynamicGame.GameType || 0) === 27 ||
+        String(dynamicGame.miscMode || dynamicGame.MiscMode || "").toLowerCase() === "defence" ||
+        positiveInt(dynamicGame.defenceTempletId || dynamicGame.DefenceTempletId) > 0)
+  );
 }
 
 function buildPrivatePvpGameEndNotPayload(replay, member, winTeam, meta = {}) {
@@ -4486,6 +5991,119 @@ function buildPrivatePvpGameEndNotPayload(replay, member, winTeam, meta = {}) {
     writeNullObject(),
     writeSignedVarInt(0),
   ]);
+}
+
+function buildStandardPvpGameEndNotPayloadForSocket(socket, replay, meta = {}) {
+  const match = pvpMatchmaking.getMatch(socket) || leaguePvpMatchmaking.getMatch(socket);
+  const member = pvpMatchmaking.getMember(socket) || leaguePvpMatchmaking.getMember(socket);
+  const gameType = Number(replay && replay.dynamicGame && replay.dynamicGame.gameType || 0);
+  if (!match || !member || ![6, leaguePvp.NGT_PVP_LEAGUE, leaguePvp.NGT_PVP_UNLIMITED, eventPvp.NGT_PVP_EVENT].includes(gameType)) return null;
+  const battleState = replay.battleState || {};
+  let winTeam = Number(
+    meta.battleWinTeam ?? meta.BattleWinTeam ?? meta.managedBattleWinTeam ?? meta.ManagedBattleWinTeam ??
+    (battleState.gameState && (battleState.gameState.winTeam ?? battleState.gameState.WinTeam)) ?? 0
+  );
+  const managedWin = extractManagedBattleWin(meta);
+  if (winTeam !== 1 && winTeam !== 3 && typeof managedWin === "boolean") winTeam = managedWin ? 1 : 3;
+  return buildStandardPvpGameEndNotPayload(replay, match, member, winTeam, meta);
+}
+
+function buildStandardPvpGameEndNotPayload(replay, match, member, winTeam, meta = {}) {
+  const battleState = replay && replay.battleState || {};
+  const teamType = Number(member && member.teamType || 1);
+  const resolvedWinTeam = winTeam === 1 || winTeam === 3 ? winTeam : 0;
+  const win = resolvedWinTeam > 0 && teamType === resolvedWinTeam;
+  const result = resolvedWinTeam === 0 ? 2 : win ? 0 : 1;
+  const playTime = extractManagedBattlePlayTime(meta) || getBattlePlayTime(battleState);
+  const recorded = recordStandardPvpResult(match, member, result);
+  const state = recorded.state;
+  replay.lastDynamicGameEndResult = {
+    win,
+    giveup: Boolean(meta.giveup),
+    dungeonId: 0,
+    stageId: 0,
+    battleState,
+  };
+  return Buffer.concat([
+    writeBool(win),
+    writeBool(Boolean(meta.giveup)),
+    writeBool(false),
+    writeNullObject(), // dungeonClearData
+    writeNullObject(), // phaseClearData
+    writeNullObject(), // episodeCompleteData
+    writeNullableObject(buildBattleDeckIndexData(replay)),
+    writeNullObject(), // warfareSyncData
+    writeNullableObject(Buffer.concat([
+      writeSignedVarInt(result),
+      writeNullableObject(pvpRank.buildPvpStateData(state)),
+      writeNullObject(), // history; the replay/history packet family remains separately audited
+      recorded.pvpPoint ? writeNullableObject(buildItemMiscData(recorded.pvpPoint)) : writeNullObject(),
+      writeInt64LE(dateTimeBinaryNow()),
+      writeBool(match && (match.leaguePvp || match.eventPvp) ? true : pvpRank.isRankPvpOpen(member.user)),
+      writeBool(false),
+      writeObjectList([]), // pvpChargePoint
+    ])),
+    writeNullObject(), // diveSyncData
+    writeNullableObject(buildRaidBossResultData()),
+    writeNullableObject(buildBattleGameRecordData(replay, battleState, { playTime })),
+    writeObjectList([]),
+    writeObjectList([]),
+    writeNullObject(), // stagePlayData
+    writeNullableObject(buildShadowGameResultData(replay.dynamicGame, battleState)),
+    writeNullableObject(buildFierceResultData()),
+    writeNullObject(), // phaseModeState
+    writeSignedVarLong(0n),
+    writeNullObject(), // killCountData
+    writeNullObject(), // trimModeState
+    writeFloatLE(playTime),
+    writeNullObject(), // explore
+    writeNullObject(), // exploreSquad
+    writeSignedVarInt(0),
+  ]);
+}
+
+function recordStandardPvpResult(match, member, result) {
+  match.resultStates = match.resultStates instanceof Map ? match.resultStates : new Map();
+  const key = String(member && member.user && member.user.userUid || member && member.teamType || 0);
+  if (match.resultStates.has(key)) return match.resultStates.get(key);
+  let saved;
+  let pvpPoint = null;
+  if (match && match.eventPvp) {
+    saved = eventPvp.recordEventPvpResult(member.user, match.season, result, { now: getServerNowDate() });
+  } else if (match && match.leaguePvp) {
+    saved = leaguePvp.recordLeaguePvpResult(member.user, result);
+    const amount = leaguePvp.getLeagueBattlePoint(result);
+    if (amount > 0) pvpPoint = grantMiscItem(member.user, 5, amount, 0, { regDate: dateTimeBinaryNow() });
+  } else {
+    const previous = pvpRank.getPvpRankState(member.user);
+    const win = result === 0;
+    const loss = result === 1;
+    const next = {
+      ...previous,
+      winCount: previous.winCount + (win ? 1 : 0),
+      loseCount: previous.loseCount + (loss ? 1 : 0),
+      winStreak: win ? previous.winStreak + 1 : 0,
+      maxWinStreak: win ? Math.max(previous.maxWinStreak, previous.winStreak + 1) : previous.maxWinStreak,
+      seasonPlayCount: previous.seasonPlayCount + 1,
+      seasonWinCount: previous.seasonWinCount + (win ? 1 : 0),
+    };
+    pvpRank.setPvpRankState(member.user, next);
+    saved = pvpRank.getPvpRankState(member.user);
+  }
+  const recorded = { state: saved, pvpPoint };
+  match.resultStates.set(key, recorded);
+  invalidateJoinLobbyAckPayloadCache("pvp-match-result");
+  if (USE_LOCAL_USER_DB) saveUserDb();
+  return recorded;
+}
+
+function markStandardPvpMatchFinished(socket) {
+  const match = pvpMatchmaking.getMatch(socket) || leaguePvpMatchmaking.getMatch(socket);
+  if (!match || match.matchFinished) return false;
+  match.matchFinished = true;
+  match.battleStarted = false;
+  if (match.replay) match.replay.dynamicBattleResultSent = true;
+  return true;
 }
 
 function buildBattleGameRecordState(battleState = {}, override = {}) {
@@ -4702,18 +6320,32 @@ function buildRaidBossResultData(result = {}) {
   ]);
 }
 
-function buildShadowGameResultData(dynamicGame = {}, battleState = {}) {
+function buildShadowGameResultData(dynamicGame = {}, battleState = {}, options = {}) {
   const palaceId = positiveInt(dynamicGame.palaceID || dynamicGame.palaceId);
   const dungeonId = palaceId ? positiveInt(dynamicGame.dungeonID) : 0;
   const recentTime = Math.max(0, Math.round(Number((battleState && (battleState.gameTime || battleState.GameTime)) || 0)));
-  return Buffer.concat([
-    writeSignedVarInt(palaceId), // palaceId
-    writeNullableObject(buildPalaceDungeonData(dungeonId, recentTime, recentTime)),
-    writeNullObject(), // rewardData
-    writeBool(false), // newRecord
-    writeSignedVarInt(nextShadowDungeonId(palaceId, dungeonId)), // currentDungeonId
-    writeSignedVarInt(3), // life
-  ]);
+  if (!palaceId || !options.user) {
+    return shadowPalace.buildShadowPalaceBattleResultPayload({
+      palaceId,
+      dungeonData: { dungeonId, recentTime, bestTime: recentTime },
+      reward: null,
+      newRecord: false,
+      currentDungeonId: nextShadowDungeonId(palaceId, dungeonId),
+      life: 3,
+    });
+  }
+  const result = shadowPalace.recordShadowPalaceBattleResult(
+    { dateTimeBinaryNow },
+    options.user,
+    {
+      palaceId,
+      dungeonId,
+      win: options.win === true,
+      playTime: recentTime,
+      replay: options.replay,
+    }
+  );
+  return shadowPalace.buildShadowPalaceBattleResultPayload(result);
 }
 
 function buildPalaceDungeonData(dungeonId = 0, recentTime = 0, bestTime = 0) {
@@ -4840,7 +6472,8 @@ function buildFierceResultData(result = null) {
 }
 
 function buildCutsceneDungeonClearAckPayload(dungeonId, user = null) {
-  const stageId = stageIdForDungeonId(dungeonId);
+  const stage = getCutsceneStage(dungeonId);
+  const stageId = positiveInt(stage && stage.stageId);
   const episodeCompleteData = buildMainStoryEpisodeCompleteDataForStage(user, stageId);
   return Buffer.concat([
     writeSignedVarInt(0),
@@ -4880,10 +6513,16 @@ function buildGameLoadAck(data = {}) {
       replacements.push({ ...spans.raidUID, payload: writeSignedVarLong(toBigInt(data.raidUID || 0)) });
     }
     const teamBLevelFix = Number(data.teamBLevelFix || data.raidLevel || 0);
+    const teamBLevelAdd = Number(data.teamBLevelAdd || 0);
     if (teamBLevelFix > 0 && spans.teamBLevelFix) {
       replacements.push({ ...spans.teamBLevelFix, payload: writeSignedVarInt(teamBLevelFix) });
       if (spans.teamBLevelAdd) {
         replacements.push({ ...spans.teamBLevelAdd, payload: writeSignedVarInt(0) });
+      }
+    } else if (teamBLevelAdd !== 0 && spans.teamBLevelAdd) {
+      replacements.push({ ...spans.teamBLevelAdd, payload: writeSignedVarInt(teamBLevelAdd) });
+      if (spans.teamBLevelFix) {
+        replacements.push({ ...spans.teamBLevelFix, payload: writeSignedVarInt(0) });
       }
     }
     if (data.patchStageFields !== false) {
@@ -4923,7 +6562,10 @@ function patchGameLoadAckBattleConditionIds(payload, battleConditionIds) {
 function resolveGameLoadBattleConditionIds(stage = {}, req = {}, user = null) {
   const gameType = Number(stage.gameType || (req && req.gameType) || 0);
   const bossId = positiveInt(stage.fierceBossId || req.fierceBossId || req.fierceBossID || req.bossId);
-  if (String(stage.miscMode || "") !== "fierce" && gameType !== NGT_FIERCE && !bossId) return null;
+  if (String(stage.miscMode || "") !== "fierce" && gameType !== NGT_FIERCE && !bossId) {
+    const explicit = uniquePositiveIntList(stage.battleConditionIds);
+    return explicit.length ? explicit : null;
+  }
   let resolvedBossId = bossId;
   if (!resolvedBossId) {
     const dungeonId = positiveInt(stage.dungeonID || stage.dungeonId || req.dungeonID || req.dungeonId);
@@ -4995,7 +6637,7 @@ function buildInitialBattlePackets(replay) {
 function ensureGameStartPackets(packets = [], replay = null, socket = null) {
   const user = socket && socket.session && socket.session.user;
   const loadCompletePayload = buildGameLoadCompleteAckPayload(replay, user);
-  const sourcePackets = (Array.isArray(packets) ? packets : []).map((packet) => {
+  const sourcePackets = (Array.isArray(packets) ? packets : []).filter(Boolean).map((packet) => {
     if (!packet || packet.packetId !== GAME_LOAD_COMPLETE_ACK) return packet;
     return {
       ...packet,
@@ -5003,22 +6645,25 @@ function ensureGameStartPackets(packets = [], replay = null, socket = null) {
       label: packet.label || "dynamic-load-complete",
     };
   });
-  const output = [];
-  if (!sourcePackets.some((packet) => packet && packet.packetId === GAME_LOAD_COMPLETE_ACK)) {
-    output.push({
+  const sourceLoadComplete = sourcePackets.find((packet) => packet.packetId === GAME_LOAD_COMPLETE_ACK);
+  const sourceGameStart = sourcePackets.find((packet) => packet.packetId === GAME_START_NOT);
+  if (replay && replay.dynamicGame && replay.dynamicGame.managedCombat && (!sourceLoadComplete || !sourceGameStart)) {
+    console.log("[combat-host] managed initial handshake missing GAME_LOAD_COMPLETE_ACK or GAME_START_NOT");
+    return [];
+  }
+  return [
+    sourceLoadComplete || {
       packetId: GAME_LOAD_COMPLETE_ACK,
       payload: loadCompletePayload,
       label: "dynamic-load-complete",
-    });
-  }
-  if (!sourcePackets.some((packet) => packet && packet.packetId === GAME_START_NOT)) {
-    output.push({
+    },
+    sourceGameStart || {
       packetId: GAME_START_NOT,
       payload: Buffer.alloc(0),
       label: "dynamic-game-start",
-    });
-  }
-  return output.concat(sourcePackets);
+    },
+    ...sourcePackets.filter((packet) => packet.packetId !== GAME_LOAD_COMPLETE_ACK && packet.packetId !== GAME_START_NOT),
+  ];
 }
 
 function getCapturedServerPayloadTemplate(packetId) {
@@ -5120,8 +6765,8 @@ function mapIdForStageDungeon(stageID, dungeonID) {
   return Number((stage && stage.mapID) || 0);
 }
 
-function buildGameRespawnAckPayload(unitUID, assistUnit) {
-  return combatHandler.buildGameRespawnAckPayload(unitUID, assistUnit);
+function buildGameRespawnAckPayload(unitUID, assistUnit, errorCode = 0) {
+  return combatHandler.buildGameRespawnAckPayload(unitUID, assistUnit, errorCode);
 }
 
 function buildGameUnitSkillAckPayload(gameUnitUID, skillStateID = 0, errorCode = 0) {
@@ -5141,17 +6786,20 @@ function buildGameShipSkillAckPayload(gameUnitUID, shipSkillID, skillPosX, error
   ]);
 }
 
-function buildGamePauseAckPayload(isPause, isPauseEvent) {
-  return Buffer.concat([writeSignedVarInt(0), writeBool(Boolean(isPause)), writeBool(Boolean(isPauseEvent))]);
+function buildGamePauseAckPayload(isPause, isPauseEvent, errorCode = 0) {
+  return Buffer.concat([writeSignedVarInt(errorCode), writeBool(Boolean(isPause)), writeBool(Boolean(isPauseEvent))]);
 }
 
-function buildGameLoadCompleteAckPayload(replay = null, user = null) {
+function buildGameLoadCompleteAckPayload(replay = null, user = null, options = {}) {
   const runtimeData = replay && replay.dynamicGame ? buildGameRuntimeData(replay, getReplayCombatControls(replay, user), user) : null;
+  const rewardMultiply = options.rewardMultiply == null
+    ? Math.max(0, Math.trunc(Number(replay && replay.dynamicGame && replay.dynamicGame.rewardMultiply || 0)))
+    : Math.max(0, Math.trunc(Number(options.rewardMultiply || 0)));
   return Buffer.concat([
-    writeSignedVarInt(0), // errorCode
-    writeBool(false), // isIntrude
+    writeSignedVarInt(Number(options.errorCode || 0)),
+    writeBool(Boolean(options.isIntrude)),
     runtimeData ? writeNullableObject(runtimeData) : writeNullObject(), // gameRuntimeData
-    writeSignedVarInt(0), // rewardMultiply
+    writeSignedVarInt(rewardMultiply),
   ]);
 }
 
@@ -5214,13 +6862,26 @@ function finiteNumber(value, fallback = 0) {
 function buildStagePlayData(stageId, battleState = {}) {
   return Buffer.concat([
     writeSignedVarInt(stageId),
-    writeSignedVarLong(1n),
-    writeSignedVarLong(0n),
-    writeSignedVarLong(0n),
-    writeInt64LE(dateTimeBinaryNow()),
-    writeSignedVarInt(Math.max(0, Math.round(Number(battleState.gameTime || battleState.GameTime || 0)))),
-    writeSignedVarLong(1n),
+    writeSignedVarLong(toBigInt(battleState.playCount == null ? 1 : battleState.playCount)),
+    writeSignedVarLong(toBigInt(battleState.restoreCount || 0)),
+    writeSignedVarLong(toBigInt(battleState.bestKillCount || 0)),
+    writeInt64LE(toBigInt(battleState.nextResetDate || dateTimeBinaryNow())),
+    writeSignedVarInt(Math.max(0, Math.round(Number(battleState.bestClearTimeSec || battleState.gameTime || battleState.GameTime || 0)))),
+    writeSignedVarLong(toBigInt(battleState.totalPlayCount == null ? 1 : battleState.totalPlayCount)),
   ]);
+}
+
+function buildProjectedStagePlayData(user, stageId, battleState = {}, playCountDelta = 1) {
+  const saved = user && user.stagePlayData && typeof user.stagePlayData === "object"
+    ? user.stagePlayData[String(Number(stageId || 0))] || {}
+    : {};
+  const delta = Math.max(1, Math.trunc(Number(playCountDelta || 1)) || 1);
+  return buildStagePlayData(stageId, {
+    ...saved,
+    ...battleState,
+    playCount: Math.max(0, Number(saved.playCount || 0) || 0) + delta,
+    totalPlayCount: Math.max(0, Number(saved.totalPlayCount || 0) || 0) + delta,
+  });
 }
 
 function stageIdForDungeonId(dungeonId) {
@@ -5584,14 +7245,6 @@ function loadMiscStageCatalog() {
   return cachedMiscStageCatalog;
 }
 
-function chooseShadowBattleForPalace(palaceId) {
-  const catalog = loadMiscStageCatalog();
-  const palace = catalog.shadowPalaceById.get(positiveInt(palaceId));
-  const groupId = positiveInt(palace && palace.BATTLE_GROUP_ID);
-  const battles = groupId ? catalog.shadowBattlesByGroup.get(groupId) : null;
-  return battles && battles.length ? battles[0] : null;
-}
-
 function chooseTrimDungeon(trimId, trimLevel) {
   const catalog = loadMiscStageCatalog();
   const rows = catalog.trimDungeonsByTrimId.get(positiveInt(trimId)) || [];
@@ -5606,7 +7259,7 @@ function chooseTrimDungeon(trimId, trimLevel) {
 function choosePhaseOrder(phase, phaseIndex = 0) {
   const catalog = loadMiscStageCatalog();
   const orders = catalog.phaseOrdersByGroup.get(positiveInt(phase && phase.m_PhaseGroupID)) || [];
-  return orders[Math.max(0, Number(phaseIndex || 0) || 0)] || orders[0] || null;
+  return orders[Math.max(0, Number(phaseIndex || 0) || 0)] || null;
 }
 
 function getFierceRotationSeasonRows() {
@@ -5856,7 +7509,13 @@ function resolveMiscStageRequest(req = {}) {
   const palaceId = positiveInt(req.palaceID || req.palaceId);
   if (palaceId) {
     const palace = catalog.shadowPalaceById.get(palaceId);
-    const battle = chooseShadowBattleForPalace(palaceId);
+    const battles = palace
+      ? catalog.shadowBattlesByGroup.get(positiveInt(palace.BATTLE_GROUP_ID)) || []
+      : [];
+    const requestedDungeonId = positiveInt(req.dungeonID || req.dungeonId);
+    const battle = requestedDungeonId
+      ? battles.find((row) => positiveInt(row && row.DUNGEON_ID) === requestedDungeonId)
+      : battles[0];
     const dungeonID = positiveInt(battle && battle.DUNGEON_ID);
     return {
       mode: "shadow",
@@ -6063,7 +7722,11 @@ function getGenericStageForRequest(req = {}) {
   }
   if (!dungeon && stageRow && String(stageRow.m_StageType || "") === "ST_PHASE") {
     const phase = loadMiscStageCatalog().phaseByStrId.get(String(stageRow.m_StageBattleStrID || ""));
-    const order = choosePhaseOrder(phase, 0);
+    const requestedOrder = loadMiscStageCatalog().phaseOrderByDungeonId.get(requestedDungeonId);
+    const order = requestedOrder &&
+      positiveInt(requestedOrder.m_PhaseGroupID) === positiveInt(phase && phase.m_PhaseGroupID)
+      ? requestedOrder
+      : choosePhaseOrder(phase, 0);
     if (order && order.m_DungeonStrID) dungeon = getDungeonTableEntryByStrId(order.m_DungeonStrID);
   }
   if (!dungeon && requestedDungeonId > 0) {
@@ -6197,16 +7860,21 @@ function getDungeonUserExpReward(dungeonId) {
 
 function getOrGrantStageClearLoot(replay, user, dungeonId, stageId, options = {}) {
   const userUid = user && user.userUid ? String(toBigInt(user.userUid || 0)) : "";
+  const multiplier = Math.max(
+    1,
+    Math.trunc(Number(options.multiplier || replay && replay.dynamicGame && replay.dynamicGame.rewardMultiply || 1)) || 1
+  );
   if (
     replay &&
     replay.stageClearLoot &&
     Number(replay.stageClearLoot.dungeonId) === Number(dungeonId) &&
+    Number(replay.stageClearLoot.rewardMultiply || 1) === multiplier &&
     (!userUid || replay.stageClearLoot.userUid === userUid)
   ) {
     return replay.stageClearLoot;
   }
 
-  const result = grantStageClearLoot(user, dungeonId, stageId, { ...options, replay });
+  const result = grantStageClearLoot(user, dungeonId, stageId, { ...options, replay, multiplier });
   if (replay && typeof replay === "object") replay.stageClearLoot = result;
   return result;
 }
@@ -6222,8 +7890,9 @@ function maybeGrantBattleStageClearLoot(replay, user, dungeonId, stageId, battle
 function grantStageClearLoot(user, dungeonId, stageId, options = {}) {
   const entry = getDungeonTableEntry(dungeonId);
   const reward = createEmptyReward();
-  const unitExp = getDungeonUnitExpReward(dungeonId);
-  const userExp = getDungeonUserExpReward(dungeonId);
+  const rewardMultiply = Math.max(1, Math.trunc(Number(options.multiplier || 1)) || 1);
+  const unitExp = getDungeonUnitExpReward(dungeonId) * rewardMultiply;
+  const userExp = getDungeonUserExpReward(dungeonId) * rewardMultiply;
   const firstClear = !(
     user &&
     user.dungeonClear &&
@@ -6238,38 +7907,42 @@ function grantStageClearLoot(user, dungeonId, stageId, options = {}) {
     unitExp,
     userExp,
     rewardGroupIds: [],
+    rewardMultiply,
     changed: false,
   };
   if (!entry || !user || typeof user !== "object") return result;
 
   const ctx = { dateTimeBinaryNow };
   const regDate = dateTimeBinaryNow();
-  const creditAmount = pickDungeonRewardQuantity(user, `credit:${dungeonId}`, entry.m_RewardCredit_Min, entry.m_RewardCredit_Max);
-  if (creditAmount > 0) {
-    mergeReward(
-      reward,
-      grantRewardByType(ctx, user, "RT_MISC", RESOURCE_ITEM_IDS.CREDIT, creditAmount, creditAmount, 0, {
-        regDate,
-        expandPackages: false,
-      })
-    );
-  }
-
-  if (firstClear) {
-    mergeReward(reward, grantStageFirstClearReward(ctx, user, stageId, { regDate }));
-  }
-
-  const mainReward = grantStageMainReward(ctx, user, stageId, { regDate });
-  mergeReward(reward, mainReward.reward);
-
   const rewardGroupIds = getDungeonRewardGroupIds(entry);
   result.rewardGroupIds = rewardGroupIds;
-  for (const groupId of rewardGroupIds) {
-    const records = getRewardGroupRecords(groupId);
-    if (!stageRewardGroupChancePass(user, groupId, records)) continue;
-    const record = pickStageRewardRecord(records, user, groupId);
-    if (!record) continue;
-    mergeReward(reward, grantRewardRecord(ctx, user, record, { regDate }));
+  let creditAmount = 0;
+  const mainRewardSummaries = [];
+  for (let rewardIndex = 0; rewardIndex < rewardMultiply; rewardIndex += 1) {
+    const rolledCredit = pickDungeonRewardQuantity(user, `credit:${dungeonId}`, entry.m_RewardCredit_Min, entry.m_RewardCredit_Max);
+    creditAmount += rolledCredit;
+    if (rolledCredit > 0) {
+      mergeReward(
+        reward,
+        grantRewardByType(ctx, user, "RT_MISC", RESOURCE_ITEM_IDS.CREDIT, rolledCredit, rolledCredit, 0, {
+          regDate,
+          expandPackages: false,
+        })
+      );
+    }
+    if (firstClear && rewardIndex === 0) {
+      mergeReward(reward, grantStageFirstClearReward(ctx, user, stageId, { regDate }));
+    }
+    const mainReward = grantStageMainReward(ctx, user, stageId, { regDate });
+    mergeReward(reward, mainReward.reward);
+    if (mainReward.summary) mainRewardSummaries.push(mainReward.summary);
+    for (const groupId of rewardGroupIds) {
+      const records = getRewardGroupRecords(groupId);
+      if (!stageRewardGroupChancePass(user, groupId, records)) continue;
+      const record = pickStageRewardRecord(records, user, groupId);
+      if (!record) continue;
+      mergeReward(reward, grantRewardRecord(ctx, user, record, { regDate }));
+    }
   }
 
   reward.userExp = userExp;
@@ -6280,8 +7953,8 @@ function grantStageClearLoot(user, dungeonId, stageId, options = {}) {
   result.changed = hasRewardPayload(reward) || combatExpResult.operatorExpApplied;
   if (result.changed && USE_LOCAL_USER_DB && options.save !== false) saveUserDb();
   console.log(
-    `[stage-loot] dungeonID=${dungeonId} stageID=${stageId} credits=${creditAmount} main=${
-      mainReward.summary || "-"
+    `[stage-loot] dungeonID=${dungeonId} stageID=${stageId} multiply=${rewardMultiply} credits=${creditAmount} main=${
+      mainRewardSummaries.join("+") || "-"
     } groups=${rewardGroupIds.join(",") || "-"} misc=${
       reward.miscItems.length
     } units=${reward.units.length} operators=${reward.operators.length} equips=${reward.equips.length} unitExpTargets=${unitExpDataList.length}`
@@ -6661,6 +8334,10 @@ function evaluateDungeonMission(type, value, battleState, win) {
       const shipHpDamage = Number(battleState.shipHpDamagePercent ?? battleState.ShipHpDamagePercent ?? 0);
       return missionValue <= 0 || shipHpDamage <= missionValue;
     }
+    case "DGMT_TEAM_A_KILL_COUNT":
+      return missionValue <= 0 || Number(
+        battleState.teamAKillCount ?? battleState.TeamAKillCount ?? battleState.killCount ?? battleState.defenceScore ?? 0
+      ) >= missionValue;
     default:
       // Deck-count and kill-count objectives need richer combat bookkeeping.
       // Gate them on win for now so the normal result screen works without
@@ -6717,6 +8394,17 @@ function trackStageClearMissionProgress(user, dungeonId, stageId, battleState = 
   if (isSupplyStageClear(resolvedDungeonId, resolvedStageId)) {
     track("EC_SUPPLY_CLEAR", 1);
     track("EC_SUPPLY_CLEARED", 1);
+  }
+  const shadowStage = classifyMiscDungeon(resolvedDungeonId);
+  if (
+    shadowStage &&
+    shadowStage.mode === "shadow" &&
+    nextShadowDungeonId(shadowStage.palaceID, resolvedDungeonId) === 0
+  ) {
+    const palaceId = positiveInt(shadowStage.palaceID);
+    const palaceDetails = { ...details, value: palaceId, palaceId };
+    track("PALACE_CLEAR", 1, palaceDetails);
+    track("PALACE_CLEARED", 1, palaceDetails);
   }
   const missionResults = resolveDungeonMissionResults(resolvedDungeonId, {
     win: true,
@@ -6885,8 +8573,12 @@ function spendStageReqItemCostForReplay(replay, user, stageId) {
   const key = `${Number(stageId || 0)}:${String(dynamicGame.gameUID || dynamicGame.gameUid || "")}`;
   replay.spentStageReqItemCosts = replay.spentStageReqItemCosts && typeof replay.spentStageReqItemCosts === "object" ? replay.spentStageReqItemCosts : {};
   if (replay.spentStageReqItemCosts[key]) return [];
-  const costItems = spendStageReqItemCost(user, stageId, { dungeonID: dynamicGame.dungeonID });
+  const costItems = spendStageReqItemCost(user, stageId, {
+    dungeonID: dynamicGame.dungeonID,
+    multiplier: Math.max(1, Math.trunc(Number(dynamicGame.rewardMultiply || 1)) || 1),
+  });
   replay.spentStageReqItemCosts[key] = true;
+  if (costItems.length > 0) replay.stageReqItemCostChanged = true;
   return costItems;
 }
 
@@ -6911,11 +8603,11 @@ function buildPhaseClearData(stageId, options = {}) {
     writeSignedVarInt(Number(stageId || 0)),
     writeBool(missionResult1), // missionResult1
     writeBool(missionResult2), // missionResult2
-    writeNullableObject(buildEmptyRewardData()), // missionReward
-    writeBool(false), // missionRewardResult
-    writeNullableObject(buildEmptyRewardData()), // oneTimeRewards
-    writeBoolList([]), // onetimeRewardResults
-    writeNullableObject(buildEmptyRewardData()), // rewardData
+    options.missionReward ? writeNullableObject(buildSerializedRewardData(options.missionReward)) : writeNullObject(),
+    writeBool(Boolean(options.missionRewardResult)),
+    options.oneTimeRewards ? writeNullableObject(buildSerializedRewardData(options.oneTimeRewards)) : writeNullObject(),
+    writeBoolList(Array.isArray(options.onetimeRewardResults) ? options.onetimeRewardResults.map(Boolean) : [false, false, false]),
+    writeNullableObject(buildSerializedRewardData(options.reward || options.rewardData || createEmptyReward())),
   ]);
 }
 
@@ -8039,52 +9731,382 @@ function getFierceSeasonTotalPoint(user, seasonRow = null) {
   return Array.from(groupBest.values()).reduce((total, point) => total + point, 0);
 }
 
-function buildShadowPalaceStartAckPayload(req = {}, user = null) {
-  const palaceId = positiveInt(req.palaceId || req.palaceID);
-  const stage = getGenericStageForRequest({ palaceID: palaceId });
-  const state = ensureMiscStageState(user);
-  if (state && palaceId) {
-    state.shadow = state.shadow && typeof state.shadow === "object" ? state.shadow : {};
-    state.shadow.currentPalaceId = palaceId;
-    state.shadow.life = Math.max(1, positiveInt(state.shadow.life) || 3);
-    state.shadow.rewardMultiply = 1;
-    const palaceKey = String(palaceId);
-    state.shadow.palaces = state.shadow.palaces && typeof state.shadow.palaces === "object" ? state.shadow.palaces : {};
-    state.shadow.palaces[palaceKey] = {
-      ...(state.shadow.palaces[palaceKey] || {}),
-      palaceId,
-      currentDungeonId: positiveInt(stage && stage.dungeonID),
-    };
-    if (USE_LOCAL_USER_DB) saveUserDb();
-  }
-  return Buffer.concat([
-    writeSignedVarInt(0),
-    writeSignedVarInt(palaceId),
-    writeObjectList([]),
-    writeSignedVarInt(1),
-  ]);
-}
-
-function buildPhaseStartAckPayload(req = {}, user = null) {
+function buildPhaseStartAckPayload(req = {}, user = null, ctx = null) {
+  if (!req || req.valid === false) return phaseStartFailure(PHASE_ERRORS.INVALID_REQUEST);
   const stageId = positiveInt(req.stageId || req.stageID);
   const stage = getGenericStageForRequest({ stageID: stageId });
+  if (!stage || Number(stage.gameType || 0) !== NGT_PHASE || !positiveInt(stage.phaseId)) {
+    return phaseStartFailure(PHASE_ERRORS.INVALID_STAGE);
+  }
   const dungeonId = positiveInt(stage && stage.dungeonID);
   const phaseIndex = Math.max(0, Number(stage && stage.phaseIndex) || 0);
   const supportingUserUid = toBigInt(req.supportingUserUid || 0);
+  if (supportingUserUid < 0n || !isAvailablePhaseSupport(ctx, user, supportingUserUid)) {
+    return phaseStartFailure(PHASE_ERRORS.SUPPORT_NOT_FOUND);
+  }
+  const selection = validatePhaseDeckSelection(user, stage, req);
+  if (!selection.valid) return phaseStartFailure(selection.errorCode);
+  const costError = validatePhaseStageCost(user, stageId);
+  if (costError) return phaseStartFailure(costError);
   const state = ensureMiscStageState(user);
   if (state && stageId) {
     state.phase = {
       stageId,
+      phaseId: positiveInt(stage.phaseId),
       phaseIndex,
       dungeonId,
+      totalPlayTime: 0,
       supportingUserUid: supportingUserUid.toString(),
+      deckIndex: {
+        deckType: Number(req.deckIndex && req.deckIndex.deckType || 0),
+        index: Number(req.deckIndex && req.deckIndex.index || 0),
+      },
+      eventDeckData: serializePhaseEventDeckSelection(req.eventDeckData),
     };
-    if (USE_LOCAL_USER_DB) saveUserDb();
+    persistPhaseState(ctx, "phase-start");
   }
   return Buffer.concat([
-    writeSignedVarInt(0),
+    writeSignedVarInt(PHASE_ERRORS.OK),
     writeNullableObject(buildPhaseModeState(stageId, phaseIndex, dungeonId, 0, supportingUserUid)),
   ]);
+}
+
+function phaseStartFailure(errorCode) {
+  return Buffer.concat([writeSignedVarInt(Number(errorCode || PHASE_ERRORS.INVALID_REQUEST)), writeNullObject()]);
+}
+
+function validatePhaseStageCost(user, stageId) {
+  const cost = getStageReqItemCost(stageId);
+  if (!cost) return 0;
+  const item = getMiscItems(user).find((entry) => Number(entry && entry.itemId) === cost.itemId) || {};
+  const balance = toBigInt(item.countFree || 0) + toBigInt(item.countPaid || 0);
+  if (balance >= BigInt(cost.count)) return 0;
+  if (cost.itemId === 1) return PHASE_ERRORS.INSUFFICIENT_CASH;
+  if (cost.itemId === 2) return PHASE_ERRORS.INSUFFICIENT_ETERNIUM;
+  if (cost.itemId === 101) return PHASE_ERRORS.INSUFFICIENT_CREDIT;
+  if (cost.itemId === 3) return PHASE_ERRORS.INSUFFICIENT_INFORMATION;
+  return PHASE_ERRORS.INSUFFICIENT_ITEM;
+}
+
+function validatePhaseDeckSelection(user, stage, req) {
+  const eventDeckId = positiveInt(stage && stage.eventDeckId);
+  const deckIndex = req && req.deckIndex || {};
+  const deckType = Number(deckIndex.deckType || 0);
+  const index = Number(deckIndex.index || 0);
+  if (eventDeckId <= 0) {
+    if (req.eventDeckData || deckType !== 3) return { valid: false, errorCode: PHASE_ERRORS.INVALID_REQUEST };
+    return validatePlayerDeckForGameLoad(user, { selectDeckIndex: index }, { deckType: 3, requiredState: 0 });
+  }
+  if (deckType !== 0 || index !== 0 || !req.eventDeckData || !getEventDeckTemplet(eventDeckId)) {
+    return { valid: false, errorCode: PHASE_ERRORS.INVALID_EVENT_DECK };
+  }
+  return validatePhaseEventDeckSelection(user, eventDeckId, req.eventDeckData)
+    ? { valid: true, errorCode: PHASE_ERRORS.OK }
+    : { valid: false, errorCode: PHASE_ERRORS.INVALID_EVENT_DECK };
+}
+
+function validatePhaseEventDeckSelection(user, eventDeckId, selection) {
+  if (!user || !selection || typeof selection !== "object") return false;
+  const army = user.army && typeof user.army === "object" ? user.army : {};
+  const ownedUnits = army.units && typeof army.units === "object" ? army.units : {};
+  const ownedShips = army.ships && typeof army.ships === "object" ? army.ships : {};
+  const ownedOperators = army.operators && typeof army.operators === "object" ? army.operators : {};
+  const slotTypes = getEventDeckUnitSlotTypes(eventDeckId);
+  const allowedSlots = new Set(getEventDeckPlayerUnitSlots(eventDeckId).map(Number));
+  const requiredSlots = slotTypes
+    .map((slotType, index) => (allowedSlots.has(index) && slotType !== "ST_GUEST" ? index : -1))
+    .filter((index) => index >= 0);
+  const selected = Object.entries(selection.units || {}).filter(([, uid]) => toBigInt(uid || 0) > 0n);
+  const seen = new Set();
+  for (const [slotText, rawUid] of selected) {
+    const slot = Number(slotText);
+    const uid = toBigInt(rawUid || 0);
+    const key = uid.toString();
+    if (!allowedSlots.has(slot) || seen.has(key) || !ownedUnits[key]) return false;
+    seen.add(key);
+  }
+  if (requiredSlots.some((slot) => toBigInt(selection.units && selection.units[String(slot)] || 0) <= 0n)) return false;
+  const shipUid = toBigInt(selection.shipUid || 0);
+  if (eventDeckHasFreeShipSlot(eventDeckId)) {
+    if (shipUid <= 0n || !ownedShips[shipUid.toString()]) return false;
+  } else if (shipUid > 0n && !ownedShips[shipUid.toString()]) {
+    return false;
+  }
+  const eventDeck = getEventDeckTemplet(eventDeckId) || {};
+  const operatorUid = toBigInt(selection.operatorUid || 0);
+  const operatorType = String(eventDeck.SLOT_TYPE_OPERATOR || "");
+  const operatorRequired = operatorType === "ST_FREE" || operatorType === "ST_FIXED";
+  if (operatorRequired && (operatorUid <= 0n || !ownedOperators[operatorUid.toString()])) return false;
+  if (!operatorRequired && operatorUid > 0n && !ownedOperators[operatorUid.toString()]) return false;
+  const leaderIndex = Number(selection.leaderIndex);
+  return Number.isInteger(leaderIndex) && leaderIndex >= -1 && leaderIndex < 8 &&
+    (leaderIndex < 0 || toBigInt(selection.units && selection.units[String(leaderIndex)] || 0) > 0n);
+}
+
+function serializePhaseEventDeckSelection(selection) {
+  if (!selection) return null;
+  return {
+    shipUid: toBigInt(selection.shipUid || 0).toString(),
+    units: Object.fromEntries(
+      Object.entries(selection.units || {}).map(([slot, uid]) => [String(Number(slot)), toBigInt(uid || 0).toString()])
+    ),
+    operatorUid: toBigInt(selection.operatorUid || 0).toString(),
+    leaderIndex: Number(selection.leaderIndex == null ? -1 : selection.leaderIndex),
+  };
+}
+
+function isAvailablePhaseSupport(ctx, user, supportingUserUid) {
+  if (supportingUserUid === 0n) return true;
+  if (!ctx || !user) return false;
+  return getAvailableSupportUsers(ctx, user).some(
+    (entry) => toBigInt(entry && entry.user && entry.user.userUid || 0) === supportingUserUid && entry.unit
+  );
+}
+
+function persistPhaseState(ctx, reason) {
+  if (ctx && ctx.config && ctx.config.USE_LOCAL_USER_DB && typeof ctx.saveUserDb === "function") ctx.saveUserDb();
+  else if (USE_LOCAL_USER_DB) saveUserDb();
+  if (ctx && typeof ctx.invalidateJoinLobbyAckPayloadCache === "function") ctx.invalidateJoinLobbyAckPayloadCache(reason);
+  else invalidateJoinLobbyAckPayloadCache(reason);
+}
+
+function getSavedPhaseModeState(user) {
+  const saved = user && user.miscStages && user.miscStages.phase;
+  if (!saved || typeof saved !== "object") return null;
+  const stage = getGenericStageForRequest({ stageID: positiveInt(saved.stageId) });
+  if (!stage || Number(stage.gameType || 0) !== NGT_PHASE || positiveInt(saved.phaseId) !== positiveInt(stage.phaseId)) return null;
+  const phase = loadMiscStageCatalog().phaseById.get(positiveInt(stage.phaseId));
+  const phaseIndex = Math.max(0, Number(saved.phaseIndex || 0) || 0);
+  const order = choosePhaseOrder(phase, phaseIndex);
+  const dungeon = order && order.m_DungeonStrID ? getDungeonTableEntryByStrId(order.m_DungeonStrID) : null;
+  const dungeonId = positiveInt(dungeon && dungeon.m_DungeonID);
+  if (!dungeonId || dungeonId !== positiveInt(saved.dungeonId)) return null;
+  return {
+    ...saved,
+    stageId: positiveInt(saved.stageId),
+    phaseId: positiveInt(saved.phaseId),
+    phaseIndex,
+    dungeonId,
+    totalPlayTime: Math.max(0, Number(saved.totalPlayTime || 0) || 0),
+    supportingUserUid: toBigInt(saved.supportingUserUid || 0),
+  };
+}
+
+function preparePhaseGameLoad(user, req = {}, stage = null) {
+  if (!stage || Number(stage.gameType || 0) !== NGT_PHASE) return null;
+  const saved = getSavedPhaseModeState(user);
+  if (
+    !saved ||
+    positiveInt(req.stageID) !== saved.stageId ||
+    positiveInt(req.dungeonID) !== saved.dungeonId ||
+    toBigInt(req.supportingUserUid || 0) !== saved.supportingUserUid
+  ) {
+    return { valid: false, errorCode: PHASE_ERRORS.INVALID_REQUEST };
+  }
+  const nextReq = {
+    ...req,
+    selectDeckIndex: Number(saved.deckIndex && saved.deckIndex.index || 0),
+    supportingUserUid: saved.supportingUserUid,
+    eventDeckData: saved.eventDeckData || null,
+  };
+  const resolvedStage = getGenericStageForRequest({ stageID: saved.stageId, dungeonID: saved.dungeonId });
+  if (!resolvedStage || Number(resolvedStage.gameType || 0) !== NGT_PHASE) {
+    return { valid: false, errorCode: PHASE_ERRORS.INVALID_REQUEST };
+  }
+  const nextStage = { ...resolvedStage, phaseIndex: saved.phaseIndex, phaseId: saved.phaseId };
+  const validation = validatePhaseDeckSelection(user, nextStage, {
+    deckIndex: saved.deckIndex || { deckType: 0, index: 0 },
+    eventDeckData: saved.eventDeckData || null,
+  });
+  return validation.valid
+    ? { valid: true, errorCode: 0, req: nextReq, stage: nextStage, deckValidation: saved.eventDeckData ? null : validation }
+    : { valid: false, errorCode: validation.errorCode };
+}
+
+function recordPhaseBattleResult(replay, user, options = {}) {
+  const stageId = positiveInt(options.stageId);
+  const dungeonId = positiveInt(options.dungeonId);
+  const battleKey = `${String(replay && replay.dynamicGame && (replay.dynamicGame.gameUID || replay.dynamicGame.gameUid) || 0)}:${dungeonId}`;
+  if (replay && replay.phaseBattleResult && replay.phaseBattleResult.battleKey === battleKey) {
+    return replay.phaseBattleResult;
+  }
+  const saved = getSavedPhaseModeState(user);
+  if (!saved || saved.stageId !== stageId || saved.dungeonId !== dungeonId) {
+    const invalid = { valid: false, changed: false, terminated: false, completed: false, nextState: null, battleKey };
+    if (replay && typeof replay === "object") replay.phaseBattleResult = invalid;
+    return invalid;
+  }
+
+  const phase = loadMiscStageCatalog().phaseById.get(saved.phaseId);
+  const playTime = Math.max(0, Number(options.playTime || 0) || 0);
+  const totalPlayTime = saved.totalPlayTime + playTime;
+  const shipHpDamagePercent = Math.max(
+    0,
+    Number(saved.shipHpDamagePercent || 0) || 0,
+    Number(options.battleState && (options.battleState.shipHpDamagePercent ?? options.battleState.ShipHpDamagePercent) || 0) || 0
+  );
+  const win = options.win === true && options.giveup !== true;
+  const state = ensureMiscStageState(user);
+  const nextOrder = win ? choosePhaseOrder(phase, saved.phaseIndex + 1) : null;
+  const nextDungeon = nextOrder && nextOrder.m_DungeonStrID ? getDungeonTableEntryByStrId(nextOrder.m_DungeonStrID) : null;
+  const nextDungeonId = positiveInt(nextDungeon && nextDungeon.m_DungeonID);
+  let nextState = null;
+  let clearData = null;
+  let loot = null;
+  let completed = false;
+
+  if (win && nextDungeonId) {
+    state.phase = {
+      ...saved,
+      supportingUserUid: saved.supportingUserUid.toString(),
+      phaseIndex: saved.phaseIndex + 1,
+      dungeonId: nextDungeonId,
+      totalPlayTime,
+      shipHpDamagePercent,
+    };
+    nextState = {
+      ...state.phase,
+      supportingUserUid: saved.supportingUserUid,
+    };
+  } else {
+    delete state.phase;
+    if (win) {
+      completed = true;
+      user.phaseClearData = user.phaseClearData && typeof user.phaseClearData === "object" ? user.phaseClearData : {};
+      const previous = user.phaseClearData[String(stageId)] && typeof user.phaseClearData[String(stageId)] === "object"
+        ? user.phaseClearData[String(stageId)]
+        : {};
+      const aggregateState = {
+        ...(options.battleState || {}),
+        gameTime: totalPlayTime,
+        GameTime: totalPlayTime,
+        totalPlayTime,
+        TotalPlayTime: totalPlayTime,
+        shipHpDamagePercent,
+        ShipHpDamagePercent: shipHpDamagePercent,
+      };
+      const currentMissionResult1 = evaluateDungeonMission(
+        phase && phase.m_DGMissionType_1,
+        phase && phase.m_DGMissionValue_1,
+        aggregateState,
+        true
+      );
+      const currentMissionResult2 = evaluateDungeonMission(
+        phase && phase.m_DGMissionType_2,
+        phase && phase.m_DGMissionValue_2,
+        aggregateState,
+        true
+      );
+      clearData = {
+        stageId,
+        missionResult1: previous.missionResult1 === true || currentMissionResult1,
+        missionResult2: previous.missionResult2 === true || currentMissionResult2,
+        missionRewardResult: previous.missionRewardResult === true,
+        onetimeRewardResults: Array.from({ length: 3 }, (_, index) =>
+          Boolean(Array.isArray(previous.onetimeRewardResults) && previous.onetimeRewardResults[index])
+        ),
+      };
+      loot = grantPhaseClearLoot(replay, user, phase, stageId, clearData, previous);
+      clearData.missionRewardResult = loot.missionRewardResult;
+      clearData.onetimeRewardResults = loot.onetimeRewardResults;
+      user.phaseClearData[String(stageId)] = {
+        ...clearData,
+        completedAt: previous.completedAt || new Date().toISOString(),
+        lastCompletedAt: new Date().toISOString(),
+        bestClearTimeSec: previous.bestClearTimeSec > 0
+          ? Math.min(Number(previous.bestClearTimeSec), totalPlayTime)
+          : totalPlayTime,
+      };
+    }
+  }
+
+  const result = {
+    valid: true,
+    changed: true,
+    terminated: !nextState,
+    completed,
+    nextState,
+    clearData,
+    loot,
+    stageId,
+    dungeonId,
+    totalPlayTime,
+    battleKey,
+  };
+  if (replay && typeof replay === "object") replay.phaseBattleResult = result;
+  return result;
+}
+
+function grantPhaseClearLoot(replay, user, phase, stageId, clearData, previous = {}) {
+  const reward = createEmptyReward();
+  const missionReward = createEmptyReward();
+  const oneTimeRewards = createEmptyReward();
+  const ctx = { dateTimeBinaryNow };
+  const regDate = dateTimeBinaryNow();
+  const phaseId = positiveInt(phase && phase.m_PhaseID);
+  const firstClear = !positiveInt(previous && previous.stageId);
+  const credit = pickDungeonRewardQuantity(
+    user,
+    `phase-credit:${phaseId}`,
+    phase && phase.m_RewardCredit_Min,
+    phase && phase.m_RewardCredit_Max
+  );
+  if (credit > 0) {
+    mergeReward(
+      reward,
+      grantRewardByType(ctx, user, "RT_MISC", RESOURCE_ITEM_IDS.CREDIT, credit, credit, 0, { regDate, expandPackages: false })
+    );
+  }
+  if (firstClear) mergeReward(reward, grantStageFirstClearReward(ctx, user, stageId, { regDate }));
+  mergeReward(reward, grantStageMainReward(ctx, user, stageId, { regDate }).reward);
+  for (let index = 1; index <= 10; index += 1) {
+    const groupId = positiveInt(phase && phase[`m_RewardGroupID_${index}`]);
+    const chance = Math.max(0, Math.min(10000, Number(phase && phase[`m_fRewardRate_${index}`]) || 0));
+    if (!groupId || chance <= 0 || (chance < 10000 && stableStageRewardRoll(user, `phase:${phaseId}:${groupId}`, 10000) >= chance)) continue;
+    const record = pickStageRewardRecord(getRewardGroupRecords(groupId), user, groupId);
+    if (record) mergeReward(reward, grantRewardRecord(ctx, user, record, { regDate }));
+  }
+
+  const stage = getStageTableEntry(stageId) || {};
+  let missionRewardResult = previous.missionRewardResult === true;
+  if (!missionRewardResult && clearData.missionResult1 && clearData.missionResult2) {
+    const rewardType = String(stage.m_allStarRewardType || "");
+    const rewardId = positiveInt(stage.m_allStarRewardID);
+    const count = Math.max(0, Number(stage.m_allStarRewardValue || 0) || 0);
+    if (rewardType && rewardType !== "RT_NONE" && rewardId && count > 0) {
+      mergeReward(missionReward, grantRewardByType(ctx, user, rewardType, rewardId, count, count, 0, { regDate, expandPackages: false }));
+    }
+    missionRewardResult = true;
+  }
+
+  const onetimeRewardResults = clearData.onetimeRewardResults.slice(0, 3);
+  while (onetimeRewardResults.length < 3) onetimeRewardResults.push(false);
+  for (let index = 1; index <= 3; index += 1) {
+    if (onetimeRewardResults[index - 1]) continue;
+    const rewardType = String(stage[`m_OneTimeRewardType_${index}`] || "");
+    const rewardId = positiveInt(stage[`m_OneTimeRewardId_${index}`]);
+    const count = Math.max(0, Number(stage[`m_OneTimeRewardCount_${index}`] || 0) || 0);
+    const chance = Math.max(0, Math.min(10000, Number(stage[`m_OneTimeRewardProbability_${index}`] || 0) || 0));
+    if (!rewardType || rewardType === "RT_NONE" || !rewardId || count <= 0 || chance <= 0) continue;
+    if (chance < 10000 && stableStageRewardRoll(user, `phase-onetime:${stageId}:${index}`, 10000) >= chance) continue;
+    mergeReward(oneTimeRewards, grantRewardByType(ctx, user, rewardType, rewardId, count, count, 0, { regDate, expandPackages: false }));
+    onetimeRewardResults[index - 1] = true;
+  }
+
+  const unitExp = Math.max(0, Number(phase && phase.m_RewardUnitEXP) || 0);
+  const userExp = Math.max(0, Number(phase && phase.m_RewardUserEXP) || 0);
+  reward.userExp = userExp;
+  const combatExp = applyCombatExpToLocalRoster(user, replay, unitExp);
+  if (combatExp.unitExpDataList.length) reward.unitExpDataList = combatExp.unitExpDataList;
+  return {
+    reward,
+    missionReward: hasRewardPayload(missionReward) ? missionReward : null,
+    oneTimeRewards: hasRewardPayload(oneTimeRewards) ? oneTimeRewards : null,
+    missionRewardResult,
+    onetimeRewardResults,
+    userExp,
+    unitExp,
+  };
 }
 
 function buildPhaseModeState(stageId, phaseIndex, dungeonId, totalPlayTime, supportingUserUid) {
@@ -8146,7 +10168,17 @@ function buildTrimStageData(index, dungeonId, score, isWin) {
   ]);
 }
 
-function buildFierceDataAckPayload(user = null) {
+function buildFierceDataAckPayload(user = null, req = null) {
+  if (req && req.valid === false) {
+    return Buffer.concat([
+      writeSignedVarInt(FIERCE_ERRORS.INVALID_REQUEST),
+      writeSignedVarInt(0),
+      writeSignedVarInt(0),
+      writeIntList([]),
+      writeBool(false),
+      writeObjectList([]),
+    ]);
+  }
   const season = getCurrentFierceSeasonRow();
   const seasonId = getCurrentFierceSeasonId();
   const { fierce: state, season: seasonState } = getFierceSeasonState(user);
@@ -8192,31 +10224,98 @@ function buildFierceBossData(data = {}) {
   ]);
 }
 
-function buildFiercePenaltyAckPayload(req = {}, user = null) {
+function validateFiercePenaltySelection(req = {}) {
+  if (req.valid === false) return { errorCode: FIERCE_ERRORS.INVALID_REQUEST, penaltyIds: [] };
   const bossId = positiveInt(req.fierceBossId || req.fierceBossID || req.bossId);
-  const penaltyIds = normalizeFiercePenaltyIdsForBoss(bossId, Array.isArray(req.penaltyIds) ? req.penaltyIds : []);
-  if (user && bossId) {
-    const bossState = ensureFierceBossSeasonState(user, bossId);
-    if (bossState) {
-      bossState.penaltyIds = penaltyIds;
-      bossState.penaltyPoint = Math.max(0, Number(bossState.penaltyPoint || 0) || 0);
-      bossState.updatedAt = new Date().toISOString();
-      if (USE_LOCAL_USER_DB) saveUserDb();
-    }
+  const boss = getFierceSeasonBossRows().find((row) => positiveInt(row && row.FierceBossID) === bossId);
+  if (!boss) return { errorCode: FIERCE_ERRORS.INVALID_BOSS_ID, penaltyIds: [] };
+  const requested = Array.isArray(req.penaltyIds) ? req.penaltyIds.map(positiveInt) : [];
+  if (requested.some((id) => id <= 0)) return { errorCode: FIERCE_ERRORS.PENALTY_TYPE, penaltyIds: [] };
+  if (requested.length && boss.UI_HellModeCheck !== true) {
+    return { errorCode: FIERCE_ERRORS.PENALTY_BOSS_LEVEL, penaltyIds: [] };
+  }
+  if (new Set(requested).size !== requested.length) {
+    return { errorCode: FIERCE_ERRORS.PENALTY_DUPLICATE_GROUP, penaltyIds: [] };
+  }
+  const allowedRows = getFiercePenaltyRowsForBoss(bossId);
+  const allowedById = new Map(allowedRows.map((row) => [positiveInt(row && row.PenaltyID), row]));
+  const selectedGroups = new Set();
+  for (const penaltyId of requested) {
+    const row = allowedById.get(penaltyId);
+    if (!row) return { errorCode: FIERCE_ERRORS.PENALTY_TYPE, penaltyIds: [] };
+    const groupId = positiveInt(row.PenaltyGroupID);
+    if (!groupId) return { errorCode: FIERCE_ERRORS.PENALTY_BOSS_GROUP, penaltyIds: [] };
+    if (selectedGroups.has(groupId)) return { errorCode: FIERCE_ERRORS.PENALTY_DUPLICATE_GROUP, penaltyIds: [] };
+    selectedGroups.add(groupId);
+  }
+  const availableGroups = new Set(allowedRows.map((row) => positiveInt(row && row.PenaltyGroupID)).filter(Boolean));
+  if (requested.length > availableGroups.size) return { errorCode: FIERCE_ERRORS.PENALTY_COUNT, penaltyIds: [] };
+  return { errorCode: FIERCE_ERRORS.OK, penaltyIds: requested };
+}
+
+function sameIntList(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function commitFierceMutation(ctx, reason) {
+  if (ctx && ctx.config && ctx.config.USE_LOCAL_USER_DB && typeof ctx.saveUserDb === "function") ctx.saveUserDb();
+  else if (USE_LOCAL_USER_DB) saveUserDb();
+  if (ctx && typeof ctx.invalidateJoinLobbyAckPayloadCache === "function") ctx.invalidateJoinLobbyAckPayloadCache(reason);
+  else invalidateJoinLobbyAckPayloadCache(reason);
+}
+
+function buildFiercePenaltyAckPayload(req = {}, user = null, ctx = null) {
+  const bossId = positiveInt(req.fierceBossId || req.fierceBossID || req.bossId);
+  const validation = validateFiercePenaltySelection(req);
+  if (validation.errorCode !== FIERCE_ERRORS.OK || !user) {
+    return Buffer.concat([
+      writeSignedVarInt(validation.errorCode || FIERCE_ERRORS.PROFILE_NOT_EXISTS),
+      writeSignedVarInt(bossId),
+      writeIntList([]),
+    ]);
+  }
+  const bossState = ensureFierceBossSeasonState(user, bossId);
+  if (!bossState) {
+    return Buffer.concat([writeSignedVarInt(FIERCE_ERRORS.INVALID_BOSS_ID), writeSignedVarInt(bossId), writeIntList([])]);
+  }
+  const previous = uniquePositiveIntList(bossState.penaltyIds);
+  const penaltyIds = validation.penaltyIds;
+  if (!sameIntList(previous, penaltyIds)) {
+    bossState.penaltyIds = penaltyIds;
+    bossState.penaltyPoint = Math.max(0, Number(bossState.penaltyPoint || 0) || 0);
+    bossState.updatedAt = getServerNowDate().toISOString();
+    commitFierceMutation(ctx, "fierce-penalty");
   }
   return Buffer.concat([
-    writeSignedVarInt(0),
+    writeSignedVarInt(FIERCE_ERRORS.OK),
     writeSignedVarInt(bossId),
     writeIntList(penaltyIds),
   ]);
 }
 
 function buildFierceProfileAckPayload(req = {}, user = null) {
-  const target = findFierceProfileUser(req.userUid) || user || null;
+  const requestedUid = toBigInt(req.userUid || 0);
+  const target = req.valid === false
+    ? null
+    : findFierceProfileUser(requestedUid) || (user && toBigInt(user.userUid || 0) === requestedUid ? user : null);
+  const errorCode = req.valid === false
+    ? FIERCE_ERRORS.INVALID_REQUEST
+    : target
+      ? FIERCE_ERRORS.OK
+      : FIERCE_ERRORS.PROFILE_NOT_EXISTS;
+  if (errorCode !== FIERCE_ERRORS.OK) {
+    return Buffer.concat([
+      writeSignedVarInt(errorCode),
+      writeNullObject(),
+      writeNullObject(),
+      writeString(""),
+      writeNullObject(),
+    ]);
+  }
   const profile = buildFierceProfileState(target);
   const identity = getUserProfileIdentity(target);
   return Buffer.concat([
-    writeSignedVarInt(0),
+    writeSignedVarInt(FIERCE_ERRORS.OK),
     writeNullableObject(buildCommonProfileData(target, identity.userUid, identity.friendCode, identity.nickname)),
     writeNullableObject(buildGuildSimpleData()),
     writeString(String((target && target.friendIntro) || "")),
@@ -8265,57 +10364,73 @@ function buildFierceProfileData(profile = {}, user = null) {
   ]);
 }
 
-function buildFierceRankRewardAckPayload(user = null) {
-  if (!user) return Buffer.concat([writeSignedVarInt(1), writeNullObject()]);
-  const state = ensureFierceSeasonState(user);
+function buildFierceRankRewardAckPayload(user = null, req = null, ctx = null) {
+  if (req && req.valid === false) return Buffer.concat([writeSignedVarInt(FIERCE_ERRORS.INVALID_REQUEST), writeNullObject()]);
+  if (!user) return Buffer.concat([writeSignedVarInt(FIERCE_ERRORS.PROFILE_NOT_EXISTS), writeNullObject()]);
+  const saved = getFierceSeasonState(user);
   const totalPoint = getFierceSeasonTotalPoint(user);
-  const alreadyClaimed = Boolean(state && (state.season.isRankRewardGotten || state.fierce.isRankRewardGotten));
-  if (!state || totalPoint <= 0) return Buffer.concat([writeSignedVarInt(1), writeNullObject()]);
-  if (alreadyClaimed) return Buffer.concat([writeSignedVarInt(0), writeNullableObject(buildSerializedRewardData(createEmptyReward()))]);
+  const alreadyClaimed = Boolean(saved.season.isRankRewardGotten || saved.fierce.isRankRewardGotten);
+  if (alreadyClaimed) return Buffer.concat([writeSignedVarInt(FIERCE_ERRORS.NO_MORE_RANK_REWARD), writeNullObject()]);
+  if (totalPoint <= 0) return Buffer.concat([writeSignedVarInt(FIERCE_ERRORS.INSUFFICIENT_RANK_REWARD_CONDITION), writeNullObject()]);
   const row = selectFierceRankRewardRow(user);
-  const reward = row ? grantFierceInlineRewardRow(user, row, "RankReward") : createEmptyReward();
+  if (!row) return Buffer.concat([writeSignedVarInt(FIERCE_ERRORS.INSUFFICIENT_RANK_REWARD_CONDITION), writeNullObject()]);
+  const state = ensureFierceSeasonState(user);
+  const reward = grantFierceInlineRewardRow(user, row, "RankReward");
   state.season.isRankRewardGotten = true;
   state.fierce.isRankRewardGotten = true;
-  if (USE_LOCAL_USER_DB) saveUserDb();
-  return Buffer.concat([writeSignedVarInt(0), writeNullableObject(buildSerializedRewardData(reward))]);
+  commitFierceMutation(ctx, "fierce-rank-reward");
+  return Buffer.concat([writeSignedVarInt(FIERCE_ERRORS.OK), writeNullableObject(buildSerializedRewardData(reward))]);
 }
 
-function buildFiercePointRewardAckPayload(req = {}, user = null) {
+function buildFiercePointRewardAckPayload(req = {}, user = null, ctx = null) {
   const rewardId = positiveInt(req.pointRewardId || req.fiercePointRewardId || req.fiercePointRewardID);
-  if (!user || !rewardId) return Buffer.concat([writeSignedVarInt(1), writeNullObject(), writeSignedVarInt(rewardId)]);
+  if (req.valid === false) return Buffer.concat([writeSignedVarInt(FIERCE_ERRORS.INVALID_REQUEST), writeNullObject(), writeSignedVarInt(rewardId)]);
+  if (!user) return Buffer.concat([writeSignedVarInt(FIERCE_ERRORS.PROFILE_NOT_EXISTS), writeNullObject(), writeSignedVarInt(rewardId)]);
   const row = getCurrentFiercePointRewardRows().find((entry) => positiveInt(entry && entry.FiercePointRewardID) === rewardId);
-  const state = ensureFierceSeasonState(user);
-  const history = state ? uniquePositiveIntList(state.season.pointRewardHistory) : [];
-  const totalPoint = getFierceSeasonTotalPoint(user);
-  const eligible = row && totalPoint >= Math.max(0, Number(row.Point || 0) || 0);
-  let reward = createEmptyReward();
-  const errorCode = eligible ? 0 : 1;
-  if (eligible && !history.includes(rewardId)) {
-    reward = grantFierceInlineRewardRow(user, row, "PointReward");
-    history.push(rewardId);
-    state.season.pointRewardHistory = uniquePositiveIntList(history);
-    state.fierce.pointRewardHistory = uniquePositiveIntList(history);
-    if (USE_LOCAL_USER_DB) saveUserDb();
+  if (!row) return Buffer.concat([writeSignedVarInt(FIERCE_ERRORS.INVALID_POINT_REWARD_ID), writeNullObject(), writeSignedVarInt(rewardId)]);
+  const saved = getFierceSeasonState(user);
+  const history = uniquePositiveIntList(saved.season.pointRewardHistory || saved.fierce.pointRewardHistory);
+  if (history.includes(rewardId)) {
+    return Buffer.concat([writeSignedVarInt(FIERCE_ERRORS.ALREADY_GOT_REWARD), writeNullObject(), writeSignedVarInt(rewardId)]);
   }
+  const totalPoint = getFierceSeasonTotalPoint(user);
+  if (totalPoint < Math.max(0, Number(row.Point || 0) || 0)) {
+    return Buffer.concat([writeSignedVarInt(FIERCE_ERRORS.INSUFFICIENT_POINT_REWARD_CONDITION), writeNullObject(), writeSignedVarInt(rewardId)]);
+  }
+  const state = ensureFierceSeasonState(user);
+  const reward = grantFierceInlineRewardRow(user, row, "PointReward");
+  history.push(rewardId);
+  state.season.pointRewardHistory = uniquePositiveIntList(history);
+  state.fierce.pointRewardHistory = uniquePositiveIntList(history);
+  commitFierceMutation(ctx, "fierce-point-reward");
   return Buffer.concat([
-    writeSignedVarInt(errorCode),
-    errorCode === 0 ? writeNullableObject(buildSerializedRewardData(reward)) : writeNullObject(),
+    writeSignedVarInt(FIERCE_ERRORS.OK),
+    writeNullableObject(buildSerializedRewardData(reward)),
     writeSignedVarInt(rewardId),
   ]);
 }
 
-function buildFiercePointRewardAllAckPayload(user = null) {
-  if (!user) return Buffer.concat([writeSignedVarInt(1), writeIntList([]), writeNullObject()]);
-  const state = ensureFierceSeasonState(user);
-  if (!state) return Buffer.concat([writeSignedVarInt(1), writeIntList([]), writeNullObject()]);
+function buildFiercePointRewardAllAckPayload(user = null, req = null, ctx = null) {
+  if (req && req.valid === false) return Buffer.concat([writeSignedVarInt(FIERCE_ERRORS.INVALID_REQUEST), writeIntList([]), writeNullObject()]);
+  if (!user) return Buffer.concat([writeSignedVarInt(FIERCE_ERRORS.PROFILE_NOT_EXISTS), writeIntList([]), writeNullObject()]);
+  const saved = getFierceSeasonState(user);
   const totalPoint = getFierceSeasonTotalPoint(user);
-  const history = uniquePositiveIntList(state.season.pointRewardHistory);
+  const history = uniquePositiveIntList(saved.season.pointRewardHistory || saved.fierce.pointRewardHistory);
+  const rows = getCurrentFiercePointRewardRows();
+  const eligibleRows = rows.filter((row) => totalPoint >= Math.max(0, Number(row.Point || 0) || 0));
+  if (!eligibleRows.length) {
+    return Buffer.concat([writeSignedVarInt(FIERCE_ERRORS.INSUFFICIENT_POINT_REWARD_CONDITION), writeIntList([]), writeNullObject()]);
+  }
+  const claimableRows = eligibleRows.filter((row) => !history.includes(positiveInt(row && row.FiercePointRewardID)));
+  if (!claimableRows.length) {
+    return Buffer.concat([writeSignedVarInt(FIERCE_ERRORS.ALREADY_GOT_REWARD), writeIntList([]), writeNullObject()]);
+  }
+  const state = ensureFierceSeasonState(user);
   const reward = createEmptyReward();
   const claimedIds = [];
-  for (const row of getCurrentFiercePointRewardRows()) {
+  for (const row of claimableRows) {
     const rewardId = positiveInt(row && row.FiercePointRewardID);
-    if (!rewardId || history.includes(rewardId)) continue;
-    if (totalPoint < Math.max(0, Number(row.Point || 0) || 0)) continue;
+    if (!rewardId) continue;
     mergeReward(reward, grantFierceInlineRewardRow(user, row, "PointReward"));
     history.push(rewardId);
     claimedIds.push(rewardId);
@@ -8323,10 +10438,10 @@ function buildFiercePointRewardAllAckPayload(user = null) {
   if (claimedIds.length) {
     state.season.pointRewardHistory = uniquePositiveIntList(history);
     state.fierce.pointRewardHistory = uniquePositiveIntList(history);
-    if (USE_LOCAL_USER_DB) saveUserDb();
+    commitFierceMutation(ctx, "fierce-point-reward-all");
   }
   return Buffer.concat([
-    writeSignedVarInt(0),
+    writeSignedVarInt(FIERCE_ERRORS.OK),
     writeIntList(claimedIds),
     writeNullableObject(buildSerializedRewardData(reward)),
   ]);
@@ -8334,6 +10449,17 @@ function buildFiercePointRewardAllAckPayload(user = null) {
 
 function buildLeaderboardFierceListAckPayload(req = {}, user = null) {
   const season = getCurrentFierceSeasonRow();
+  if (req.valid === false) {
+    return Buffer.concat([
+      writeSignedVarInt(FIERCE_ERRORS.INVALID_REQUEST),
+      writeNullObject(),
+      writeSignedVarInt(0),
+      writeSignedVarInt(0),
+      writeSignedVarInt(positiveInt(season && season.FierceID)),
+      writeObjectList([]),
+      writeBool(false),
+    ]);
+  }
   const entries = getFierceLeaderboardEntries({ user, isAll: Boolean(req.isAll) });
   const rank = getFierceLeaderboardRank(entries, user);
   return Buffer.concat([
@@ -8349,7 +10475,23 @@ function buildLeaderboardFierceListAckPayload(req = {}, user = null) {
 
 function buildLeaderboardFierceBossGroupListAckPayload(req = {}, user = null) {
   const season = getCurrentFierceSeasonRow();
-  const groupId = positiveInt(req.fierceBossGroupId || req.fierceBossGroupID) || getFierceSeasonBossGroupIds(season)[0] || 0;
+  const groupId = positiveInt(req.fierceBossGroupId || req.fierceBossGroupID);
+  const validGroups = getFierceSeasonBossGroupIds(season);
+  const errorCode = req.valid === false
+    ? FIERCE_ERRORS.INVALID_REQUEST
+    : validGroups.includes(groupId)
+      ? FIERCE_ERRORS.OK
+      : FIERCE_ERRORS.INVALID_LEADERBOARD_BOSS_ID;
+  if (errorCode !== FIERCE_ERRORS.OK) {
+    return Buffer.concat([
+      writeSignedVarInt(errorCode),
+      writeNullObject(),
+      writeSignedVarInt(0),
+      writeSignedVarInt(positiveInt(season && season.FierceID)),
+      writeSignedVarInt(groupId),
+      writeBool(Boolean(req.isAll)),
+    ]);
+  }
   const entries = getFierceLeaderboardEntries({ user, isAll: Boolean(req.isAll), fierceBossGroupId: groupId });
   const rank = getFierceLeaderboardRank(entries, user);
   return Buffer.concat([
@@ -8389,8 +10531,10 @@ function getCurrentFierceRankRewardRows() {
 function selectFierceRankRewardRow(user = null) {
   const totalPoint = getFierceSeasonTotalPoint(user);
   if (totalPoint <= 0) return null;
-  const rankNumber = 1;
-  const rankPercent = 1;
+  const entries = getFierceLeaderboardEntries({ user, isAll: true });
+  const rankNumber = getFierceLeaderboardRank(entries, user);
+  const rankedCount = Math.max(1, entries.filter((entry) => Number(entry && entry.point || 0) > 0).length);
+  const rankPercent = rankNumber > 0 ? Math.max(1, Math.ceil(rankNumber * 100 / rankedCount)) : 100;
   const rows = getCurrentFierceRankRewardRows();
   return (
     rows.find((row) => row && row.PercentCheck !== true && rankNumber <= Math.max(1, positiveInt(row.RankValue) || 1)) ||
@@ -8631,87 +10775,7 @@ function extractNullableGameDataFromGameLoadAckPayload(payload) {
 }
 
 function decodeGameLoadReq(payload) {
-  try {
-    const decrypted = decryptCopy(payload);
-    let offset = 0;
-    const isDev = decrypted.readUInt8(offset) !== 0;
-    offset += 1;
-    const selectDeckIndex = decrypted.readUInt8(offset);
-    offset += 1;
-    const stageID = readSignedVarInt(decrypted, offset);
-    offset = stageID.offset;
-    const diveStageID = readSignedVarInt(decrypted, offset);
-    offset = diveStageID.offset;
-    const dungeonID = readSignedVarInt(decrypted, offset);
-    offset = dungeonID.offset;
-    const palaceID = readSignedVarInt(decrypted, offset);
-    offset = palaceID.offset;
-    const fierceBossId = readSignedVarInt(decrypted, offset);
-    offset = fierceBossId.offset;
-    const exploreID = readSignedVarInt(decrypted, offset);
-    offset = exploreID.offset;
-    const supportingUserUid = readSignedVarLong(decrypted, offset);
-    offset = supportingUserUid.offset;
-    const hasEventDeckData = decrypted.readUInt8(offset) !== 0;
-    offset += 1;
-    let eventDeckData = null;
-    if (hasEventDeckData) {
-      const parsedEventDeck = readNkmEventDeckData(decrypted, offset);
-      eventDeckData = parsedEventDeck.value;
-      offset = parsedEventDeck.offset;
-    }
-    const rewardMultiply = safeReadSignedVarInt(decrypted, offset);
-    return {
-      isDev,
-      selectDeckIndex,
-      stageID: stageID.value,
-      diveStageID: diveStageID.value,
-      dungeonID: dungeonID.value,
-      palaceID: palaceID.value,
-      fierceBossId: fierceBossId.value,
-      exploreID: exploreID.value,
-      supportingUserUid: supportingUserUid.value,
-      hasEventDeckData,
-      eventDeckData,
-      rewardMultiply: rewardMultiply.value,
-    };
-  } catch (_) {
-    return null;
-  }
-}
-
-function readNkmEventDeckData(buffer, offset) {
-  const shipUid = readSignedVarLong(buffer, offset);
-  offset = shipUid.offset;
-  const unitMap = readIntLongMap(buffer, offset);
-  offset = unitMap.offset;
-  const operatorUid = readSignedVarLong(buffer, offset);
-  offset = operatorUid.offset;
-  const leaderIndex = readSignedVarInt(buffer, offset);
-  offset = leaderIndex.offset;
-  return {
-    value: {
-      shipUid: shipUid.value,
-      units: unitMap.value,
-      operatorUid: operatorUid.value,
-      leaderIndex: leaderIndex.value,
-    },
-    offset,
-  };
-}
-
-function readIntLongMap(buffer, offset) {
-  const count = readVarInt(buffer, offset);
-  offset = count.offset;
-  const entries = {};
-  for (let index = 0; index < count.value; index += 1) {
-    const key = readSignedVarInt(buffer, offset);
-    offset = key.offset;
-    const value = readSignedVarLong(buffer, offset);
-    offset = value.offset;
-    entries[key.value] = value.value;
-  }
-  return { value: entries, offset };
+  return decodeGameLoadRequest(payload, decryptCopy);
 }
 
 function decodeGameRespawnReq(payload) {
@@ -8720,12 +10784,15 @@ function decodeGameRespawnReq(payload) {
     let offset = 0;
     const unitUID = readSignedVarLong(decrypted, offset);
     offset = unitUID.offset;
-    const assistUnit = decrypted.readUInt8(offset) !== 0;
+    const assistUnitValue = decrypted.readUInt8(offset);
+    if (assistUnitValue !== 0 && assistUnitValue !== 1) return null;
+    const assistUnit = assistUnitValue === 1;
     offset += 1;
     const respawnPosX = decrypted.readFloatLE(offset);
     offset += 4;
     const gameTime = decrypted.readFloatLE(offset);
     offset += 4;
+    if (offset !== decrypted.length || !Number.isFinite(respawnPosX) || !Number.isFinite(gameTime)) return null;
     return {
       unitUID: unitUID.value.toString(),
       assistUnit,
@@ -8743,6 +10810,7 @@ function decodeGameUnitSkillReq(payload) {
   try {
     const decrypted = decryptCopy(payload);
     const gameUnitUID = readSignedVarInt(decrypted, 0);
+    if (gameUnitUID.offset !== decrypted.length || gameUnitUID.value < -32768 || gameUnitUID.value > 32767) return null;
     return {
       gameUnitUID: gameUnitUID.value,
       decodedBytes: gameUnitUID.offset,
@@ -8763,6 +10831,9 @@ function decodeGameShipSkillReq(payload) {
     offset = shipSkillID.offset;
     const skillPosX = decrypted.readFloatLE(offset);
     offset += 4;
+    if (offset !== decrypted.length || gameUnitUID.value < -32768 || gameUnitUID.value > 32767 || !Number.isFinite(skillPosX)) {
+      return null;
+    }
     return {
       gameUnitUID: gameUnitUID.value,
       shipSkillID: shipSkillID.value,
@@ -9007,6 +11078,7 @@ function getEffectiveOpenTags(baseTags) {
         baseTags,
         getFrozenClientOpenTags(),
         EXPLICIT_OPEN_TAGS,
+        REQUIRED_CORE_OPEN_TAGS,
         REQUIRED_STORY_OPEN_TAGS,
         PRIVATE_PVP_ENABLED ? PRIVATE_PVP_OPEN_TAGS : [],
         activeEventState.openTags,
@@ -9239,6 +11311,7 @@ function buildMinimalJoinLobbyPayload(user, options = {}) {
   const stagePlayDataList = buildStagePlayDataList(user);
   const unlockedStageIds = user.unlockedStageIds || [];
   const phaseClearDataList = buildPhaseClearDataList(user);
+  const phaseModeState = getSavedPhaseModeState(user);
 
   console.log(
     `[JOIN_LOBBY_ACK local] uid=${userUid} friendCode=${friendCode} nickname=${JSON.stringify(
@@ -9261,58 +11334,76 @@ function buildMinimalJoinLobbyPayload(user, options = {}) {
     now, // lastCreditSupplyTakeTime
     lastEterniumSupplyTakeTime,
     writeDoubleLE(getShopTotalPaidAmount(user)),
-    writeObjectList([]), // shopChainTabNestResetList
+    buildShopChainTabNextResetListPayload(clockCtx), // shopChainTabNestResetList
     writeNullableObject(buildPvpBanResultData()), // pvpBanResult
-    writeNullableObject(buildPvpStateData()), // asyncPvpState
-    writeNullableObject(buildPvpStateData()), // leaguePvpState
+    writeNullableObject(pvpRank.buildPvpStateData(pvpRank.getAsyncPvpState(user))), // asyncPvpState
+    writeNullableObject(pvpRank.buildPvpStateData(leaguePvp.getLeaguePvpState(user))), // leaguePvpState
     pvpPointChargeTime,
-    writeBool(false), // rankPvpOpen
-    writeBool(false), // leaguePvpOpen
+    writeBool(pvpRank.isRankPvpOpen(user)), // rankPvpOpen
+    writeBool(leaguePvp.hasLeaguePvpState(user)), // leaguePvpOpen
     writeObjectList([]), // ReturningUserStates
     writeObjectList(getAllContractStates(user, clockCtx).map((state) => writeNullableObject(buildSerializedContractStateData(state)))), // contractState
     writeObjectList(getAllContractBonusStates(user, clockCtx).map((state) => writeNullableObject(buildSerializedContractBonusStateData(state)))), // contractBonusState
     writeNullableObject(buildSelectableContractStateData(user, clockCtx)), // selectableContractState
     writeObjectList(stagePlayDataList), // stagePlayDataList
-    writeNullableObject(buildEventInfoData()), // eventInfo
+    writeNullableObject(buildEventInfoData(user)), // eventInfo
     writeString(user.reconnectKey || ""),
     writeNullableObject(buildZlongUserData()), // zlongUserData
     writeNullableObject(buildBackgroundInfoData(user)), // backGroundInfo
-    writeNullableObject(buildPrivateGuildData()), // privateGuildData
-    now, // blockMuteEndDate
+    writeNullableObject(buildGuildPrivateData({ getServerNowDate }, user)), // privateGuildData
+    writeInt64LE(getGuildChatMuteEndDate(user)), // blockMuteEndDate
     writeBool(false), // marketReviewCompletion
     writeBool(false), // fierceDailyRewardReceived
-    writeNullableObject(buildGuildDungeonRewardInfoData()), // guildDungeonRewardInfo
-    writeNullableObject(buildEquipTuningCandidateData()), // equipTuningCandidate
-    writeNullObject(), // leaguePvpRoomData
+    writeNullableObject(guildDungeon.serializeGuildDungeonRewardInfo(
+      guildDungeon.buildGuildDungeonRewardInfoData(user, { ctx: { ...clockCtx, userDb } })
+    )), // guildDungeonRewardInfo
+    writeNullableObject(buildEquipTuningCandidateData(user)), // equipTuningCandidate
+    options.leaguePvpRoomDataPayload
+      ? writeNullableObject(options.leaguePvpRoomDataPayload)
+      : writeNullObject(), // leaguePvpRoomData
     writeObjectList([]), // leaguePvpHistories
     writeObjectList([]), // privatePvpHistories
     writeNullableObject(buildSerializedMyOfficeStateData(user)), // officeState
     writeNullObject(), // kakaoMissionData
     writeIntList(unlockedStageIds),
     writeObjectList(phaseClearDataList), // phaseClearDataList
-    writeNullObject(), // phaseModeState
+    phaseModeState
+      ? writeNullableObject(
+          buildPhaseModeState(
+            phaseModeState.stageId,
+            phaseModeState.phaseIndex,
+            phaseModeState.dungeonId,
+            phaseModeState.totalPlayTime,
+            phaseModeState.supportingUserUid
+          )
+        )
+      : writeNullObject(), // phaseModeState
     writeObjectList([]), // serverKillCountDataList
     writeObjectList([]), // killCountDataList
     writeObjectList(collection.buildCompletedUnitMissionPayloads(user).map(writeNullableObject)), // completedUnitMissions
     writeObjectList(collection.buildRewardEnableUnitMissionPayloads(user).map(writeNullableObject)), // rewardEnableUnitMissions
-    writeNullableObject(buildPvpCastingVoteData()), // pvpCastingVoteData
+    writeNullableObject(draftPvpVotes.buildPvpCastingVoteData(user && user.pvpCastingVoteData)), // pvpCastingVoteData
     writeObjectList(intervalData.map(writeNullableObject)), // intervalData
-    writeObjectList([]), // consumerPackages
-    writeNullObject(), // npcPvpData
-    writeNullableObject(buildTrimIntervalData()), // trimIntervalData
-    writeObjectList([]), // trimClearList
-    writeNullableObject(buildShipModuleCandidateData()), // shipSlotCandidate
-    writeNullObject(), // trimModeState
+    writeObjectList(getConsumerPackageList(user).map((data) => writeNullableObject(buildConsumerPackageData(data)))), // consumerPackages
+    pvpRank.hasAsyncPvpState(user)
+      ? writeNullableObject(pvpRank.buildNpcPvpData(pvpRank.getNpcPvpData(user)))
+      : writeNullObject(), // npcPvpData
+    writeNullableObject(trim.buildTrimIntervalData(user)), // trimIntervalData
+    writeObjectList(trim.buildTrimClearDataList(user).map(writeNullableObject)), // trimClearList
+    writeNullableObject(buildShipModuleCandidateData(user)), // shipSlotCandidate
+    trim.buildTrimModeState(user)
+      ? writeNullableObject(trim.buildTrimModeState(user))
+      : writeNullObject(), // trimModeState
     writeBool(false), // enableAccountLink
-    writeNullableObject(buildEventCollectionInfoData()), // eventCollectionInfo
+    writeNullableObject(buildEventCollectionInfoData(user)), // eventCollectionInfo
     writeNullableObject(buildUserProfileData(user, userUid, friendCode, nickname)), // userProfileData
     writeNullableObject(buildShortCutInfoData()), // lastPlayInfo
-    writeNullableObject(buildPvpStateData()), // eventPvpState
+    writeNullableObject(pvpRank.buildPvpStateData(eventPvp.getEventPvpState(user, eventPvp.getActiveEventPvpSeason(createPacketContext())))), // eventPvpState
     writeObjectList(getAllCustomPickupContracts(user, clockCtx).map((contract) => writeNullableObject(buildSerializedCustomPickupContractData(contract)))), // customPickupContracts
-    writeNullableObject(buildPotentialOptionCandidateData()), // potentialOptionCandidate
-    writeNullableObject(buildPvpCastingVoteData()), // pvpDraftVoteData
+    writeNullableObject(buildPotentialOptionCandidateData(user)), // potentialOptionCandidate
+    writeNullableObject(draftPvpVotes.buildPvpCastingVoteData(user && user.pvpDraftVoteData)), // pvpDraftVoteData
     writeNullableObject(buildSupportUnitData(user)), // supportUnitProfileData
-    writeBool(false), // hasRemainReward
+    writeBool(eventPass.hasRemainingPassReward(clockCtx, user)), // hasRemainReward
   ]);
 }
 
@@ -9360,6 +11451,9 @@ function buildJoinLobbyAckPayload(user, options = {}) {
           filterInactiveEventIntervals: eventManager.config.enabled && !preserveOfficialContractData,
           preserveOfficialContractData,
           overlayLocalContractData,
+          overlayLocalPvpRankData: pvpRank.hasPvpRankState(user),
+          overlayLocalAsyncPvpData: pvpRank.hasAsyncPvpState(user),
+          overlayLocalLeaguePvpData: leaguePvp.hasLeaguePvpState(user),
         })
       : { ok: false, error: "combat handler merge unavailable" };
     if (merged.ok && Buffer.isBuffer(merged.payload)) {
@@ -9437,10 +11531,18 @@ function rememberJoinLobbyAckPayload(cacheKey, payload) {
 }
 
 function invalidateJoinLobbyAckPayloadCache(reason = "") {
-  if (joinLobbyAckPayloadCache.size === 0) return;
-  const count = joinLobbyAckPayloadCache.size;
+  const joinCount = joinLobbyAckPayloadCache.size;
+  const prewarmCount = prewarmedJoinLobbyAckPayloads.size;
+  const preparationCount = lobbySessionPreparationCache.size;
+  if (joinCount === 0 && prewarmCount === 0 && preparationCount === 0) return;
   joinLobbyAckPayloadCache.clear();
-  console.log(`[JOIN_LOBBY_ACK cache] cleared entries=${count}${reason ? ` reason=${reason}` : ""}`);
+  prewarmedJoinLobbyAckPayloads.clear();
+  lobbySessionPreparationCache.clear();
+  console.log(
+    `[JOIN_LOBBY_ACK cache] cleared payloads=${joinCount} prewarmed=${prewarmCount} preparations=${preparationCount}${
+      reason ? ` reason=${reason}` : ""
+    }`
+  );
 }
 
 function sha1Buffer(buffer) {
@@ -9518,6 +11620,7 @@ function hasLocalAccountState(user) {
   if (Object.keys(stagePlayData).length > 0) return true;
   if (Object.keys(persistentCutsceneViews).length > 0) return true;
   if (Object.keys(support).length > 0) return true;
+  if (pvpRank.hasPvpRankState(user) || pvpRank.hasAsyncPvpState(user)) return true;
   if (hasSavedCombatControls(user)) return true;
   if (lobbyCustomization.hasLobbyCustomization(user)) return true;
   if (simulation.hasSimulationState(user)) return true;
@@ -9616,7 +11719,7 @@ function buildStagePlayDataList(user) {
   for (const [key, data] of Object.entries(stagePlayData)) {
     const stageId = Number((data && data.stageId) || key);
     if (Number.isFinite(stageId) && stageId > 0) {
-      entries.set(stageId, writeNullableObject(buildStagePlayData(stageId, { gameTime: Number((data && data.bestClearTimeSec) || 0) })));
+      entries.set(stageId, writeNullableObject(buildStagePlayData(stageId, data || {})));
     }
   }
   for (const stage of getCompletedTutorialStageStates(user)) {
@@ -9635,11 +11738,19 @@ function buildStagePlayDataList(user) {
 }
 
 function buildPhaseClearDataList(user) {
-  repairDungeonClearDataFromProgress(user);
-  ensureMainStoryState(user);
   const stages = new Map();
-  for (const stage of getCompletedTutorialStageStates(user)) stages.set(Number(stage.stageId || 0), stage);
-  for (const stage of getMainStoryCompletedStageStates(user)) stages.set(Number(stage.stageId || 0), stage);
+  const persisted = user && user.phaseClearData && typeof user.phaseClearData === "object" ? Object.values(user.phaseClearData) : [];
+  for (const data of persisted) {
+    const stageId = positiveInt(data && data.stageId);
+    const stage = stageId ? getGenericStageForRequest({ stageID: stageId }) : null;
+    if (stage && Number(stage.gameType || 0) === NGT_PHASE) stages.set(stageId, data);
+  }
+  for (const data of getMainStoryCompletedStageStates(user)) {
+    const stageId = positiveInt(data && data.stageId);
+    if (!stageId || stages.has(stageId)) continue;
+    const stage = getGenericStageForRequest({ stageID: stageId });
+    if (stage && Number(stage.gameType || 0) === NGT_PHASE) stages.set(stageId, data);
+  }
   const stagePlayData = user && user.stagePlayData && typeof user.stagePlayData === "object" ? Object.values(user.stagePlayData) : [];
   for (const data of stagePlayData) {
     const stageId = positiveInt(data && data.stageId);
@@ -9660,6 +11771,8 @@ function buildPhaseClearDataList(user) {
         buildPhaseClearData(stage.stageId, {
           missionResult1: stage.missionResult1 !== false,
           missionResult2: stage.missionResult2 !== false,
+          missionRewardResult: stage.missionRewardResult === true,
+          onetimeRewardResults: stage.onetimeRewardResults,
         })
       )
     );
@@ -9682,6 +11795,18 @@ function buildEpisodeCompleteEntries(user) {
     if (episodeCompleteData) entries.push([episodeCompleteKey(group.episodeId, group.difficulty), episodeCompleteData]);
   }
   return entries;
+}
+
+function buildRecallHistoryEntries(user) {
+  const history = user && user.recallHistory && typeof user.recallHistory === "object" ? user.recallHistory : {};
+  return Object.values(history)
+    .map((entry) => ({
+      unitId: Number(entry && entry.unitId || 0),
+      lastUpdateDate: toBigInt(entry && entry.lastUpdateDate || 0),
+    }))
+    .filter((entry) => Number.isInteger(entry.unitId) && entry.unitId > 0 && entry.lastUpdateDate > 0n)
+    .sort((left, right) => left.unitId - right.unitId)
+    .map((entry) => [entry.unitId, Buffer.concat([writeSignedVarInt(entry.unitId), writeInt64LE(entry.lastUpdateDate)])]);
 }
 
 function buildMinimalUserData(user, userUid, friendCode, nickname) {
@@ -9708,19 +11833,19 @@ function buildMinimalUserData(user, userUid, friendCode, nickname) {
     writeObjectMapInt(simulation.buildCounterCaseDataEntries(user)), // m_dicNKMCounterCaseData
     writeNullableObject(buildCraftData(user)), // m_CraftData
     writeObjectMapLong(buildEpisodeCompleteEntries(user)), // m_dicEpisodeCompleteData
-    writeNullableObject(buildPvpStateData()), // m_PvpData
+    writeNullableObject(pvpRank.buildPvpStateData(pvpRank.getPvpRankState(user))), // m_PvpData
     writeNullObject(), // m_SyncPvpHistory
-    writeNullObject(), // m_AsyncPvpHistory
+    writeNullableObject(asyncPvp.buildPvpHistoryListData(user)), // m_AsyncPvpHistory
     writeNullObject(), // m_EventPvpHistory
     activeDiveGameData ? writeNullableObject(activeDiveGameData) : writeNullObject(), // m_DiveGameData
     worldMap.buildDiveClearData(user, { now }), // m_DiveClearData
     worldMap.buildDiveHistoryData(user, { now }), // m_DiveHistoryData
     writeNullableObject(buildAttendanceData(user)), // m_AttendanceData
     writeSignedVarInt(0), // UserState
-    writeObjectList([]), // m_companyBuffDataList
+    buildCompanyBuffList(user, { nowTicks: dateTimeTicksNow() }), // m_companyBuffDataList
     writeNullableObject(buildShadowPalaceDataForUser(user)), // m_ShadowPalace
     writeNullableObject(buildBackgroundInfoData(user)), // backGroundInfo
-    writeNullObject(), // m_RecallHistoryData
+    writeObjectMapInt(buildRecallHistoryEntries(user)), // m_RecallHistoryData
     buildUserBirthDayData(user), // m_BirthDayData
     writeNullableObject(buildJukeboxData(user)), // m_JukeboxData
   ]);
@@ -9927,74 +12052,34 @@ function buildBackgroundInfoData(user) {
   return lobbyCustomization.buildBackgroundInfoData(user);
 }
 
-function buildTrimIntervalData() {
-  return Buffer.concat([writeSignedVarInt(0), writeSignedVarInt(0), writeSignedVarInt(0)]);
-}
-
 function buildSelectableContractStateData(user, ctx) {
   return buildSerializedSelectableContractStateData(getSelectableContractState(user));
 }
 
-function buildEventInfoData() {
-  return writeObjectList([]);
+function buildEventInfoData(user) {
+  return eventBingo.buildEventInfoData(user, { eventManager: runtimeEventManager });
 }
 
 function buildShortCutInfoData() {
   return Buffer.concat([writeSignedVarInt(0), writeSignedVarInt(0)]);
 }
 
-function buildPrivateGuildData() {
-  return Buffer.concat([
-    writeSignedVarLong(0n),
-    writeSignedVarInt(0),
-    writeInt64LE(0n),
-    writeInt64LE(0n),
-  ]);
+function buildEquipTuningCandidateData(user) {
+  const equip = getEquipItems(user).find((item) => item && item.tuningCandidate);
+  return buildSerializedEquipTuningCandidateData(equip && equip.tuningCandidate);
 }
 
-function buildGuildDungeonRewardInfoData() {
-  return Buffer.concat([
-    writeSignedVarInt(0),
-    writeObjectList([
-      writeNullableObject(buildGuildDungeonSeasonRewardData(0)),
-      writeNullableObject(buildGuildDungeonSeasonRewardData(1)),
-    ]),
-    writeBool(false),
-  ]);
+function buildPotentialOptionCandidateData(user) {
+  const equip = getEquipItems(user).find((item) => item && item.potentialCandidate);
+  return buildSerializedPotentialOptionCandidateData(equip && equip.potentialCandidate);
 }
 
-function buildGuildDungeonSeasonRewardData(category) {
-  return Buffer.concat([writeSignedVarInt(category), writeSignedVarInt(0), writeSignedVarInt(0)]);
+function buildShipModuleCandidateData(user) {
+  return buildSerializedShipModuleCandidateData(user && user.pendingShipModuleCandidate);
 }
 
-function buildEquipTuningCandidateData() {
-  return Buffer.concat([
-    writeSignedVarLong(0n),
-    writeSignedVarInt(0),
-    writeSignedVarInt(0),
-    writeSignedVarInt(0),
-  ]);
-}
-
-function buildPotentialOptionCandidateData() {
-  return Buffer.concat([
-    writeSignedVarLong(0n),
-    writeSignedVarInt(0),
-    writeSignedVarInt(0),
-    writeSignedVarInt(0),
-  ]);
-}
-
-function buildPvpCastingVoteData() {
-  return Buffer.concat([writeIntList([]), writeIntList([]), writeIntList([])]);
-}
-
-function buildShipModuleCandidateData() {
-  return Buffer.concat([writeSignedVarLong(0n), writeSignedVarInt(0), writeNullObject()]);
-}
-
-function buildEventCollectionInfoData() {
-  return Buffer.concat([writeSignedVarInt(0), writeIntList([])]);
+function buildEventCollectionInfoData(user) {
+  return eventCollection.buildEventCollectionInfoData(user, { eventManager: runtimeEventManager });
 }
 
 function buildUserProfileData(user, userUid, friendCode, nickname) {
@@ -10133,20 +12218,23 @@ function buildAsyncUnitEquipData() {
 
 function buildMinimalUserOption(user) {
   const controls = getSavedCombatControls(user);
+  const gameOptions = require("../packet-handlers/1636-game-option-change-req").getGameOptions(user);
+  const options = user && user.options && typeof user.options === "object" ? user.options : {};
+  const invitationOption = Number(user && user.pvp && user.pvp.invitationOption);
   return Buffer.concat([
     writeBool(controls.autoRespawnEnabled), // m_bAutoRespawn
-    writeSignedVarInt(1), // ActionCameraType.All
-    writeBool(true), // m_bTrackCamera
-    writeBool(true), // m_bViewSkillCutIn
+    writeSignedVarInt(gameOptions.actionCameraType),
+    writeBool(gameOptions.trackCamera),
+    writeBool(gameOptions.viewSkillCutIn),
     writeBool(false), // m_bAutoWarfare
     writeBool(true), // m_bAutoWarfareRepair
-    writeBool(false), // m_bPlayCutscene
-    writeBool(false), // m_bAutoDive
+    writeBool(Boolean(options.playCutscene)),
+    writeBool(Boolean(user && user.worldMap && user.worldMap.dive && user.worldMap.dive.isAuto)), // m_bAutoDive
     writeSignedVarInt(controls.gameSpeedType), // speed
     writeSignedVarInt(controls.autoSkillType), // auto skill off (NKM_GAME_AUTO_SKILL_TYPE.NGST_OFF_HYPER)
-    writeBool(true), // auto sync friend deck
-    writeSignedVarInt(0), // default pvp auto respawn
-    writeSignedVarInt(0), // private pvp invitation
+    writeBool(gameOptions.autoSyncFriendDeck),
+    writeSignedVarInt(gameOptions.defaultPvpAutoRespawn),
+    writeSignedVarInt(Number.isInteger(invitationOption) && invitationOption >= 0 && invitationOption <= 3 ? invitationOption : 0),
   ]);
 }
 
@@ -10155,7 +12243,7 @@ function buildMinimalShopData(user) {
   return Buffer.concat([
     writeObjectMapInt(buildShopPurchaseHistoryEntries(user)), // histories
     writeNullableObject(buildSerializedRandomShopData(user, { now })), // randomShop
-    writeObjectMapInt([]), // subscriptions
+    writeObjectMapInt(buildShopSubscriptionEntries(user)), // subscriptions
   ]);
 }
 
@@ -10176,15 +12264,17 @@ function buildMinimalMissionData(user) {
   const repairedTutorialMissions = CLEAR_ALL_MISSIONS_STATUS ? 0 : repairPostTutorialGuideMissionCompletions(user);
   if (repairedTutorialMissions > 0 && USE_LOCAL_USER_DB) saveUserDb();
   let missionEntries = [];
+  let refreshEntries = [];
   if (LOBBY_LOCAL_MISSION_DATA) {
     try {
+      refreshEntries = getRandomMissionRefreshEntries(user, getMissionClockOptions());
       missionEntries = buildSerializedMissionDataEntries(user, { ...getMissionClockOptions(), fastLobby: true });
     } catch (error) {
       console.log(`[mission] skipped lobby mission data: ${error && error.message ? error.message : error}`);
     }
   }
   return Buffer.concat([
-    writeObjectMapInt([]), // dicRefreshInfo
+    writeIntIntMap(refreshEntries), // dicRefreshInfo
     writeObjectMapInt(missionEntries), // dicMissions
     writeSignedVarLong(getAchievePoint(user)), // achievePoint
   ]);
@@ -10205,7 +12295,12 @@ function buildFastLobbyMissionDataEntries(user, options = {}) {
   for (const [groupId, mission] of buildPersistedLobbyMissionEntries(user)) {
     result.set(Number(groupId), [Number(groupId), mission]);
   }
-  const tabIds = uniqueMissionTabs([...FAST_LOBBY_MISSION_TABS, ...getActiveEventMissionTabIds(), ...PAYBACK_MISSION_TABS]);
+  const tabIds = uniqueMissionTabs([
+    ...FAST_LOBBY_MISSION_TABS,
+    ...getActiveEventMissionTabIds(),
+    ...PAYBACK_MISSION_TABS,
+    ...getRandomMissionTabIds(),
+  ]);
   for (const tabId of tabIds) {
     for (const [groupId, mission] of buildAccountMissionDataEntries(user, { ...options, fastLobby: false, tabId })) {
       result.set(Number(groupId), [Number(groupId), mission]);
@@ -10496,12 +12591,13 @@ function normalizeUserDb(db) {
   return db;
 }
 
-function saveUserDb() {
+function saveUserDb(options = {}) {
   fs.mkdirSync(path.dirname(USER_DB_PATH), { recursive: true });
   const tmpPath = `${USER_DB_PATH}.tmp`;
   fs.writeFileSync(tmpPath, `${JSON.stringify(userDb, jsonUserDbReplacer, 2)}\n`, "utf8");
   fs.renameSync(tmpPath, USER_DB_PATH);
   writeActiveUserSelection(ACTIVE_USER_PATH, userDb.activeUserUid);
+  if (options.affectsJoinLobby !== false) userDbRevision += 1;
 }
 
 function jsonUserDbReplacer(_key, value) {
@@ -10608,8 +12704,7 @@ function getOrCreateUserForGuest(loginReq) {
 }
 
 function getActiveUserForLogin() {
-  const activeUid = nonEmpty(userDb.activeUserUid);
-  return activeUid && userDb.users[activeUid] ? userDb.users[activeUid] : null;
+  return getActiveUser(userDb);
 }
 
 function findExistingUserUidForSteamLogin(loginReq, steamAccountId) {
@@ -10783,6 +12878,7 @@ function ensureUserDefaults(user) {
   ensureInventory(user);
   ensureLocalShopInventory(user);
   ensureArmy(user);
+  initializeInventoryCapacities(user);
   ensureDefaultShip(user);
   ensureDefaultLineup(user);
   ensureDefaultLineup(user, { deckType: 3, index: 0 });
@@ -10890,13 +12986,13 @@ function removeUserTokenIndexes(user) {
 }
 
 function findUserByAccessToken(token) {
-  const userUid = token ? userDb.accessTokens[token] : "";
-  return userUid && userDb.users[userUid] ? ensureUserDefaults(userDb.users[userUid]) : null;
+  const user = getActiveOrIndexedUser(userDb, "accessTokens", token);
+  return user ? ensureUserDefaults(user) : null;
 }
 
 function findUserByReconnectKey(reconnectKey) {
-  const userUid = reconnectKey ? userDb.reconnectKeys[reconnectKey] : "";
-  return userUid && userDb.users[userUid] ? ensureUserDefaults(userDb.users[userUid]) : null;
+  const user = getActiveOrIndexedUser(userDb, "reconnectKeys", reconnectKey);
+  return user ? ensureUserDefaults(user) : null;
 }
 
 function createEphemeralUser() {
@@ -11307,7 +13403,8 @@ function loadCapturedFlowMirror(flowDir) {
 
 function serveCapturedFlow(req, res, mirror) {
   const requestUrl = new URL(req.url || "/", MIRROR_PUBLIC_BASE_URL);
-  const entry = mirror.byPath.get(requestUrl.pathname);
+  const mirrorPath = stripRevivalSideApkPrefix(requestUrl.pathname);
+  const entry = mirror.byPath.get(mirrorPath);
   if (!entry) {
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
     res.end(`No captured response for ${requestUrl.pathname}\n`);
@@ -11318,7 +13415,7 @@ function serveCapturedFlow(req, res, mirror) {
   try {
     let body = fs.readFileSync(entry.bodyPath);
     const headers = responseHeaders(entry, body.length);
-    if (REWRITE_CAPTURED_SERVER_INFO && requestUrl.pathname.endsWith("/ServerInfo_V2.json")) {
+    if (serverInfoMode === "revivalside" && mirrorPath.endsWith("/ServerInfo_V2.json")) {
       body = rewriteServerInfo(body);
       headers["Content-Length"] = body.length;
     }
@@ -11355,8 +13452,21 @@ function rewriteServerInfo(body) {
       server.port = GAME_SERVER_PORT;
     }
   }
-  config.cdn = `${MIRROR_PUBLIC_BASE_URL}/patchfiles/`;
+  config.cdn = ANDROID_CLIENT_CDN_BASE_URL;
   return Buffer.from(JSON.stringify(config, null, 2), "utf8");
+}
+
+function stripRevivalSideApkPrefix(pathname) {
+  return pathname.startsWith("/revivalsideapk/") ? pathname.slice("/revivalsideapk".length) : pathname;
+}
+
+function ensureTrailingSlash(value) {
+  const text = String(value || "").trim();
+  return text.endsWith("/") ? text : `${text}/`;
+}
+
+function normalizeServerInfoMode(value) {
+  return String(value || "").trim().toLowerCase() === "official" ? "official" : "revivalside";
 }
 
 function parseTags(raw) {

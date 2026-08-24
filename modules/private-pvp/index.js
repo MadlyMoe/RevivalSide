@@ -26,8 +26,11 @@ const PACKETS = Object.freeze({
   CREATE_ACK: 4101,
   READY_ACK: 4103,
   INVITE_ACK: 4105,
+  INVITE_NOT: 4106,
   CANCEL_INVITE_ACK: 4108,
+  CANCEL_INVITE_NOT: 4109,
   ACCEPT_INVITE_ACK: 4111,
+  ACCEPT_INVITE_NOT: 4112,
   EXIT_ACK: 4114,
   CHANGE_ROLE_ACK: 4116,
   SYNC_DECK_INDEX_ACK: 4118,
@@ -48,10 +51,21 @@ const PACKETS = Object.freeze({
 const ERRORS = Object.freeze({
   OK: 0,
   INVALID_TARGET: 20762,
+  SENDER_ALREADY_MATCHING: 20747,
+  TARGET_ALREADY_MATCHING: 20748,
+  TARGET_NOT_FOUND: 20749,
+  WAITING_OTHER_INVITATION: 20761,
   NOT_IN_ROOM: 20770,
   NOT_JOINED: 20771,
   ROOM_FULL: 22308,
+  TARGET_NOT_CONNECTED: 21016,
+  INVALID_DECK_INDEX: 21017,
+  GAME_ALREADY_JOINED: 21018,
   CODE_NOT_FOUND: 27301,
+  STATE_NOT_SETTING_COMPLETE: 27307,
+  INVALID_READY_REQUEST: 27308,
+  INVALID_USER_DATA: 27309,
+  INVALID_STATE: 27310,
 });
 
 const LOBBY_MATCHING = 6;
@@ -63,6 +77,7 @@ const MAX_JOIN_BYTES = 2 * 1024 * 1024;
 function createPrivatePvpManager(options = {}) {
   const rooms = new Map();
   const tickets = new Map();
+  const invitations = new Map();
   const enabled = options.enabled !== false;
   const publicHost = String(options.publicHost || "127.0.0.1");
   const publicPort = Number(options.publicPort || 22000) || 22000;
@@ -91,7 +106,7 @@ function createPrivatePvpManager(options = {}) {
     const room = {
       code,
       config: normalizeConfig(request.config),
-      observerMode: false,
+      observerMode: Boolean(request.isObserverMode),
       state: LOBBY_MATCHING,
       members: [],
       replay: null,
@@ -184,6 +199,7 @@ function createPrivatePvpManager(options = {}) {
     const room = socket && socket.session && socket.session.privatePvpRoom;
     const member = socket && socket.session && socket.session.privatePvpMember;
     if (!room || !member) return false;
+    cancelInvitationsForUser(member.user && member.user.userUid, ctx, 7);
     room.members = room.members.filter((entry) => entry !== member);
     clearSocketRoom(socket);
     if (room.members.length === 0 || member.host) {
@@ -193,8 +209,8 @@ function createPrivatePvpManager(options = {}) {
             writeSignedVarLong(BigInt(member.user.userUid || 0)),
             writeSignedVarInt(7),
           ]), "private-pvp-host-left");
-          clearSocketRoom(other.socket);
         }
+        if (other.socket) clearSocketRoom(other.socket);
       }
       rooms.delete(room.code);
       for (const [token, ticket] of tickets) if (ticket.room === room) tickets.delete(token);
@@ -342,6 +358,84 @@ function createPrivatePvpManager(options = {}) {
     for (const member of room.members) if (member.socket) member.socket.session.gameReplay = replay;
   }
 
+  function createInvitation(room, sender, targetSocket, targetUser, ctx) {
+    purgeInvitations();
+    if (!room || !sender || !targetSocket || !targetUser) return { errorCode: ERRORS.TARGET_NOT_CONNECTED };
+    if (getRoom(targetSocket)) return { errorCode: ERRORS.TARGET_ALREADY_MATCHING };
+    if ([...invitations.values()].some((entry) => entry.senderUid === String(sender.user.userUid))) {
+      return { errorCode: ERRORS.SENDER_ALREADY_MATCHING };
+    }
+    if ([...invitations.values()].some((entry) => entry.targetUid === String(targetUser.userUid))) {
+      return { errorCode: ERRORS.WAITING_OTHER_INVITATION };
+    }
+    const key = invitationKey(sender.user.userUid, targetUser.userUid);
+    const invitation = {
+      key,
+      room,
+      sender,
+      senderUid: String(sender.user.userUid),
+      targetUser,
+      targetSocket,
+      targetUid: String(targetUser.userUid),
+      ctx,
+      expiresAt: Date.now() + 10000,
+      timer: null,
+    };
+    invitation.timer = setTimeout(() => expireInvitation(invitation, ctx), 10000);
+    if (typeof invitation.timer.unref === "function") invitation.timer.unref();
+    invitations.set(key, invitation);
+    return { errorCode: 0, invitation };
+  }
+
+  function getInvitation(senderUid, targetUid) {
+    purgeInvitations();
+    return invitations.get(invitationKey(senderUid, targetUid)) || null;
+  }
+
+  function removeInvitation(invitation) {
+    if (!invitation) return false;
+    invitations.delete(invitation.key);
+    if (invitation.timer) clearTimeout(invitation.timer);
+    invitation.timer = null;
+    return true;
+  }
+
+  function cancelInvitationsForUser(userUid, ctx, cancelType = 7) {
+    const value = String(userUid || "");
+    for (const invitation of [...invitations.values()]) {
+      if (invitation.senderUid !== value && invitation.targetUid !== value) continue;
+      removeInvitation(invitation);
+      notifyInvitationCancel(invitation, ctx, cancelType);
+    }
+  }
+
+  function purgeInvitations() {
+    const now = Date.now();
+    for (const invitation of [...invitations.values()]) {
+      if (invitation.expiresAt <= now) expireInvitation(invitation, invitation.ctx);
+    }
+  }
+
+  function expireInvitation(invitation, ctx) {
+    if (!invitations.has(invitation.key)) return;
+    removeInvitation(invitation);
+    notifyInvitationCancel(invitation, ctx, 6);
+  }
+
+  function notifyInvitationCancel(invitation, ctx, cancelType) {
+    if (!ctx || typeof ctx.sendServerGamePacket !== "function") return;
+    if (invitation.sender.socket && !invitation.sender.socket.destroyed) {
+      ctx.sendServerGamePacket(invitation.sender.socket, PACKETS.CANCEL_INVITE_NOT, Buffer.concat([
+        writeSignedVarLong(BigInt(invitation.targetUid)), writeSignedVarInt(cancelType),
+      ]), "private-pvp-invite-cancelled");
+    }
+    if (invitation.targetSocket && !invitation.targetSocket.destroyed) {
+      ctx.sendServerGamePacket(invitation.targetSocket, PACKETS.CANCEL_INVITE_NOT, Buffer.concat([
+        writeSignedVarLong(BigInt(invitation.senderUid)), writeSignedVarInt(cancelType),
+      ]), "private-pvp-invite-cancelled");
+    }
+  }
+
   function purgeTickets() {
     const now = Date.now();
     for (const [token, ticket] of tickets) if (ticket.expiresAt <= now) tickets.delete(token);
@@ -367,11 +461,16 @@ function createPrivatePvpManager(options = {}) {
     buildLobbyData,
     broadcastState,
     broadcast,
+    createInvitation,
+    getInvitation,
+    removeInvitation,
+    cancelInvitationsForUser,
     setReplay,
     normalizeCode,
     normalizeConfig,
     normalizeDeckIndex,
     rooms,
+    invitations,
     relayClient,
   };
 }
@@ -414,6 +513,10 @@ function clearSocketRoom(socket) {
 
 function normalizeCode(code) {
   return String(code || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 16);
+}
+
+function invitationKey(senderUid, targetUid) {
+  return `${String(senderUid || "0")}:${String(targetUid || "0")}`;
 }
 
 function projectUser(user) {
@@ -544,6 +647,7 @@ module.exports = {
   createPrivatePvpManager,
   createReader,
   projectUser,
+  remapGuestProjection,
   buildConfig,
   PACKETS,
   ERRORS,

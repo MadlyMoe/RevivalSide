@@ -113,6 +113,7 @@ if (options.ApplyGearInventoryStateRepair && PatchGearInventoryStateRepair(modul
 if (options.ApplyEpisodeProgressDifficultyFix && PatchEpisodeProgressDifficultyFix(module)) patches.Add("episode-progress-difficulty-fix");
 if (options.ApplyOperatorContractCategoryFix && PatchOperatorContractCategoryFix(module)) patches.Add("operator-contract-category-fix");
 if (options.ApplyFriendlyPvpUiFix && PatchFriendlyPvpUiFix(module)) patches.Add("friendly-pvp-ui-fix");
+if (PatchInventoryExpansionLimit(module)) patches.Add("inventory-expansion-int-max");
 if (options.ApplySteamLocalLogin && PatchSteamLocalLogin(module)) patches.Add("steam-local-login");
 if (options.ApplyFrozenOfficialUpdateBypass && PatchFrozenOfficialUpdateBypass(module, options.FrozenServerInfoUrl)) patches.Add("frozen-official-update-bypass");
 var changed = patches.Count > 0;
@@ -193,6 +194,7 @@ static int PrintStatus(string assemblyPath, string backupPath)
     Console.WriteLine($"[counter-pass-patch] episode-progress-difficulty-fix={HasEpisodeProgressDifficultyFix(module)}");
     Console.WriteLine($"[counter-pass-patch] operator-contract-category-fix={HasOperatorContractCategoryFix(module)}");
     Console.WriteLine($"[counter-pass-patch] friendly-pvp-ui-fix={HasFriendlyPvpUiFix(module)}");
+    Console.WriteLine($"[counter-pass-patch] inventory-expansion-int-max={HasInventoryExpansionLimitPatch(module)}");
     Console.WriteLine($"[counter-pass-patch] steam-local-login={HasSteamLocalLoginPatch(module)}");
     Console.WriteLine($"[counter-pass-patch] steam-standalone={HasSteamStandalonePatch(module)}");
     Console.WriteLine($"[counter-pass-patch] steam-runtime-isolated={HasSteamRuntimeIsolationPatch(module)}");
@@ -569,6 +571,44 @@ static bool PatchFriendlyPvpUiFix(ModuleDefinition module)
         return true;
     }
     throw new InvalidOperationException("NKCUIGauntletPrivateRoom.Open() room-code initialization was not found.");
+}
+
+static bool PatchInventoryExpansionLimit(ModuleDefinition module)
+{
+    var type = FindTypeDefinition(module, "NKM.NKMInventoryManager")
+        ?? throw new InvalidOperationException("NKMInventoryManager was not found.");
+    var method = type.Methods.FirstOrDefault(item =>
+        item.Name == "GetInventoryExpandData"
+        && item.HasBody
+        && item.Parameters.Count == 3)
+        ?? throw new InvalidOperationException("NKMInventoryManager.GetInventoryExpandData was not found.");
+    if (HasInventoryExpansionLimitPatch(module)) return false;
+
+    var originalLimits = new HashSet<int> { 2200, 1100, 60, 500, 2000 };
+    var patched = 0;
+    foreach (var instruction in method.Body.Instructions)
+    {
+        if (!originalLimits.Any(limit => IsLoadInt(instruction, limit))) continue;
+        instruction.OpCode = OpCodes.Ldc_I4;
+        instruction.Operand = int.MaxValue;
+        patched += 1;
+    }
+    if (patched != originalLimits.Count)
+    {
+        throw new InvalidOperationException($"Expected {originalLimits.Count} inventory limits but patched {patched}.");
+    }
+    return true;
+}
+
+static bool HasInventoryExpansionLimitPatch(ModuleDefinition module)
+{
+    var type = FindTypeDefinition(module, "NKM.NKMInventoryManager");
+    var method = type?.Methods.FirstOrDefault(item =>
+        item.Name == "GetInventoryExpandData"
+        && item.HasBody
+        && item.Parameters.Count == 3);
+    return method != null
+        && method.Body.Instructions.Count(instruction => IsLoadInt(instruction, int.MaxValue)) >= 5;
 }
 
 static bool HasFriendlyPvpUiFix(ModuleDefinition module)

@@ -1,0 +1,593 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script_unit_data_unit_templet",
+    "fileName": "NKM_UNIT_CHILLING_CHASER.json",
+    "tableName": "NKM_UNIT_CHILLING_CHASER",
+    "format": "json"
+  },
+  "compiled": {
+    "source": "revivalside-unit-maker",
+    "rootName": "NKMUnitTemplet",
+    "root": {
+      "m_fForceRespawnZposMin": 0.2,
+      "m_fForceRespawnZposMax": 0.5,
+      "m_fRespawnCoolTime": 1,
+      "m_UnitSizeX": 320,
+      "m_UnitSizeY": 320,
+      "m_SpriteOffset": 0,
+      "m_SpriteScale": 1,
+      "m_bShowGage": false,
+      "m_fGageScaleX": 300,
+      "m_fGageOffsetX": 20,
+      "m_fGageOffsetY": 400,
+      "m_NKC_TEAM_COLOR_TYPE": "NTCT_ONLY_SHADOW",
+      "m_fShadowScaleX": 1300,
+      "m_fShadowScaleY": 1000,
+      "m_bNoMove": false,
+      "m_SpeedRun": 150,
+      "m_SeeRange": 1500,
+      "m_SeeRangeMax": 1600,
+      "m_TargetNearRange": 1500,
+      "m_NKM_FIND_TARGET_TYPE": "NFTT_NEAR_ENEMY",
+      "m_bTargetNoChange": false,
+      "m_AttackedTargetTime": 0.1,
+      "m_bAttackedTarget": false,
+      "m_bNoDamageStopTime": true,
+      "m_bNoDamageState": true,
+      "m_fDamageUpFactor": 0,
+      "m_fDamageBackFactor": 0,
+      "m_bImmuneStun": true,
+      "m_bImmuneSilence": true,
+      "m_bUseMotionBlur": true,
+      "m_listStaticBuffData": [
+        {
+          "m_BuffStrID": "BUFF_MOB_BOSS_EVENT_ESPR2_NEPHILIM_PASSIVE"
+        }
+      ],
+      "m_listKillFeedBack": [
+        {
+          "m_BuffName": "BUFF_MOB_EVENT_ESPR2_NEPHILIM_ATK"
+        }
+      ],
+      "m_listAttackStateData": [
+        {
+          "m_NKM_ATTACK_STATE_DATA_TYPE": "NASDT_NORMAL",
+          "m_StateName": "USN_ATTACK1"
+        }
+      ],
+      "m_listSkillStateData": [
+        {
+          "m_NKM_ATTACK_STATE_DATA_TYPE": "NASDT_NORMAL",
+          "m_StateName": "USN_SKILL1",
+          "m_fStartCool": 0.5,
+          "m_bNoTarget": false
+        }
+      ],
+      "m_listHyperSkillStateData": [
+        {
+          "m_NKM_ATTACK_STATE_DATA_TYPE": "NASDT_NORMAL",
+          "m_StateName": "USN_HYPER1",
+          "m_fStartCool": 0.5,
+          "m_bNoTarget": false
+        }
+      ],
+      "m_dicNKMUnitState": [
+        {
+          "m_StateName": "USN_START",
+          "m_NKM_UNIT_STATE_TYPE": "NUST_START",
+          "m_AnimName": "START",
+          "m_bAnimLoop": false,
+          "m_fAnimSpeed": 0.8,
+          "m_AnimEndChangeState": "USN_RUN",
+          "m_listNKMEventCameraMove": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 0,
+              "m_fEventTimeMax": 0.6,
+              "m_bForce": true,
+              "m_fPosXOffset": 100,
+              "m_fPosYOffset": 200,
+              "m_fZoom": 0,
+              "m_fFocusBlur": 0.4,
+              "m_fMoveTrackingTime": 0.6,
+              "m_fZoomTrackingTime": 0.6,
+              "m_fCameraRadius": 0
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 0.6,
+              "m_fEventTimeMax": 1.2,
+              "m_bForce": true,
+              "m_fPosXOffset": -100,
+              "m_fPosYOffset": 0,
+              "m_fZoom": 0,
+              "m_fFocusBlur": 0.4,
+              "m_fMoveTrackingTime": 0.6,
+              "m_fZoomTrackingTime": 0.6,
+              "m_fCameraRadius": 0
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 1.2,
+              "m_fEventTimeMax": 2.5,
+              "m_bForce": true,
+              "m_fPosXOffset": 0,
+              "m_fPosYOffset": 200,
+              "m_fZoom": -150,
+              "m_fFocusBlur": 0.8,
+              "m_fMoveTrackingTime": 3.4,
+              "m_fZoomTrackingTime": 3.4,
+              "m_fCameraRadius": 0
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 2.5,
+              "m_fEventTimeMax": 3.8,
+              "m_bForce": true,
+              "m_fPosXOffset": 0,
+              "m_fPosYOffset": 0,
+              "m_fZoom": 0,
+              "m_fFocusBlur": 0.4,
+              "m_fMoveTrackingTime": 2.7,
+              "m_fZoomTrackingTime": 2.7,
+              "m_fCameraRadius": 0
+            }
+          ],
+          "m_listNKMEventCameraCrash": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 1.4333333333333333,
+              "m_CameraCrashType": "NCCT_UP_DOWN",
+              "m_fCameraCrashSpeed": -200,
+              "m_fCameraCrashAccel": 1000,
+              "m_fCameraCrashGap": 30,
+              "m_fCameraCrashTime": 0.5
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 2.1666666666666665,
+              "m_CameraCrashType": "NCCT_UP_DOWN",
+              "m_fCameraCrashSpeed": -200,
+              "m_fCameraCrashAccel": 1000,
+              "m_fCameraCrashGap": 40,
+              "m_fCameraCrashTime": 0.5
+            }
+          ],
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.6666666666666666,
+              "m_bStateEndTime": false,
+              "m_listSoundName": [
+                "FX_COMBAT_MONSTER_BEAST_VOICE_30"
+              ],
+              "m_b3D": false,
+              "m_bLoop": false,
+              "m_PlayRate": 1,
+              "m_bStopSound": false
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 1.3333333333333333,
+              "m_bStateEndTime": false,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_EARTHQUAKE"
+              ],
+              "m_b3D": false,
+              "m_bLoop": false,
+              "m_PlayRate": 1,
+              "m_bStopSound": false
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 1.5,
+              "m_bStateEndTime": false,
+              "m_listSoundName": [
+                "FX_COMBAT_MONSTER_NEPHILIM_START"
+              ],
+              "m_b3D": false,
+              "m_bLoop": false,
+              "m_PlayRate": 1,
+              "m_bStopSound": false
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 2.2333333333333334,
+              "m_bStateEndTime": false,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_EARTHQUAKE_02"
+              ],
+              "m_b3D": false,
+              "m_bLoop": false,
+              "m_PlayRate": 1,
+              "m_bStopSound": false
+            }
+          ]
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_MOVE",
+          "m_StateName": "USN_RUN",
+          "m_AnimName": "RUN",
+          "m_bAnimLoop": true,
+          "m_fAnimSpeed": 1,
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 1,
+              "m_bStateEndTime": false,
+              "m_listSoundName": [
+                "FX_COMBAT_MONSTER_MOVEMENT_12"
+              ],
+              "m_b3D": false,
+              "m_bLoop": false,
+              "m_PlayRate": 1,
+              "m_bStopSound": false
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 2,
+              "m_bStateEndTime": false,
+              "m_listSoundName": [
+                "FX_COMBAT_MONSTER_MOVEMENT_12"
+              ],
+              "m_b3D": false,
+              "m_bLoop": false,
+              "m_PlayRate": 1,
+              "m_bStopSound": false
+            }
+          ],
+          "m_bRun": true,
+          "m_AnimEndChangeState": "USN_ASTAND",
+          "m_DamagedChangeState": "USN_ASTAND"
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_ATTACK",
+          "m_StateName": "USN_ATTACK1",
+          "m_AnimName": "ATTACK1",
+          "m_SuperArmorLevel": "NSAL_SUPER",
+          "m_bAnimLoop": false,
+          "m_fAnimSpeed": 0.8,
+          "m_NKM_SKILL_TYPE": "NST_ATTACK",
+          "m_AnimEndChangeState": "USN_ASTAND",
+          "m_bForceLeft": true,
+          "m_listNKMEventDamageEffect": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_DEName": "DE_MOB_BOSS_EVENT_ESPR2_NEPHILIM_ATTACK",
+              "m_bTargetPos": true
+            }
+          ],
+          "m_listNKMEventCameraCrash": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.7,
+              "m_CameraCrashType": "NCCT_UP_DOWN",
+              "m_fCameraCrashSpeed": -300,
+              "m_fCameraCrashAccel": 1000,
+              "m_fCameraCrashGap": 10,
+              "m_fCameraCrashTime": 0.2
+            }
+          ],
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.3333333333333333,
+              "m_bStateEndTime": false,
+              "m_listSoundName": [
+                "FX_COMBAT_MONSTER_NEPHILIM_ATTACK"
+              ],
+              "m_b3D": false,
+              "m_bLoop": false,
+              "m_PlayRate": 1,
+              "m_bStopSound": false
+            }
+          ]
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_ATTACK",
+          "m_StateName": "USN_SKILL1",
+          "m_AnimName": "SKILL1",
+          "m_bAnimLoop": false,
+          "m_fAnimSpeed": 1,
+          "m_NKM_SKILL_TYPE": "NST_ATTACK",
+          "m_SuperArmorLevel": "NSAL_SUPER",
+          "m_bForceLeft": true,
+          "m_StateCoolTime": 12,
+          "m_AnimEndChangeState": "USN_ASTAND",
+          "m_listNKMEventAttack": {
+            "1": {
+              "m_bAnimTime": false,
+              "m_fEventTimeMin": 0.03333333333333333,
+              "m_fEventTimeMax": 0.3333333333333333,
+              "m_fRangeMin": -3000,
+              "m_fRangeMax": 3000,
+              "m_bHitLand": true,
+              "m_bHitAir": true,
+              "m_NKM_DAMAGE_TARGET_TYPE": "NDTT_ENEMY",
+              "m_AttackUnitCount": 99,
+              "m_AttackUnitCountOnly": true,
+              "m_DamageTempletName": "DT_MOB_BOSS_EVENT_ESPR2_NEPHILIM_HYPER1_DUMMY"
+            },
+            "2": {
+              "m_ConditionTarget": {
+                "m_IgnoreBuffStrID": "DEBUFF_MOB_EVENT_ESPR2_NEPHILIM_DUMMY"
+              },
+              "m_bAnimTime": false,
+              "m_fEventTimeMin": 0.7,
+              "m_fEventTimeMax": 0.8333333333333334,
+              "m_fRangeMin": 0,
+              "m_fRangeMax": 1500,
+              "m_bHitLand": true,
+              "m_bHitAir": true,
+              "m_NKM_DAMAGE_TARGET_TYPE": "NDTT_ENEMY",
+              "m_AttackUnitCount": 99,
+              "m_DamageTempletName": "DT_MOB_BOSS_EVENT_ESPR2_NEPHILIM_SKILL1"
+            },
+            "3": {
+              "m_ConditionTarget": {
+                "m_NeedBuffStrID": "DEBUFF_MOB_EVENT_ESPR2_NEPHILIM_DUMMY"
+              },
+              "m_bAnimTime": false,
+              "m_fEventTimeMin": 0.8666666666666667,
+              "m_fEventTimeMax": 0.9,
+              "m_fRangeMin": 0,
+              "m_fRangeMax": 1500,
+              "m_bHitLand": true,
+              "m_bHitAir": true,
+              "m_NKM_DAMAGE_TARGET_TYPE": "NDTT_ENEMY",
+              "m_AttackUnitCount": 99,
+              "m_DamageTempletName": "DT_MOB_BOSS_EVENT_ESPR2_NEPHILIM_SKILL1_ONLY_FROZEN"
+            },
+            "m_listNKMEventCameraCrash": [
+              {
+                "m_bAnimTime": true,
+                "m_fEventTime": 0.7,
+                "m_CameraCrashType": "NCCT_UP_DOWN",
+                "m_fCameraCrashSpeed": -300,
+                "m_fCameraCrashAccel": 1000,
+                "m_fCameraCrashGap": 10,
+                "m_fCameraCrashTime": 0.2
+              }
+            ]
+          },
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.16666666666666666,
+              "m_bStateEndTime": false,
+              "m_listSoundName": [
+                "FX_COMBAT_MONSTER_NEPHILIM_SKILL_ATTACK"
+              ],
+              "m_b3D": false,
+              "m_bLoop": false,
+              "m_PlayRate": 1,
+              "m_bStopSound": false
+            }
+          ]
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_ATTACK",
+          "m_StateName": "USN_HYPER1",
+          "m_AnimName": "HYPER_SKILL1",
+          "m_bAnimLoop": false,
+          "m_fAnimSpeed": 1,
+          "m_StateCoolTime": 22,
+          "m_NKM_FIND_TARGET_TYPE": "NFTT_NEAR_ENEMY",
+          "m_SuperArmorLevel": "NSAL_SUPER",
+          "m_bSkillCutIn": false,
+          "m_bForceLeft": true,
+          "m_AnimEndChangeState": "USN_SKILL1",
+          "m_listNKMEventMove": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 1.4666666666666666,
+              "m_OffsetX": 1400,
+              "m_MoveTime": 0.1,
+              "m_MoveTrackingType": "TDT_SLOWER",
+              "m_bLandMove": true,
+              "m_bOffsetDependMe": true,
+              "m_bUseMotionBlur": true
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 4.566666666666666,
+              "m_OffsetX": -1400,
+              "m_MoveTime": 0.06666666666666667,
+              "m_MoveTrackingType": "TDT_SLOWER",
+              "m_bLandMove": true,
+              "m_bOffsetDependMe": true,
+              "m_bUseMotionBlur": true
+            }
+          ],
+          "m_listNKMEventAttack": [
+            {
+              "m_bDamageSpeedDependRight": true,
+              "m_fEventTimeMin": 1,
+              "m_fEventTimeMax": 1.1666666666666667,
+              "m_fRangeMin": -3000,
+              "m_fRangeMax": 3000,
+              "m_AttackUnitCount": 99,
+              "m_AttackUnitCountOnly": true,
+              "m_bForceHit": true,
+              "m_bCleanHit": true,
+              "m_NKM_DAMAGE_TARGET_TYPE": "NDTT_ENEMY",
+              "m_DamageTempletName": "DT_MOB_BOSS_EVENT_ESPR2_NEPHILIM_HYPER1_DUMMY"
+            },
+            {
+              "m_bDamageSpeedDependRight": true,
+              "m_fEventTimeMin": 1.5,
+              "m_fEventTimeMax": 2,
+              "m_fRangeMin": -100,
+              "m_fRangeMax": 100,
+              "m_NKM_DAMAGE_TARGET_TYPE": "NDTT_ENEMY",
+              "m_AttackUnitCount": 99,
+              "m_AttackUnitCountOnly": true,
+              "m_bCleanHit": true,
+              "m_bForceHit": true,
+              "m_bHitBossUnit": false,
+              "m_DamageTempletName": "DT_MOB_BOSS_EVENT_ESPR2_NEPHILIM_HYPER1_RUSH"
+            },
+            {
+              "m_ConditionTarget": {
+                "m_IgnoreBuffStrID": "DEBUFF_MOB_EVENT_ESPR2_NEPHILIM_DUMMY"
+              },
+              "m_fEventTimeMin": 3.3333333333333335,
+              "m_fEventTimeMax": 4.333333333333333,
+              "m_fRangeMin": -500,
+              "m_fRangeMax": 500,
+              "m_AttackUnitCount": 4,
+              "m_AttackUnitCountOnly": true,
+              "m_NKM_DAMAGE_TARGET_TYPE": "NDTT_ENEMY",
+              "m_bCleanHit": true,
+              "m_bForceHit": true,
+              "m_bHitBossUnit": false,
+              "m_DamageTempletName": "DT_MOB_BOSS_EVENT_ESPR2_NEPHILIM_HYPER1_INSTANT_KILL"
+            },
+            {
+              "m_ConditionTarget": {
+                "m_NeedBuffStrID": "DEBUFF_MOB_EVENT_ESPR2_NEPHILIM_DUMMY"
+              },
+              "m_fEventTimeMin": 4.366666666666666,
+              "m_fEventTimeMax": 4.666666666666667,
+              "m_fRangeMin": -3000,
+              "m_fRangeMax": 3000,
+              "m_AttackUnitCount": 99,
+              "m_AttackUnitCountOnly": true,
+              "m_bForceHit": true,
+              "m_NKM_DAMAGE_TARGET_TYPE": "NDTT_ENEMY",
+              "m_DamageTempletName": "DT_MOB_BOSS_EVENT_ESPR2_NEPHILIM_HYPER1_HEAL"
+            }
+          ],
+          "m_listNKMEventCatchEnd": [
+            {
+              "m_fEventTime": 2
+            }
+          ],
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.6666666666666666,
+              "m_bStateEndTime": false,
+              "m_listSoundName": [
+                "FX_COMBAT_MONSTER_NEPHILIM_HYPER_ATTACK"
+              ],
+              "m_b3D": false,
+              "m_bLoop": false,
+              "m_PlayRate": 1,
+              "m_bStopSound": false
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 3.3333333333333335,
+              "m_bStateEndTime": false,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_IMPACT_ICE"
+              ],
+              "m_b3D": false,
+              "m_bLoop": false,
+              "m_PlayRate": 1,
+              "m_bStopSound": false
+            }
+          ]
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_DAMAGE",
+          "m_StateName": "USN_DAMAGE_AIR_UP",
+          "m_AnimName": "DAMAGE_A",
+          "m_bAnimLoop": false,
+          "m_SpeedY0NegativeChangeState": "USN_DAMAGE_AIR_DOWN"
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_DAMAGE",
+          "m_StateName": "USN_DAMAGE_AIR_DOWN",
+          "m_AnimName": "DAMAGE_A",
+          "m_bAnimLoop": false,
+          "m_SpeedYPositiveChangeState": "USN_DAMAGE_AIR_UP",
+          "m_FootOnLandChangeState": "USN_DAMAGE_LANDING"
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_DAMAGE",
+          "m_StateName": "USN_DAMAGE_LANDING",
+          "m_AnimName": "DAMAGE_DOWN",
+          "m_bAnimLoop": false,
+          "m_AnimEndDyingState": "USN_DAMAGE_DIE",
+          "m_AnimEndChangeState": "USN_DAMAGE_STAND",
+          "m_FootOffLandChangeState": "USN_DAMAGE_AIR_DOWN"
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_DAMAGE",
+          "m_StateName": "USN_DAMAGE_STAND",
+          "m_AnimName": "ASTAND",
+          "m_bAnimLoop": false,
+          "m_AnimEndChangeState": "USN_ASTAND",
+          "m_FootOffLandChangeState": "USN_DAMAGE_AIR_DOWN"
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_DAMAGE",
+          "m_StateName": "USN_DAMAGE_DOWN",
+          "m_AnimName": "DAMAGE_DOWN",
+          "m_bAnimLoop": false,
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_bStateEndTime": false,
+              "m_listSoundName": [
+                "FX_COMBAT_MONSTER_NEPHILIM_DAMAGE_DOWN"
+              ],
+              "m_b3D": true,
+              "m_bLoop": false,
+              "m_PlayRate": 1,
+              "m_bStopSound": false
+            }
+          ],
+          "m_listNKMEventGameSpeed": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.3333333333333333,
+              "m_fGameSpeed": 0,
+              "m_fTrackingTime": 3
+            }
+          ],
+          "m_AnimEndDyingState": "USN_DAMAGE_DIE",
+          "m_AnimEndChangeState": "USN_DAMAGE_STAND"
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_DAMAGE",
+          "m_StateName": "USN_DAMAGE_FEAR",
+          "m_AnimName": "ASTAND",
+          "m_bAnimLoop": true,
+          "m_StatusEffectType": "NUSE_FEAR",
+          "m_bRun": true,
+          "m_fRunSpeedRate": 0.5,
+          "m_FootOffLandChangeState": "USN_DAMAGE_AIR_DOWN"
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_DAMAGE",
+          "m_StateName": "USN_DAMAGE_FEAR_NOMOVE",
+          "m_AnimName": "ASTAND",
+          "m_bAnimLoop": true,
+          "m_StatusEffectType": "NUSE_FEAR",
+          "m_FootOffLandChangeState": "USN_DAMAGE_AIR_DOWN"
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_DIE",
+          "m_StateName": "USN_DAMAGE_DIE",
+          "m_AnimName": "DAMAGE_DIE",
+          "m_bAnimLoop": false,
+          "m_fAirHigh": 0,
+          "m_listNKMEventDissolve": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0,
+              "m_fDissolve": 0,
+              "m_fTrackTime": 2
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

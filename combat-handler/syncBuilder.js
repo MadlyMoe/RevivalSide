@@ -5,11 +5,11 @@
 // battle sync bodies directly.
 
 function buildRespawnAck(data = {}) {
-  return buildGameRespawnAckPayload(data.unitUID, data.assistUnit);
+  return buildGameRespawnAckPayload(data.unitUID, data.assistUnit, data.errorCode);
 }
 
-function buildGameRespawnAckPayload(unitUID, assistUnit) {
-  return Buffer.concat([writeSignedVarInt(0), writeSignedVarLong(BigInt(unitUID || 0)), writeBool(Boolean(assistUnit))]);
+function buildGameRespawnAckPayload(unitUID, assistUnit, errorCode = 0) {
+  return Buffer.concat([writeSignedVarInt(errorCode), writeSignedVarLong(BigInt(unitUID || 0)), writeBool(Boolean(assistUnit))]);
 }
 
 function buildGameEndNot(data = {}) {

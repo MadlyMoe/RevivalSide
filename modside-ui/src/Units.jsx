@@ -313,8 +313,10 @@ export function UnitApp() {
         await request(`mods/${encodeURIComponent(createdProject)}/asset-source?path=${encodeURIComponent(name)}`, { method: "POST", body: file, json: false, title: file.name });
         assets.push(name);
       }
-      const value = await request(`mods/${encodeURIComponent(createdProject)}/unity-build`, { method: "POST", body: { bundleName: bundleName.trim(), assets }, title: bundleName.trim() });
-      setOutput(`Built ${value.bundle?.name || bundleName.trim()}.`); setError("");
+      const spec = { bundleName: bundleName.trim(), assets };
+      await request(`mods/${encodeURIComponent(createdProject)}/unity-build`, { method: "POST", body: { ...spec, target: "windows" }, title: `${bundleName.trim()} (Windows)` });
+      await request(`mods/${encodeURIComponent(createdProject)}/unity-build`, { method: "POST", body: { ...spec, target: "android" }, title: `${bundleName.trim()} (Android)` });
+      setOutput(`Built Windows and Android ${bundleName.trim()} variants.`); setError("");
     } catch (value) { setError(value.message); }
   }
 
@@ -566,7 +568,7 @@ function AdvancedEditor({ form, update, unity, bundleName, setBundleName, setBun
       <details><summary>Raw table overrides</summary><div className="form-grid"><JsonInput label="Base record" value={form.advancedBase} onChange={(value) => update("advancedBase", value)} /><JsonInput label="Stat record" value={form.advancedStat} onChange={(value) => update("advancedStat", value)} /><JsonInput label="Collection record" value={form.advancedCollection} onChange={(value) => update("advancedCollection", value)} /><JsonInput label="Employee profile record" value={form.advancedProfile} onChange={(value) => update("advancedProfile", value)} /><JsonInput label="Skill records" value={form.advancedSkills} onChange={(value) => update("advancedSkills", value)} /><JsonInput label="Skin records" value={form.skinOverrides} onChange={(value) => update("skinOverrides", value)} /><JsonInput label="Additional voice replacements" value={form.voices} onChange={(value) => update("voices", value)} /></div></details>
     </MakerSection>
     <MakerSection icon={FiTool} title="Extra Unity AssetBundle" meta={unity?.message || "Checking Unity Editor"}>
-      <div className="bundle-row"><input value={bundleName} onChange={(event) => setBundleName(event.target.value)} placeholder="AssetBundle name" /><FileField label="Source assets" multiple onChange={setBundleFiles} /><Button icon={FiTool} type="button" onClick={buildBundle} disabled={!createdProject || !unity?.available}>Build Windows bundle</Button></div>
+      <div className="bundle-row"><input value={bundleName} onChange={(event) => setBundleName(event.target.value)} placeholder="AssetBundle name" /><FileField label="Source assets" multiple onChange={setBundleFiles} /><Button icon={FiTool} type="button" onClick={buildBundle} disabled={!createdProject || !unity?.available}>Build Windows + Android</Button></div>
     </MakerSection>
   </>;
 }

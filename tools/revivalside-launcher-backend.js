@@ -21,7 +21,7 @@ const MODSIDE_MINIMUM_FREE_BYTES = 32 * GIB;
 const FROZEN_CLIENT_PATCH_REQUIREMENTS = Object.freeze([
   'mod-runtime-loader=True',
   'mod-string-loader=True', 'mod-asset-bundle-loader=True', 'mod-episode-ui=True',
-  'friendly-pvp-ui-fix=True',
+  'friendly-pvp-ui-fix=True', 'inventory-expansion-int-max=True',
   'steam-local-login=True', 'steam-standalone=True', 'steam-runtime-isolated=True',
   'steam-interop-callsites=0', 'frozen-official-update-bypass=True',
   'frozen-patch-download-bypass=True', 'frozen-contents-version-isolation=False',
@@ -1363,11 +1363,16 @@ function writeServerTime(iso) {
 }
 
 async function postJson(url, value, timeoutMs = 3000) {
-  try {
-    await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value), signal: AbortSignal.timeout(timeoutMs) });
-  } catch (error) {
-    log(`Running listener update skipped: ${error.message}`, 'warn');
-  }
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(value),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(`Listener request failed: HTTP ${response.status} ${url}`);
+  if (!body || body.ok !== true) throw new Error((body && body.error) || `Listener returned an invalid response for ${url}`);
+  return body;
 }
 
 async function listCaptureInterfaces(dumpcap) {

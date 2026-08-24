@@ -2,12 +2,17 @@ const { readSignedVarInt } = require("../modules/packet-codec");
 
 const NSI_GAME = 3;
 const NSI_OPERATION = 9;
+const MAX_SCENE_ID = 45;
 
 module.exports = {
   packetId: 606,
   name: "UI_SCEN_CHANGED_REQ",
   handle(ctx, socket, packet) {
     const sceneId = readSceneId(ctx, packet);
+    if (sceneId == null) {
+      if (ctx.config.VERBOSE_CAPTURE_LOGS) console.log("[capture-game] malformed UI_SCEN_CHANGED_REQ ignored");
+      return true;
+    }
     if (ctx.config.VERBOSE_CAPTURE_LOGS) {
       console.log(`[capture-game] UI_SCEN_CHANGED_REQ observed scene=${sceneId}; official flow sends no direct ACK`);
     }
@@ -57,9 +62,12 @@ module.exports = {
 function readSceneId(ctx, packet) {
   try {
     const payload = packet && packet.payload ? ctx.decryptCopy(packet.payload) : Buffer.alloc(0);
-    if (payload.length === 0) return 0;
-    return readSignedVarInt(payload, 0).value;
+    const read = readSignedVarInt(payload, 0);
+    const sceneId = Number(read.value);
+    return read.offset === payload.length && Number.isInteger(sceneId) && sceneId >= 0 && sceneId <= MAX_SCENE_ID
+      ? sceneId
+      : null;
   } catch (_) {
-    return 0;
+    return null;
   }
 }

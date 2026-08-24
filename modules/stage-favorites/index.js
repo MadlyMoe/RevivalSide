@@ -1,8 +1,10 @@
+const path = require("path");
 const {
   writeVarInt,
   writeSignedVarInt,
   readSignedVarInt,
 } = require("../packet-codec");
+const { readGameplayTableRecords } = require("../gameplay-jsons");
 
 const PACKETS = Object.freeze({
   FAVORITES_STAGE_REQ: 1243,
@@ -17,6 +19,18 @@ const PACKETS = Object.freeze({
 
 const NKM_ERROR_CODE_OK = 0;
 const MAX_STAGE_FAVORITE_COUNT = 30;
+const FAVORITE_ERRORS = Object.freeze({
+  DUPLICATE: 23504,
+  COUNT_MAX: 23505,
+  COUNT_DIFFERENT: 23506,
+  INVALID_STAGE_ID: 23507,
+});
+const stageIds = new Set(
+  readGameplayTableRecords("ab_script", "LUA_STAGE_TEMPLET.json", {
+    rootDir: path.resolve(__dirname, "..", ".."),
+    logLabel: "stage-favorites",
+  }).map((row) => Number(row && row.m_StageID)).filter(Number.isSafeInteger)
+);
 
 function createStageFavoritesHandlers() {
   return [
@@ -36,8 +50,11 @@ function createStageFavoritesHandlers() {
       name: "FAVORITES_STAGE_ADD_REQ",
       handle(ctx, socket, packet) {
         const user = getSocketUser(ctx, socket);
-        const stageId = decodeStageIdReq(ctx, packet.payload, "FAVORITES_STAGE_ADD_REQ");
-        const result = addFavoriteStage(user, stageId);
+        const request = decodeStageIdReq(ctx, packet.payload, "FAVORITES_STAGE_ADD_REQ");
+        const stageId = request.valid ? request.stageId : 0;
+        const result = request.valid
+          ? addFavoriteStage(user, stageId)
+          : favoriteResult(user, FAVORITE_ERRORS.INVALID_STAGE_ID);
         const payload = buildFavoritesStageAckPayload(user, result.errorCode);
         console.log(
           `[stage-favorites:FAVORITES_STAGE_ADD_REQ] ACK packetId=${PACKETS.FAVORITES_STAGE_ADD_ACK} stageId=${stageId} count=${result.count} changed=${result.changed ? 1 : 0}`
@@ -52,8 +69,11 @@ function createStageFavoritesHandlers() {
       name: "FAVORITES_STAGE_DELETE_REQ",
       handle(ctx, socket, packet) {
         const user = getSocketUser(ctx, socket);
-        const stageId = decodeStageIdReq(ctx, packet.payload, "FAVORITES_STAGE_DELETE_REQ");
-        const result = deleteFavoriteStage(user, stageId);
+        const request = decodeStageIdReq(ctx, packet.payload, "FAVORITES_STAGE_DELETE_REQ");
+        const stageId = request.valid ? request.stageId : 0;
+        const result = request.valid
+          ? deleteFavoriteStage(user, stageId)
+          : favoriteResult(user, FAVORITE_ERRORS.INVALID_STAGE_ID);
         const payload = buildFavoritesStageAckPayload(user, result.errorCode);
         console.log(
           `[stage-favorites:FAVORITES_STAGE_DELETE_REQ] ACK packetId=${PACKETS.FAVORITE_STAGE_DELETE_ACK} stageId=${stageId} count=${result.count} changed=${result.changed ? 1 : 0}`
@@ -68,13 +88,13 @@ function createStageFavoritesHandlers() {
       name: "FAVORITES_STAGE_UPDATE_REQ",
       handle(ctx, socket, packet) {
         const user = getSocketUser(ctx, socket);
-        const entries = decodeFavoritesStageUpdateReq(ctx, packet.payload);
-        const result = entries
-          ? replaceFavoriteStages(user, entries)
-          : { changed: false, count: getStageFavoriteEntries(user).length, errorCode: NKM_ERROR_CODE_OK };
+        const request = decodeFavoritesStageUpdateReq(ctx, packet.payload);
+        const result = request.valid
+          ? replaceFavoriteStages(user, request.entries)
+          : favoriteResult(user, request.errorCode);
         const payload = buildFavoritesStageAckPayload(user, result.errorCode);
         console.log(
-          `[stage-favorites:FAVORITES_STAGE_UPDATE_REQ] ACK packetId=${PACKETS.FAVORITES_STAGE_UPDATE_ACK} requested=${entries ? entries.length : 0} count=${result.count} changed=${result.changed ? 1 : 0}`
+          `[stage-favorites:FAVORITES_STAGE_UPDATE_REQ] ACK packetId=${PACKETS.FAVORITES_STAGE_UPDATE_ACK} requested=${request.entries ? request.entries.length : 0} count=${result.count} changed=${result.changed ? 1 : 0}`
         );
         ctx.sendGameResponse(socket, packet, PACKETS.FAVORITES_STAGE_UPDATE_ACK, payload, "favorites-stage-update");
         if (result.changed) saveIfLocal(ctx);
@@ -104,11 +124,12 @@ function getStageFavoriteEntries(user) {
 function addFavoriteStage(user, stageId) {
   const normalizedStageId = positiveInt(stageId);
   const entries = getStageFavoriteEntries(user);
-  if (!normalizedStageId || entries.some(([, existingStageId]) => existingStageId === normalizedStageId)) {
-    return { changed: false, count: entries.length, errorCode: NKM_ERROR_CODE_OK };
+  if (!stageIds.has(normalizedStageId)) return favoriteResult(user, FAVORITE_ERRORS.INVALID_STAGE_ID);
+  if (entries.some(([, existingStageId]) => existingStageId === normalizedStageId)) {
+    return favoriteResult(user, FAVORITE_ERRORS.DUPLICATE);
   }
   if (entries.length >= MAX_STAGE_FAVORITE_COUNT) {
-    return { changed: false, count: entries.length, errorCode: NKM_ERROR_CODE_OK };
+    return favoriteResult(user, FAVORITE_ERRORS.COUNT_MAX);
   }
   const nextEntries = entries.concat([[entries.length, normalizedStageId]]);
   setStageFavoriteEntries(user, nextEntries);
@@ -118,6 +139,7 @@ function addFavoriteStage(user, stageId) {
 function deleteFavoriteStage(user, stageId) {
   const normalizedStageId = positiveInt(stageId);
   const entries = getStageFavoriteEntries(user);
+  if (!stageIds.has(normalizedStageId)) return favoriteResult(user, FAVORITE_ERRORS.INVALID_STAGE_ID);
   const nextEntries = entries.filter(([, existingStageId]) => existingStageId !== normalizedStageId);
   const changed = nextEntries.length !== entries.length;
   if (changed) setStageFavoriteEntries(user, nextEntries);
@@ -126,7 +148,9 @@ function deleteFavoriteStage(user, stageId) {
 
 function replaceFavoriteStages(user, entries) {
   const current = getStageFavoriteEntries(user);
-  const nextEntries = normalizeFavoriteEntries(entries);
+  const validationError = validateFavoriteEntries(entries);
+  if (validationError) return favoriteResult(user, validationError);
+  const nextEntries = entries.slice().sort((left, right) => left[0] - right[0]);
   const changed = !sameFavoriteEntries(current, nextEntries);
   if (changed) setStageFavoriteEntries(user, nextEntries);
   return { changed, count: nextEntries.length, errorCode: NKM_ERROR_CODE_OK };
@@ -150,10 +174,12 @@ function writeIntIntMap(entries) {
 function decodeStageIdReq(ctx, encryptedPayload, label) {
   try {
     const payload = decryptPayload(ctx, encryptedPayload);
-    return positiveInt(readSignedVarInt(payload, 0).value);
+    const read = readSignedVarInt(payload, 0);
+    const stageId = positiveInt(read.value);
+    return { valid: read.offset === payload.length && stageId > 0, stageId };
   } catch (err) {
     console.log(`[stage-favorites:${label}] request decode failed: ${err.message}`);
-    return 0;
+    return { valid: false, stageId: 0 };
   }
 }
 
@@ -163,20 +189,50 @@ function decodeFavoritesStageUpdateReq(ctx, encryptedPayload) {
     let offset = 0;
     const count = readUnsignedVarInt(payload, offset);
     offset = count.offset;
-    const limit = Math.min(Number(count.value || 0), MAX_STAGE_FAVORITE_COUNT * 4);
+    if (count.value > MAX_STAGE_FAVORITE_COUNT) {
+      return { valid: false, entries: [], errorCode: FAVORITE_ERRORS.COUNT_MAX };
+    }
     const entries = [];
-    for (let index = 0; index < limit && offset < payload.length; index += 1) {
+    for (let index = 0; index < count.value; index += 1) {
       const key = readSignedVarInt(payload, offset);
       offset = key.offset;
       const value = readSignedVarInt(payload, offset);
       offset = value.offset;
       entries.push([key.value, value.value]);
     }
-    return entries;
+    return offset === payload.length
+      ? { valid: true, entries, errorCode: NKM_ERROR_CODE_OK }
+      : { valid: false, entries: [], errorCode: FAVORITE_ERRORS.COUNT_DIFFERENT };
   } catch (err) {
     console.log(`[stage-favorites:FAVORITES_STAGE_UPDATE_REQ] request decode failed: ${err.message}`);
-    return null;
+    return { valid: false, entries: [], errorCode: FAVORITE_ERRORS.COUNT_DIFFERENT };
   }
+}
+
+function validateFavoriteEntries(entries) {
+  if (!Array.isArray(entries)) return FAVORITE_ERRORS.COUNT_DIFFERENT;
+  if (entries.length > MAX_STAGE_FAVORITE_COUNT) return FAVORITE_ERRORS.COUNT_MAX;
+  const keys = new Set();
+  const values = new Set();
+  for (const entry of entries) {
+    if (!Array.isArray(entry) || entry.length < 2 || !Number.isInteger(entry[0]) || entry[0] < 0) {
+      return FAVORITE_ERRORS.COUNT_DIFFERENT;
+    }
+    const stageId = positiveInt(entry[1]);
+    if (!stageIds.has(stageId)) return FAVORITE_ERRORS.INVALID_STAGE_ID;
+    if (keys.has(entry[0])) return FAVORITE_ERRORS.COUNT_DIFFERENT;
+    if (values.has(stageId)) return FAVORITE_ERRORS.DUPLICATE;
+    keys.add(entry[0]);
+    values.add(stageId);
+  }
+  for (let index = 0; index < entries.length; index += 1) {
+    if (!keys.has(index)) return FAVORITE_ERRORS.COUNT_DIFFERENT;
+  }
+  return NKM_ERROR_CODE_OK;
+}
+
+function favoriteResult(user, errorCode) {
+  return { changed: false, count: getStageFavoriteEntries(user).length, errorCode };
 }
 
 function decryptPayload(ctx, encryptedPayload) {
@@ -206,7 +262,7 @@ function normalizeFavoriteEntries(input) {
   const entries = [];
   raw
     .map(([slot, stageId]) => [nonNegativeInt(slot), positiveInt(stageId)])
-    .filter(([, stageId]) => stageId > 0)
+    .filter(([, stageId]) => stageIds.has(stageId))
     .sort((left, right) => left[0] - right[0])
     .forEach(([, stageId]) => {
       if (seenStages.has(stageId) || entries.length >= MAX_STAGE_FAVORITE_COUNT) return;
@@ -284,6 +340,7 @@ function nonNegativeInt(value) {
 module.exports = {
   PACKETS,
   MAX_STAGE_FAVORITE_COUNT,
+  FAVORITE_ERRORS,
   createStageFavoritesHandlers,
   ensureStageFavorites,
   getStageFavoriteEntries,

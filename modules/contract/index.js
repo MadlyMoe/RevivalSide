@@ -29,11 +29,13 @@ const {
   getCustomPickupContractRecords,
   getRandomGradeTable,
   getUnitTemplet,
+  getPieceTemplet,
   resolveUnitId,
 } = require("../game-data");
 const { grantUnit, grantOperator, grantUnitFromPiece, getPieceRequirement } = require("../unit");
 const { grantRewardByType, createEmptyReward, mergeReward } = require("../reward");
-const { spendMiscItem, toBigInt } = require("../inventory");
+const { getMiscItem, spendMiscItem, toBigInt } = require("../inventory");
+const { INVENTORY_TYPES, getInventoryCapacity, getInventoryUsage } = require("../inventory-capacity");
 const { addMissionTrackingCondition, completeMissionTracking, makeMissionTracking, queueMissionTracking } = require("../mission-tracking");
 const { dateFromDateTime, dateTimeBinaryForDate, utcDateKey } = require("../server-time");
 
@@ -72,6 +74,43 @@ const CONTRACT_COST_TYPE = Object.freeze({
 });
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CONTRACT_DAILY_RESET_HOUR_UTC = clampHour(process.env.CS_CONTRACT_DAILY_RESET_HOUR_UTC, 4);
+const PIECE_EXCHANGE_ERRORS = Object.freeze({
+  OK: 0,
+  ARMY_FULL: 112,
+  INVALID_ITEM_ID: 244,
+  INVALID_REQUEST: 20191,
+  ITEM_INSUFFICIENT_COUNT: 20332,
+});
+const CONTRACT_ERRORS = Object.freeze({
+  OK: 0,
+  INSUFFICIENT_RESOURCE: 110,
+  ARMY_FULL: 112,
+  OPERATOR_FULL: 115,
+  INVALID_CONTRACT_ID: 116,
+  INVALID_CONTRACT_COUNT: 118,
+  INVALID_ITEM_ID: 244,
+  CONTRACT_TEMPLET_NULL: 438,
+  INVALID_REQUEST: 20191,
+  CONTRACT_INVALID_REQUEST: 20385,
+  CONTRACT_CLOSED: 20387,
+  FREE_CHANCE_DISABLE: 20388,
+  FREE_CHANCE_NOT_EXIST: 20389,
+  SELECTABLE_POOL_CHANGE_COUNT_OVER: 20391,
+  SELECTABLE_POOL_IS_EMPTY: 20392,
+  CANNOT_USE_TICKET_WHEN_FREE_CHANCE_REMAINED: 20393,
+  CANNOT_USE_MONEY_WHEN_FREE_CHANCE_REMAINED: 20394,
+  CANNOT_USE_MONEY_WHEN_TICKET_REMAINED: 20395,
+  INVALID_COST_TYPE: 20404,
+  TOTAL_USE_COUNT_IS_OVER: 20419,
+  DAILY_USE_COUNT_IS_OVER: 20420,
+  REQUEST_COUNT_EXCEED_BONUS: 21021,
+  CUSTOM_PICKUP_NEED_TARGET: 24201,
+  CUSTOM_PICKUP_TEMPLET: 24202,
+  CUSTOM_PICKUP_INVALID_DATA: 24203,
+  CUSTOM_PICKUP_MAX_COUNT: 24205,
+  CUSTOM_PICKUP_ALREADY_SELECTED: 24206,
+  CUSTOM_PICKUP_INVALID_UNIT: 24207,
+});
 
 function createContractHandler(packetId, name) {
   return {
@@ -80,16 +119,34 @@ function createContractHandler(packetId, name) {
     handle(ctx, socket, packet) {
       ctx.socket = socket;
       const user = getSessionUser(ctx);
+      const snapshot = cloneUser(user);
       const request = decodeRequest(ctx, packetId, packet.payload);
-      const response = buildContractResponse(ctx, user, packetId, request);
+      let response;
+      try {
+        response = buildContractResponse(ctx, user, packetId, request);
+      } catch (error) {
+        restoreUser(user, snapshot);
+        console.log(`[contract:${name}] failed: ${error.message}`);
+        response = buildContractFailureResponse(packetId, request, CONTRACT_ERRORS.INVALID_REQUEST);
+      }
       if (!response) return false;
-      const missionTracking = trackContractMission(ctx, user, packetId, request);
+      const committed = response.persist === true;
+      if (!committed) restoreUser(user, snapshot);
+      const missionTracking = committed ? trackContractMission(ctx, user, packetId, request) : null;
+      if (committed) {
+        for (const spend of response.resourceSpends || []) trackResourceSpend(ctx, user, spend.itemId, spend.amount);
+      }
       console.log(`[contract:${name}] ACK packetId=${response.packetId} ${formatRequest(request)}`);
       ctx.sendResponse(socket, packet.sequence, response.packetId, () =>
         ctx.buildEncryptedPacket(packet.sequence, response.packetId, response.payload)
       );
       completeMissionTracking(ctx, socket, user, missionTracking, { label: "contract-mission-update" });
-      persistUserDb(ctx);
+      if (committed) {
+        if (response.invalidateLobby && typeof ctx.invalidateJoinLobbyAckPayloadCache === "function") {
+          ctx.invalidateJoinLobbyAckPayloadCache(response.invalidateLobby);
+        }
+        persistUserDb(ctx);
+      }
       return true;
     },
   };
@@ -138,37 +195,271 @@ function trackResourceSpend(ctx, user, itemId, amount) {
 function buildContractResponse(ctx, user, packetId, request) {
   switch (packetId) {
     case PACKETS.CONTRACT_STATE_LIST_REQ:
-      return { packetId: PACKETS.CONTRACT_STATE_LIST_ACK, payload: buildContractStateListAck(user, ctx) };
+      if (!request || request.valid !== true) return buildContractFailureResponse(packetId, request, CONTRACT_ERRORS.INVALID_REQUEST);
+      return { packetId: PACKETS.CONTRACT_STATE_LIST_ACK, payload: buildContractStateListAck(user, ctx), persist: false };
     case PACKETS.INSTANT_CONTRACT_LIST_REQ:
-      return { packetId: PACKETS.INSTANT_CONTRACT_LIST_ACK, payload: buildInstantContractListAck(user, ctx) };
+      if (!request || request.valid !== true) return buildContractFailureResponse(packetId, request, CONTRACT_ERRORS.INVALID_REQUEST);
+      return { packetId: PACKETS.INSTANT_CONTRACT_LIST_ACK, payload: buildInstantContractListAck(user, ctx), persist: false };
     case PACKETS.CONTRACT_REQ:
-      return { packetId: PACKETS.CONTRACT_ACK, payload: buildContractAck(ctx, user, request) };
+      return { packetId: PACKETS.CONTRACT_ACK, ...buildContractAck(ctx, user, request) };
     case PACKETS.CUSTOM_PICKUP_REQ:
-      return { packetId: PACKETS.CUSTOM_PICKUP_ACK, payload: buildCustomPickupAck(ctx, user, request) };
+      return { packetId: PACKETS.CUSTOM_PICKUP_ACK, ...buildCustomPickupAck(ctx, user, request) };
     case PACKETS.CUSTOM_PICUP_SELECT_TARGET_REQ:
-      return { packetId: PACKETS.CUSTOM_PICUP_SELECT_TARGET_ACK, payload: buildCustomPickupSelectTargetAck(user, request) };
+      return { packetId: PACKETS.CUSTOM_PICUP_SELECT_TARGET_ACK, ...buildCustomPickupSelectTargetAck(ctx, user, request) };
     case PACKETS.MISC_CONTRACT_OPEN_REQ:
-      return { packetId: PACKETS.MISC_CONTRACT_OPEN_ACK, payload: buildMiscContractOpenAck(ctx, user, request) };
+      return { packetId: PACKETS.MISC_CONTRACT_OPEN_ACK, ...buildMiscContractOpenAck(ctx, user, request) };
     case PACKETS.SELECTABLE_CONTRACT_CHANGE_POOL_REQ:
-      return { packetId: PACKETS.SELECTABLE_CONTRACT_CHANGE_POOL_ACK, payload: buildSelectableChangePoolAck(ctx, user, request) };
+      return { packetId: PACKETS.SELECTABLE_CONTRACT_CHANGE_POOL_ACK, ...buildSelectableChangePoolAck(ctx, user, request) };
     case PACKETS.SELECTABLE_CONTRACT_CONFIRM_REQ:
-      return { packetId: PACKETS.SELECTABLE_CONTRACT_CONFIRM_ACK, payload: buildSelectableConfirmAck(ctx, user, request) };
+      return { packetId: PACKETS.SELECTABLE_CONTRACT_CONFIRM_ACK, ...buildSelectableConfirmAck(ctx, user, request) };
     case PACKETS.EXCHANGE_PIECE_TO_UNIT_REQ:
-      return { packetId: PACKETS.EXCHANGE_PIECE_TO_UNIT_ACK, payload: buildPieceExchangeAck(ctx, user, request) };
+      return { packetId: PACKETS.EXCHANGE_PIECE_TO_UNIT_ACK, ...buildPieceExchangeResponse(ctx, user, request) };
     default:
       return null;
   }
 }
 
+function buildContractFailureResponse(packetId, request, errorCode) {
+  const responsePacketId = {
+    [PACKETS.CONTRACT_REQ]: PACKETS.CONTRACT_ACK,
+    [PACKETS.SELECTABLE_CONTRACT_CHANGE_POOL_REQ]: PACKETS.SELECTABLE_CONTRACT_CHANGE_POOL_ACK,
+    [PACKETS.SELECTABLE_CONTRACT_CONFIRM_REQ]: PACKETS.SELECTABLE_CONTRACT_CONFIRM_ACK,
+    [PACKETS.CONTRACT_STATE_LIST_REQ]: PACKETS.CONTRACT_STATE_LIST_ACK,
+    [PACKETS.MISC_CONTRACT_OPEN_REQ]: PACKETS.MISC_CONTRACT_OPEN_ACK,
+    [PACKETS.INSTANT_CONTRACT_LIST_REQ]: PACKETS.INSTANT_CONTRACT_LIST_ACK,
+    [PACKETS.CUSTOM_PICKUP_REQ]: PACKETS.CUSTOM_PICKUP_ACK,
+    [PACKETS.CUSTOM_PICUP_SELECT_TARGET_REQ]: PACKETS.CUSTOM_PICUP_SELECT_TARGET_ACK,
+    [PACKETS.EXCHANGE_PIECE_TO_UNIT_REQ]: PACKETS.EXCHANGE_PIECE_TO_UNIT_ACK,
+  }[packetId];
+  if (!responsePacketId) return null;
+  if (packetId === PACKETS.EXCHANGE_PIECE_TO_UNIT_REQ) {
+    return { packetId: responsePacketId, ...pieceExchangeFailure(errorCode) };
+  }
+  return { packetId: responsePacketId, ...contractFailurePayload(packetId, request, errorCode) };
+}
+
+function contractFailurePayload(packetId, request, errorCode) {
+  const contractId = Number(request && request.contractId) || 0;
+  const customPickupId = Number(request && request.customPickupId) || 0;
+  const count = Number(request && request.count) || 0;
+  const costType = Number(request && request.costType) || 0;
+  let payload;
+  switch (packetId) {
+    case PACKETS.CONTRACT_REQ:
+      payload = Buffer.concat([
+        writeSignedVarInt(errorCode),
+        writeSignedVarInt(costType),
+        writeNullableObjectList([]),
+        writeNullableObjectList([]),
+        writeNullableObjectList([]),
+        writeNullObject(),
+        writeNullObject(),
+        writeNullObject(),
+        writeSignedVarInt(contractId),
+        writeSignedVarInt(count),
+      ]);
+      break;
+    case PACKETS.SELECTABLE_CONTRACT_CHANGE_POOL_REQ:
+      payload = Buffer.concat([writeSignedVarInt(errorCode), writeNullObject()]);
+      break;
+    case PACKETS.SELECTABLE_CONTRACT_CONFIRM_REQ:
+      payload = Buffer.concat([
+        writeSignedVarInt(errorCode),
+        writeSignedVarInt(contractId),
+        writeNullableObjectList([]),
+        writeNullableObjectList([]),
+        writeNullObject(),
+      ]);
+      break;
+    case PACKETS.CONTRACT_STATE_LIST_REQ:
+      payload = Buffer.concat([writeSignedVarInt(errorCode), writeNullableObjectList([])]);
+      break;
+    case PACKETS.MISC_CONTRACT_OPEN_REQ:
+      payload = Buffer.concat([writeSignedVarInt(errorCode), writeNullableObjectList([]), writeNullableObjectList([])]);
+      break;
+    case PACKETS.INSTANT_CONTRACT_LIST_REQ:
+      payload = Buffer.concat([
+        writeSignedVarInt(errorCode),
+        writeNullableObjectList([]),
+        writeSignedVarInt(0),
+        writeNullObject(),
+      ]);
+      break;
+    case PACKETS.CUSTOM_PICKUP_REQ:
+      payload = Buffer.concat([
+        writeSignedVarInt(errorCode),
+        writeSignedVarInt(costType),
+        writeNullableObjectList([]),
+        writeNullableObjectList([]),
+        writeNullableObjectList([]),
+        writeNullObject(),
+        writeNullObject(),
+        writeSignedVarInt(customPickupId),
+        writeSignedVarInt(count),
+        writeNullObject(),
+      ]);
+      break;
+    case PACKETS.CUSTOM_PICUP_SELECT_TARGET_REQ:
+      payload = Buffer.concat([writeSignedVarInt(errorCode), writeNullObject(), writeNullObject()]);
+      break;
+    default:
+      payload = writeSignedVarInt(errorCode);
+      break;
+  }
+  return { payload, persist: false };
+}
+
+function validateContractPull(ctx, user, request) {
+  if (!request || request.valid !== true) return { errorCode: CONTRACT_ERRORS.INVALID_REQUEST };
+  const contractId = Number(request.contractId);
+  const count = Number(request.count);
+  const costType = Number(request.costType);
+  if (!Number.isInteger(contractId) || contractId <= 0) return { errorCode: CONTRACT_ERRORS.INVALID_CONTRACT_ID };
+  if (!Number.isInteger(count) || count <= 0 || count > 10) return { errorCode: CONTRACT_ERRORS.INVALID_CONTRACT_COUNT };
+  const record = resolveContractRecord(contractId);
+  if (!getContractRecord(contractId) || !record) return { errorCode: CONTRACT_ERRORS.INVALID_CONTRACT_ID };
+  if (isRetiredContractRecord(record, contractId) || !isContractRecordActiveForClock(record, getActiveContractClockState(ctx), "contract")) {
+    return { errorCode: CONTRACT_ERRORS.CONTRACT_CLOSED };
+  }
+  const includeOperators = String(record.m_NKM_UNIT_TYPE || "") === "NUT_OPERATOR";
+  if (!getContractPoolUnitEntries(contractId, { includeOperators }).length) {
+    return { errorCode: CONTRACT_ERRORS.CONTRACT_TEMPLET_NULL };
+  }
+  const state = getContractState(user, contractId, ctx);
+  const limitsError = validateContractLimits(user, record, state, count);
+  if (limitsError !== CONTRACT_ERRORS.OK) return { errorCode: limitsError };
+  const costResult = validateContractCost(user, record, state, count, costType);
+  if (costResult.errorCode !== CONTRACT_ERRORS.OK) return costResult;
+  const inventoryType = includeOperators ? INVENTORY_TYPES.OPERATOR : INVENTORY_TYPES.UNIT;
+  const capacityError = includeOperators ? CONTRACT_ERRORS.OPERATOR_FULL : CONTRACT_ERRORS.ARMY_FULL;
+  if (!hasInventoryCapacity(user, inventoryType, count)) return { errorCode: capacityError };
+  return { errorCode: CONTRACT_ERRORS.OK, contractId, count, costType, record, state, cost: costResult.cost };
+}
+
+function validateCustomPickupPull(ctx, user, request) {
+  if (!request || request.valid !== true) return { errorCode: CONTRACT_ERRORS.INVALID_REQUEST };
+  const customPickupId = Number(request.customPickupId);
+  const count = Number(request.count);
+  const costType = Number(request.costType);
+  if (!Number.isInteger(customPickupId) || customPickupId <= 0) return { errorCode: CONTRACT_ERRORS.CUSTOM_PICKUP_TEMPLET };
+  if (!Number.isInteger(count) || count <= 0 || count > 10) return { errorCode: CONTRACT_ERRORS.INVALID_CONTRACT_COUNT };
+  const record = getCustomPickupContractRecords().find((entry) => Number(entry.customPickupId) === customPickupId);
+  if (!record || !isMainCustomPickupRecord(record)) return { errorCode: CONTRACT_ERRORS.CUSTOM_PICKUP_TEMPLET };
+  if (!isContractRecordActiveForClock(record, getActiveContractClockState(ctx), "custom")) {
+    return { errorCode: CONTRACT_ERRORS.CONTRACT_CLOSED };
+  }
+  const includeOperators = String(record.m_ContractType || "") === "OPERATOR";
+  if (!getContractPoolUnitEntries(record.m_UnitPoolID, { includeOperators }).length) {
+    return { errorCode: CONTRACT_ERRORS.CUSTOM_PICKUP_INVALID_DATA };
+  }
+  const customState = getCustomPickupContractState(user, customPickupId);
+  if (!isValidCustomPickupTarget(record, customState.customPickupTargetUnitId, { includeOperators })) {
+    return { errorCode: CONTRACT_ERRORS.CUSTOM_PICKUP_NEED_TARGET };
+  }
+  const bonusState = getContractBonusState(user, record);
+  const limitError = validateBonusBoundary(record, bonusState, count);
+  if (limitError !== CONTRACT_ERRORS.OK) return { errorCode: limitError };
+  const costResult = validateContractCost(user, record, null, count, costType);
+  if (costResult.errorCode !== CONTRACT_ERRORS.OK) return costResult;
+  const inventoryType = includeOperators ? INVENTORY_TYPES.OPERATOR : INVENTORY_TYPES.UNIT;
+  const capacityError = includeOperators ? CONTRACT_ERRORS.OPERATOR_FULL : CONTRACT_ERRORS.ARMY_FULL;
+  if (!hasInventoryCapacity(user, inventoryType, count)) return { errorCode: capacityError };
+  return { errorCode: CONTRACT_ERRORS.OK, customPickupId, count, costType, record, customState, cost: costResult.cost };
+}
+
+function validateContractLimits(user, record, state, count) {
+  const totalLimit = getContractTotalLimit(record);
+  if (totalLimit > 0 && Number(state.totalUseCount || 0) + count > totalLimit) return CONTRACT_ERRORS.TOTAL_USE_COUNT_IS_OVER;
+  const dailyLimit = getContractDailyLimit(record);
+  if (dailyLimit > 0 && Number(state.dailyUseCount || 0) + count > dailyLimit) return CONTRACT_ERRORS.DAILY_USE_COUNT_IS_OVER;
+  return getBonusThreshold(record) > 0
+    ? validateBonusBoundary(record, getContractBonusState(user, record), count)
+    : CONTRACT_ERRORS.OK;
+}
+
+function validateBonusBoundary(record, bonusState, count) {
+  const threshold = getBonusThreshold(record);
+  if (!threshold) return CONTRACT_ERRORS.OK;
+  const useCount = Math.max(0, Number(bonusState && bonusState.useCount || 0));
+  return useCount > 0 && useCount + count > threshold ? CONTRACT_ERRORS.REQUEST_COUNT_EXCEED_BONUS : CONTRACT_ERRORS.OK;
+}
+
+function validateContractCost(user, record, state, count, costType) {
+  if (![CONTRACT_COST_TYPE.FREE_CHANCE, CONTRACT_COST_TYPE.TICKET, CONTRACT_COST_TYPE.MONEY].includes(costType)) {
+    return { errorCode: CONTRACT_ERRORS.INVALID_COST_TYPE };
+  }
+  if (costType === CONTRACT_COST_TYPE.FREE_CHANCE) {
+    if (getContractFreeTryCount(record) <= 0) return { errorCode: CONTRACT_ERRORS.FREE_CHANCE_DISABLE };
+    if (!state || Number(state.remainFreeChance || 0) < count) return { errorCode: CONTRACT_ERRORS.FREE_CHANCE_NOT_EXIST };
+    return { errorCode: CONTRACT_ERRORS.OK, cost: null };
+  }
+  if (state && Number(state.remainFreeChance || 0) > 0) {
+    return {
+      errorCode: costType === CONTRACT_COST_TYPE.TICKET
+        ? CONTRACT_ERRORS.CANNOT_USE_TICKET_WHEN_FREE_CHANCE_REMAINED
+        : CONTRACT_ERRORS.CANNOT_USE_MONEY_WHEN_FREE_CHANCE_REMAINED,
+    };
+  }
+  const slot = getCostSlot(costType);
+  const cost = getTryCost(record, slot, count);
+  if (!cost) return { errorCode: CONTRACT_ERRORS.INVALID_COST_TYPE };
+  if (costType === CONTRACT_COST_TYPE.MONEY) {
+    const ticketCost = getTryCost(record, getCostSlot(CONTRACT_COST_TYPE.TICKET), count);
+    if (ticketCost && hasBalance(user, ticketCost.itemId, ticketCost.amount)) {
+      return { errorCode: CONTRACT_ERRORS.CANNOT_USE_MONEY_WHEN_TICKET_REMAINED };
+    }
+  }
+  if (!hasBalance(user, cost.itemId, cost.amount)) return { errorCode: CONTRACT_ERRORS.INSUFFICIENT_RESOURCE };
+  return { errorCode: CONTRACT_ERRORS.OK, cost };
+}
+
+function validateMiscContractOpen(user, request) {
+  if (!request || request.valid !== true) return { errorCode: CONTRACT_ERRORS.INVALID_REQUEST };
+  const sourceItemId = Number(request.miscItemId);
+  const count = Number(request.count);
+  if (!Number.isInteger(sourceItemId) || sourceItemId <= 0) return { errorCode: CONTRACT_ERRORS.INVALID_ITEM_ID };
+  if (!Number.isInteger(count) || count <= 0) return { errorCode: CONTRACT_ERRORS.INVALID_CONTRACT_COUNT };
+  const item = getMiscItemTemplet(sourceItemId);
+  if (!item || String(item.m_ItemMiscType || "") !== "IMT_CONTRACT") return { errorCode: CONTRACT_ERRORS.INVALID_ITEM_ID };
+  const contractId = Number(item.m_typeValue || 0);
+  const record = getMiscContractRecord(contractId);
+  if (!record || !getContractPoolUnitEntries(record.m_UnitPoolID).length) {
+    return { errorCode: CONTRACT_ERRORS.CONTRACT_TEMPLET_NULL };
+  }
+  if (!hasBalance(user, sourceItemId, BigInt(count))) return { errorCode: CONTRACT_ERRORS.INSUFFICIENT_RESOURCE };
+  const unitCount = count * Math.max(1, Number(record.m_UnitCount || 1));
+  if (!hasInventoryCapacity(user, INVENTORY_TYPES.UNIT, unitCount)) return { errorCode: CONTRACT_ERRORS.ARMY_FULL };
+  return { errorCode: CONTRACT_ERRORS.OK, sourceItemId, count, contractId, record };
+}
+
+function hasBalance(user, itemId, amount) {
+  if (!Number(itemId) || toBigInt(amount, 0n) <= 0n) return true;
+  const item = getMiscItem(user, Number(itemId));
+  return toBigInt(item && item.countFree) + toBigInt(item && item.countPaid) >= toBigInt(amount);
+}
+
+function hasInventoryCapacity(user, type, count) {
+  return getInventoryUsage(user, type) + Math.max(0, Number(count) || 0) <= getInventoryCapacity(user, type);
+}
+
+function hasSelectablePool(config) {
+  const slots = getSelectableContractPoolSlotEntries(config.poolId);
+  return slots.length === SELECTABLE_CONTRACT_SLOT_COUNT && slots.every((slot, index) => slot.slotNumber === index + 1 && slot.entries.length > 0);
+}
+
 function buildContractAck(ctx, user, request) {
-  const contractId = resolveContractId(request.contractId);
-  const count = Math.max(1, Number(request.count || 1));
+  const validation = validateContractPull(ctx, user, request);
+  if (validation.errorCode !== CONTRACT_ERRORS.OK) {
+    return contractFailurePayload(PACKETS.CONTRACT_REQ, request, validation.errorCode);
+  }
+  const { contractId, count, record, cost } = validation;
   const costItems = spendContractCost(ctx, user, contractId, count, request.costType);
   const reward = rollContract(ctx, user, contractId, count, { fromContract: true });
   applyContractRewards(ctx, user, contractId, count, reward, { costType: request.costType });
 
-  return Buffer.concat([
-    writeSignedVarInt(0),
+  return {
+    payload: Buffer.concat([
+    writeSignedVarInt(CONTRACT_ERRORS.OK),
     writeSignedVarInt(Number(request.costType || 0)),
     writeNullableObjectList(costItems.map(buildItemMiscData)),
     writeNullableObjectList(reward.units.map(buildUnitData)),
@@ -178,13 +469,19 @@ function buildContractAck(ctx, user, request) {
     writeNullableObject(buildContractBonusStateData(getContractBonusState(user, contractId))),
     writeSignedVarInt(contractId),
     writeSignedVarInt(count),
-  ]);
+    ]),
+    persist: true,
+    invalidateLobby: "contract",
+    resourceSpends: cost ? [cost] : [],
+  };
 }
 
 function buildCustomPickupAck(ctx, user, request) {
-  const customPickupId = Number(request.customPickupId || 0);
-  const count = Math.max(1, Number(request.count || 1));
-  const pickup = getCustomPickupContractRecords().find((record) => Number(record.customPickupId) === customPickupId) || {};
+  const validation = validateCustomPickupPull(ctx, user, request);
+  if (validation.errorCode !== CONTRACT_ERRORS.OK) {
+    return contractFailurePayload(PACKETS.CUSTOM_PICKUP_REQ, request, validation.errorCode);
+  }
+  const { customPickupId, count, record: pickup, cost } = validation;
   const customState = getCustomPickupContractState(user, customPickupId);
   const poolId = pickup.m_UnitPoolID || customPickupId;
   const costItems = spendCostFromRecord(ctx, user, pickup, count, request.costType);
@@ -210,8 +507,9 @@ function buildCustomPickupAck(ctx, user, request) {
   }
   applyRecordResultRewards(ctx, user, pickup, count, reward);
   customState.totalUseCount = getContractBonusState(user, pickup).useCount;
-  return Buffer.concat([
-    writeSignedVarInt(0),
+  return {
+    payload: Buffer.concat([
+    writeSignedVarInt(CONTRACT_ERRORS.OK),
     writeSignedVarInt(Number(request.costType || 0)),
     writeNullableObjectList(costItems.map(buildItemMiscData)),
     writeNullableObjectList(reward.units.map(buildUnitData)),
@@ -221,50 +519,77 @@ function buildCustomPickupAck(ctx, user, request) {
     writeSignedVarInt(customPickupId),
     writeSignedVarInt(count),
     writeNullableObject(buildContractBonusStateData(getContractBonusState(user, pickup))),
-  ]);
+    ]),
+    persist: true,
+    invalidateLobby: "custom-pickup",
+    resourceSpends: cost ? [cost] : [],
+  };
 }
 
-function buildCustomPickupSelectTargetAck(user, request) {
+function buildCustomPickupSelectTargetAck(ctx, user, request) {
+  if (!request || request.valid !== true) {
+    return contractFailurePayload(PACKETS.CUSTOM_PICUP_SELECT_TARGET_REQ, request, CONTRACT_ERRORS.INVALID_REQUEST);
+  }
   const customPickupId = Number(request.customPickupId || 0);
   const targetUnitId = Number(request.targetUnitId || 0);
-  const pickup = getCustomPickupContractRecords().find((record) => Number(record.customPickupId) === customPickupId) || {};
-  const state = getCustomPickupContractState(user, customPickupId);
-  const resolvedTargetId = normalizeCustomPickupTarget(pickup, targetUnitId, {
-    includeOperators: String(pickup.m_ContractType || "") === "OPERATOR",
-  });
-  if (resolvedTargetId > 0) {
-    const previousTargetId = Number(state.customPickupTargetUnitId || 0);
-    const maxSelectCount = getCustomPickupMaxSelectCount(pickup);
-    if (resolvedTargetId !== previousTargetId && (!maxSelectCount || state.currentSelectCount < maxSelectCount)) {
-      state.customPickupTargetUnitId = resolvedTargetId;
-      state.currentSelectCount += 1;
-    }
+  const pickup = getCustomPickupContractRecords().find((record) => Number(record.customPickupId) === customPickupId);
+  if (!pickup) return contractFailurePayload(PACKETS.CUSTOM_PICUP_SELECT_TARGET_REQ, request, CONTRACT_ERRORS.CUSTOM_PICKUP_TEMPLET);
+  if (!isContractRecordActiveForClock(pickup, getActiveContractClockState(ctx), "custom")) {
+    return contractFailurePayload(PACKETS.CUSTOM_PICUP_SELECT_TARGET_REQ, request, CONTRACT_ERRORS.CONTRACT_CLOSED);
   }
+  const includeOperators = String(pickup.m_ContractType || "") === "OPERATOR";
+  if (!isValidCustomPickupTarget(pickup, targetUnitId, { includeOperators })) {
+    return contractFailurePayload(PACKETS.CUSTOM_PICUP_SELECT_TARGET_REQ, request, CONTRACT_ERRORS.CUSTOM_PICKUP_INVALID_UNIT);
+  }
+  const state = getCustomPickupContractState(user, customPickupId);
+  const previousTargetId = Number(state.customPickupTargetUnitId || 0);
+  if (targetUnitId === previousTargetId) {
+    return contractFailurePayload(PACKETS.CUSTOM_PICUP_SELECT_TARGET_REQ, request, CONTRACT_ERRORS.CUSTOM_PICKUP_ALREADY_SELECTED);
+  }
+  const maxSelectCount = getCustomPickupMaxSelectCount(pickup);
+  if (maxSelectCount > 0 && state.currentSelectCount >= maxSelectCount) {
+    return contractFailurePayload(PACKETS.CUSTOM_PICUP_SELECT_TARGET_REQ, request, CONTRACT_ERRORS.CUSTOM_PICKUP_MAX_COUNT);
+  }
+  state.customPickupTargetUnitId = targetUnitId;
+  state.currentSelectCount += 1;
   if (String(pickup.m_ContractType || "") !== "AWAKEN") {
     const bonus = getContractBonusState(user, pickup);
     bonus.useCount = 0;
   }
   state.totalUseCount = getContractBonusState(user, pickup).useCount;
-  return Buffer.concat([
-    writeSignedVarInt(0),
+  return {
+    payload: Buffer.concat([
+    writeSignedVarInt(CONTRACT_ERRORS.OK),
     writeNullableObject(buildCustomPickupContractData(state)),
     writeNullableObject(buildContractBonusStateData(getContractBonusState(user, pickup))),
-  ]);
+    ]),
+    persist: true,
+    invalidateLobby: "custom-pickup-target",
+  };
 }
 
 function buildMiscContractOpenAck(ctx, user, request) {
-  const count = Math.max(1, Number(request.count || 1));
-  const sourceItemId = Number(request.miscItemId || 0);
-  const costItem = sourceItemId > 0 ? spendMiscItem(user, sourceItemId, count, { regDate: now(ctx) }) : null;
-  if (costItem) trackResourceSpend(ctx, user, sourceItemId, count);
-  const contractId = resolveMiscContractId(sourceItemId);
-  const result = openMiscContract(ctx, user, contractId, { count, sourceMiscItemId: sourceItemId }).result;
+  const validation = validateMiscContractOpen(user, request);
+  if (validation.errorCode !== CONTRACT_ERRORS.OK) {
+    return contractFailurePayload(PACKETS.MISC_CONTRACT_OPEN_REQ, request, validation.errorCode);
+  }
+  const { count, sourceItemId, contractId, record } = validation;
+  const costItem = spendMiscItem(user, sourceItemId, count, { regDate: now(ctx) });
+  const result = openMiscContract(ctx, user, contractId, {
+    count: count * Math.max(1, Number(record.m_UnitCount || 1)),
+    sourceMiscItemId: sourceItemId,
+  }).result;
 
-  return Buffer.concat([
-    writeSignedVarInt(0),
+  return {
+    payload: Buffer.concat([
+    writeSignedVarInt(CONTRACT_ERRORS.OK),
     writeNullableObjectList(costItem ? [buildItemMiscData(costItem)] : []),
     writeNullableObjectList(result.map(buildMiscContractResultData)),
-  ]);
+    ]),
+    persist: true,
+    invalidateLobby: "misc-contract",
+    resourceSpends: [{ itemId: sourceItemId, amount: count }],
+  };
 }
 
 function openMiscContract(ctx, user, contractId, options = {}) {
@@ -290,55 +615,125 @@ function openMiscContract(ctx, user, contractId, options = {}) {
 }
 
 function buildSelectableChangePoolAck(ctx, user, request) {
-  const contractId = resolveSelectableContractId(request.contractId);
-  const state = changeSelectableContractPool(user, contractId);
-  return Buffer.concat([
-    writeSignedVarInt(0),
-    writeNullableObject(buildSelectableContractStateData(state)),
-  ]);
+  if (!request || request.valid !== true) {
+    return contractFailurePayload(PACKETS.SELECTABLE_CONTRACT_CHANGE_POOL_REQ, request, CONTRACT_ERRORS.INVALID_REQUEST);
+  }
+  const contractId = Number(request.contractId);
+  const record = getSelectableContractRecord(contractId);
+  if (!record) return contractFailurePayload(PACKETS.SELECTABLE_CONTRACT_CHANGE_POOL_REQ, request, CONTRACT_ERRORS.INVALID_CONTRACT_ID);
+  const state = getSelectableContractState(user, contractId);
+  const config = getSelectableContractConfig(contractId);
+  if (state.isActive === false) return contractFailurePayload(PACKETS.SELECTABLE_CONTRACT_CHANGE_POOL_REQ, request, CONTRACT_ERRORS.CONTRACT_CLOSED);
+  if (config.maxChangeCount > 0 && state.unitPoolChangeCount >= config.maxChangeCount) {
+    return contractFailurePayload(PACKETS.SELECTABLE_CONTRACT_CHANGE_POOL_REQ, request, CONTRACT_ERRORS.SELECTABLE_POOL_CHANGE_COUNT_OVER);
+  }
+  if (!hasSelectablePool(config)) {
+    return contractFailurePayload(PACKETS.SELECTABLE_CONTRACT_CHANGE_POOL_REQ, request, CONTRACT_ERRORS.SELECTABLE_POOL_IS_EMPTY);
+  }
+  const changedState = changeSelectableContractPool(user, contractId);
+  return {
+    payload: Buffer.concat([
+      writeSignedVarInt(CONTRACT_ERRORS.OK),
+      writeNullableObject(buildSelectableContractStateData(changedState)),
+    ]),
+    persist: true,
+    invalidateLobby: "selectable-contract-pool",
+  };
 }
 
 function buildSelectableConfirmAck(ctx, user, request) {
-  const contractId = resolveSelectableContractId(request.contractId);
-  const state = getSelectableContractState(user, contractId);
-  let costItems = [];
-  let units = [];
-  if (state.isActive !== false) {
-    if (state.unitIdList.length < SELECTABLE_CONTRACT_SLOT_COUNT) {
-      changeSelectableContractPool(user, contractId);
-    }
-    costItems = spendSelectableContractCost(ctx, user, contractId);
-    const unitIds = getSelectableContractState(user, contractId).unitIdList.slice(0, SELECTABLE_CONTRACT_SLOT_COUNT);
-    units = unitIds
-      .map((unitId) => grantUnit(user, unitId, { fromContract: true, regDate: now(ctx) }))
-      .filter(Boolean);
-    const contractState = getContractState(user, contractId, ctx);
-    contractState.totalUseCount += units.length > 0 ? 1 : 0;
-    contractState.dailyUseCount += units.length > 0 ? 1 : 0;
+  if (!request || request.valid !== true) {
+    return contractFailurePayload(PACKETS.SELECTABLE_CONTRACT_CONFIRM_REQ, request, CONTRACT_ERRORS.INVALID_REQUEST);
   }
+  const contractId = Number(request.contractId);
+  const record = getSelectableContractRecord(contractId);
+  if (!record) return contractFailurePayload(PACKETS.SELECTABLE_CONTRACT_CONFIRM_REQ, request, CONTRACT_ERRORS.INVALID_CONTRACT_ID);
+  const state = getSelectableContractState(user, contractId);
+  if (state.isActive === false) return contractFailurePayload(PACKETS.SELECTABLE_CONTRACT_CONFIRM_REQ, request, CONTRACT_ERRORS.CONTRACT_CLOSED);
+  if (state.unitIdList.length !== SELECTABLE_CONTRACT_SLOT_COUNT) {
+    return contractFailurePayload(PACKETS.SELECTABLE_CONTRACT_CONFIRM_REQ, request, CONTRACT_ERRORS.SELECTABLE_POOL_IS_EMPTY);
+  }
+  if (!hasInventoryCapacity(user, INVENTORY_TYPES.UNIT, SELECTABLE_CONTRACT_SLOT_COUNT)) {
+    return contractFailurePayload(PACKETS.SELECTABLE_CONTRACT_CONFIRM_REQ, request, CONTRACT_ERRORS.ARMY_FULL);
+  }
+  const config = getSelectableContractConfig(contractId);
+  if (!hasBalance(user, config.requireItemId, config.requireItemCount)) {
+    return contractFailurePayload(PACKETS.SELECTABLE_CONTRACT_CONFIRM_REQ, request, CONTRACT_ERRORS.INSUFFICIENT_RESOURCE);
+  }
+  const costItems = spendSelectableContractCost(ctx, user, contractId);
+  const unitIds = state.unitIdList.slice(0, SELECTABLE_CONTRACT_SLOT_COUNT);
+  const units = unitIds.map((unitId) => grantUnit(user, unitId, { fromContract: true, regDate: now(ctx) })).filter(Boolean);
+  if (units.length !== SELECTABLE_CONTRACT_SLOT_COUNT) throw new Error("selectable contract grant failed");
+  const contractState = getContractState(user, contractId, ctx);
+  contractState.totalUseCount += 1;
+  contractState.dailyUseCount += 1;
   const finalState = closeSelectableContractState(user, contractId);
-  return Buffer.concat([
-    writeSignedVarInt(0),
+  return {
+    payload: Buffer.concat([
+    writeSignedVarInt(CONTRACT_ERRORS.OK),
     writeSignedVarInt(contractId),
     writeNullableObjectList(costItems.map(buildItemMiscData)),
     writeNullableObjectList(units.map(buildUnitData)),
     writeNullableObject(buildSelectableContractStateData(finalState)),
-  ]);
+    ]),
+    persist: true,
+    invalidateLobby: "selectable-contract-confirm",
+    resourceSpends: config.requireItemId && config.requireItemCount > 0n
+      ? [{ itemId: config.requireItemId, amount: config.requireItemCount }]
+      : [],
+  };
 }
 
-function buildPieceExchangeAck(ctx, user, request) {
-  const itemId = Number(request.itemId || 0);
-  const count = Math.max(1, Number(request.count || 1));
-  const alreadyOwned = false;
-  const spendCount = getPieceRequirement(itemId, alreadyOwned) * count;
-  const costItem = itemId > 0 ? spendMiscItem(user, itemId, spendCount, { regDate: now(ctx) }) : null;
-  if (costItem) trackResourceSpend(ctx, user, itemId, spendCount);
+function buildPieceExchangeResponse(ctx, user, request) {
+  const itemId = Number(request && request.itemId);
+  const count = Number(request && request.count);
+  if (!request || request.valid !== true || !Number.isInteger(count) || count <= 0) {
+    return pieceExchangeFailure(PIECE_EXCHANGE_ERRORS.INVALID_REQUEST);
+  }
+
+  const piece = getPieceTemplet(itemId);
+  const unitId = Number(piece && piece.m_PieceGetUnitID);
+  if (!Number.isInteger(itemId) || itemId <= 0 || !piece || !getUnitTemplet(unitId)) {
+    return pieceExchangeFailure(PIECE_EXCHANGE_ERRORS.INVALID_ITEM_ID);
+  }
+
+  const capacity = getInventoryCapacity(user, INVENTORY_TYPES.UNIT);
+  const usage = getInventoryUsage(user, INVENTORY_TYPES.UNIT);
+  if (count > capacity - usage) return pieceExchangeFailure(PIECE_EXCHANGE_ERRORS.ARMY_FULL);
+
+  const collectedUnits = user && user.collection && Array.isArray(user.collection.units) ? user.collection.units : [];
+  const alreadyOwned = collectedUnits.some((candidate) => Number(candidate) === unitId);
+  const firstRequirement = BigInt(getPieceRequirement(itemId, false));
+  const repeatRequirement = BigInt(getPieceRequirement(itemId, true));
+  const spendCount = repeatRequirement * BigInt(count) + (alreadyOwned ? 0n : firstRequirement - repeatRequirement);
+  const balance = getMiscItem(user, itemId);
+  if (toBigInt(balance && balance.countFree) + toBigInt(balance && balance.countPaid) < spendCount) {
+    return pieceExchangeFailure(PIECE_EXCHANGE_ERRORS.ITEM_INSUFFICIENT_COUNT);
+  }
+
+  const costItem = spendMiscItem(user, itemId, spendCount, { regDate: now(ctx) });
   const units = grantUnitFromPiece(user, itemId, count, { regDate: now(ctx), fromContract: false });
-  return Buffer.concat([
-    writeSignedVarInt(0),
-    writeNullableObjectList(units.map(buildUnitData)),
-    costItem ? writeNullableObject(buildItemMiscData(costItem)) : writeNullObject(),
-  ]);
+  return {
+    payload: Buffer.concat([
+      writeSignedVarInt(PIECE_EXCHANGE_ERRORS.OK),
+      writeNullableObjectList(units.map(buildUnitData)),
+      writeNullableObject(buildItemMiscData(costItem)),
+    ]),
+    persist: true,
+    invalidateLobby: "piece-exchange",
+    resourceSpends: [{ itemId, amount: spendCount }],
+  };
+}
+
+function pieceExchangeFailure(errorCode) {
+  return {
+    payload: Buffer.concat([
+      writeSignedVarInt(errorCode),
+      writeNullableObjectList([]),
+      writeNullObject(),
+    ]),
+    persist: false,
+  };
 }
 
 function buildContractStateListAck(user, ctx) {
@@ -1136,7 +1531,6 @@ function spendCostFromRecord(ctx, user, record, count, costType) {
 
   const updated = spendMiscItem(user, cost.itemId, cost.amount, { regDate: now(ctx) });
   if (!updated) return [];
-  trackResourceSpend(ctx, user, cost.itemId, cost.amount);
   return [updated];
 }
 
@@ -1198,12 +1592,11 @@ function getCustomPickupContractState(user, customPickupId) {
   ensureContractStateStore(user);
   const record = getCustomPickupContractRecords().find((entry) => Number(entry.customPickupId) === Number(customPickupId)) || {};
   const includeOperators = String(record.m_ContractType || "") === "OPERATOR";
-  const defaultTarget = normalizeCustomPickupTarget(record, 0, { includeOperators });
   if (!user) {
     return {
       customPickupId: Number(customPickupId) || 0,
       totalUseCount: 0,
-      customPickupTargetUnitId: defaultTarget,
+      customPickupTargetUnitId: 0,
       currentSelectCount: 0,
     };
   }
@@ -1214,9 +1607,9 @@ function getCustomPickupContractState(user, customPickupId) {
   const state = {
     customPickupId: Number(customPickupId) || 0,
     totalUseCount: Number(existing.totalUseCount || 0),
-    customPickupTargetUnitId: normalizeCustomPickupTarget(record, existing.customPickupTargetUnitId || defaultTarget, {
-      includeOperators,
-    }),
+    customPickupTargetUnitId: isValidCustomPickupTarget(record, existing.customPickupTargetUnitId, { includeOperators })
+      ? Number(existing.customPickupTargetUnitId)
+      : 0,
     currentSelectCount: maxSelectCount > 0 ? Math.min(currentSelectCount, maxSelectCount) : currentSelectCount,
   };
   user.customPickupContracts[key] = state;
@@ -1284,6 +1677,13 @@ function normalizeCustomPickupTarget(record, targetUnitId, options = {}) {
   if (requested > 0 && entries.some((entry) => Number(entry.unitId) === requested)) return requested;
   if (requested > 0 && isValidCustomPickupFallbackTarget(record, requested, options)) return requested;
   return Number(entries[0] && entries[0].unitId) || 0;
+}
+
+function isValidCustomPickupTarget(record, targetUnitId, options = {}) {
+  const requested = Number(targetUnitId || 0);
+  if (!Number.isInteger(requested) || requested <= 0) return false;
+  const entries = getContractPoolUnitEntries(record && record.m_UnitPoolID, options).filter((entry) => entry.pickupTarget);
+  return entries.some((entry) => Number(entry.unitId) === requested) || isValidCustomPickupFallbackTarget(record, requested, options);
 }
 
 function isValidCustomPickupFallbackTarget(record, unitId, options = {}) {
@@ -1403,7 +1803,6 @@ function spendSelectableContractCost(ctx, user, requestedContractId = 0) {
   if (!config.requireItemId || config.requireItemCount <= 0n) return [];
   const updated = spendMiscItem(user, config.requireItemId, config.requireItemCount, { regDate: now(ctx) });
   if (!updated) return [];
-  trackResourceSpend(ctx, user, config.requireItemId, config.requireItemCount);
   return [updated];
 }
 
@@ -1436,7 +1835,7 @@ function decodeRequest(ctx, packetId, encryptedPayload) {
   try {
     payload = ctx.decryptCopy(encryptedPayload);
   } catch (_) {
-    payload = Buffer.alloc(0);
+    return { valid: false };
   }
   let offset = 0;
   try {
@@ -1445,26 +1844,68 @@ function decodeRequest(ctx, packetId, encryptedPayload) {
       offset = read.offset;
       return read.value;
     };
+    let request;
     switch (packetId) {
       case PACKETS.CONTRACT_REQ:
-        return { contractId: nextInt(), count: nextInt(), costType: nextInt() };
+        request = { contractId: nextInt(), count: nextInt(), costType: nextInt() };
+        break;
       case PACKETS.CUSTOM_PICKUP_REQ:
-        return { customPickupId: nextInt(), count: nextInt(), costType: nextInt() };
+        request = { customPickupId: nextInt(), count: nextInt(), costType: nextInt() };
+        break;
       case PACKETS.CUSTOM_PICUP_SELECT_TARGET_REQ:
-        return { customPickupId: nextInt(), targetUnitId: nextInt() };
+        request = { customPickupId: nextInt(), targetUnitId: nextInt() };
+        break;
       case PACKETS.SELECTABLE_CONTRACT_CHANGE_POOL_REQ:
       case PACKETS.SELECTABLE_CONTRACT_CONFIRM_REQ:
-        return { contractId: nextInt() };
+        request = { contractId: nextInt() };
+        break;
       case PACKETS.MISC_CONTRACT_OPEN_REQ:
-        return { miscItemId: nextInt(), count: nextInt() };
+        request = { miscItemId: nextInt(), count: nextInt() };
+        break;
       case PACKETS.EXCHANGE_PIECE_TO_UNIT_REQ:
-        return { itemId: nextInt(), count: nextInt() };
+        request = { itemId: nextInt(), count: nextInt() };
+        break;
+      case PACKETS.CONTRACT_STATE_LIST_REQ:
+      case PACKETS.INSTANT_CONTRACT_LIST_REQ:
+        request = {};
+        break;
       default:
-        return {};
+        request = {};
+        break;
     }
+    const canonical = encodeRequestPayload(packetId, request);
+    return { ...request, valid: offset === payload.length && canonical.equals(payload) };
   } catch (err) {
     console.log(`[contract] request decode failed packetId=${packetId}: ${err.message}`);
-    return {};
+    return { valid: false };
+  }
+}
+
+function encodeRequestPayload(packetId, request) {
+  switch (packetId) {
+    case PACKETS.CONTRACT_REQ:
+      return Buffer.concat([
+        writeSignedVarInt(request.contractId),
+        writeSignedVarInt(request.count),
+        writeSignedVarInt(request.costType),
+      ]);
+    case PACKETS.CUSTOM_PICKUP_REQ:
+      return Buffer.concat([
+        writeSignedVarInt(request.customPickupId),
+        writeSignedVarInt(request.count),
+        writeSignedVarInt(request.costType),
+      ]);
+    case PACKETS.CUSTOM_PICUP_SELECT_TARGET_REQ:
+      return Buffer.concat([writeSignedVarInt(request.customPickupId), writeSignedVarInt(request.targetUnitId)]);
+    case PACKETS.SELECTABLE_CONTRACT_CHANGE_POOL_REQ:
+    case PACKETS.SELECTABLE_CONTRACT_CONFIRM_REQ:
+      return writeSignedVarInt(request.contractId);
+    case PACKETS.MISC_CONTRACT_OPEN_REQ:
+      return Buffer.concat([writeSignedVarInt(request.miscItemId), writeSignedVarInt(request.count)]);
+    case PACKETS.EXCHANGE_PIECE_TO_UNIT_REQ:
+      return Buffer.concat([writeSignedVarInt(request.itemId), writeSignedVarInt(request.count)]);
+    default:
+      return Buffer.alloc(0);
   }
 }
 
@@ -1488,6 +1929,17 @@ function persistUserDb(ctx) {
   if (ctx && (!ctx.config || ctx.config.USE_LOCAL_USER_DB) && typeof ctx.saveUserDb === "function") ctx.saveUserDb();
 }
 
+function cloneUser(user) {
+  if (!user || typeof user !== "object") return null;
+  return typeof structuredClone === "function" ? structuredClone(user) : JSON.parse(JSON.stringify(user));
+}
+
+function restoreUser(user, snapshot) {
+  if (!user || !snapshot || typeof user !== "object") return;
+  for (const key of Object.keys(user)) delete user[key];
+  Object.assign(user, snapshot);
+}
+
 function now(ctx) {
   return ctx && ctx.dateTimeBinaryNow ? ctx.dateTimeBinaryNow() : farFutureDateTimeBinary();
 }
@@ -1502,6 +1954,7 @@ function formatRequest(request) {
 
 module.exports = {
   PACKETS,
+  CONTRACT_ERRORS,
   createContractHandler,
   getAllContractStates,
   getAllContractBonusStates,
@@ -1513,4 +1966,6 @@ module.exports = {
   buildCustomPickupContractData,
   getAllCustomPickupContracts,
   openMiscContract,
+  getActiveCustomPickupContractRecords,
+  isValidCustomPickupTarget,
 };

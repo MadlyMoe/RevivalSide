@@ -4,6 +4,7 @@ const { readGameplayTableRecords } = require("../gameplay-jsons");
 const {
   writeBool,
   writeNullableObject,
+  writeNullableObjectOrNull,
   writeNullableObjectList,
   writeObjectList,
   writeSignedVarInt,
@@ -63,6 +64,28 @@ const MISC_TYPE_ENUM = Object.freeze({
   TITLE: 21,
 });
 
+const COLLECTION_ERRORS = Object.freeze({
+  OK: 0,
+  INVALID_REQUEST: 20191,
+  OPENTAG_CLOSED: 20768,
+  UNIT_MISSION_INVALID_MISSION_ID: 20958,
+  UNIT_MISSION_NOT_FOUND_UNIT_HISTORY: 20960,
+  UNIT_MISSION_NOT_ENOUGH_VALUE: 20961,
+  UNIT_MISSION_INVALID_STEP_ID: 20963,
+  UNIT_MISSION_UNSUPPORTED_CONDITION: 20966,
+  TEAM_INVALID_ID: 361,
+  TEAM_ALREADY_GIVEN: 362,
+  TEAM_NOT_ENOUGH_COUNT: 363,
+  EPISODE_NOT_ENOUGH_COUNT: 308,
+  EPISODE_ALREADY_GIVEN: 309,
+  EPISODE_INVALID_REWARD: 310,
+  MISC_INVALID_ID: 26002,
+  MISC_ALREADY_GIVEN: 26003,
+  MISC_NOT_EXISTS_ITEM_HISTORY: 26004,
+  MISC_INVALID_TYPE: 26006,
+  MISC_DEFAULT_COLLECTION: 26007,
+});
+
 let cachedTables = null;
 
 function createCollectionHandlers() {
@@ -75,10 +98,13 @@ function createCollectionHandlers() {
         const req = decodeUnitMissionRewardReq(ctx, packet.payload);
         const result = claimUnitMission(ctx, user, req);
         console.log(
-          `[collection:unit-mission] claim unitId=${result.missionData.unitId} missionId=${result.missionData.missionId} stepId=${result.missionData.stepId}`
+          `[collection:unit-mission] claim unitId=${result.missionData.unitId} missionId=${result.missionData.missionId} stepId=${result.missionData.stepId} error=${result.errorCode}`
         );
         send(ctx, socket, packet, PACKETS.UNIT_MISSION_REWARD_ACK, buildUnitMissionRewardAckPayload(result));
-        persist(ctx);
+        if (result.changed) {
+          invalidateLobby(ctx, "unit-mission-reward");
+          persist(ctx);
+        }
         return true;
       },
     },
@@ -88,10 +114,15 @@ function createCollectionHandlers() {
       handle(ctx, socket, packet) {
         const user = getSocketUser(ctx, socket);
         const req = decodeUnitMissionRewardAllReq(ctx, packet.payload);
-        const result = claimAllUnitMissions(ctx, user, req.unitId);
-        console.log(`[collection:unit-mission] claim-all unitId=${req.unitId} count=${result.missionData.length}`);
+        const result = claimAllUnitMissions(ctx, user, req);
+        console.log(
+          `[collection:unit-mission] claim-all unitId=${req.unitId} count=${result.missionData.length} error=${result.errorCode}`
+        );
         send(ctx, socket, packet, PACKETS.UNIT_MISSION_REWARD_ALL_ACK, buildUnitMissionRewardAllAckPayload(result));
-        persist(ctx);
+        if (result.changed) {
+          invalidateLobby(ctx, "unit-mission-reward-all");
+          persist(ctx);
+        }
         return true;
       },
     },
@@ -103,10 +134,10 @@ function createCollectionHandlers() {
         const req = decodeEpisodeCompleteRewardReq(ctx, packet.payload);
         const result = claimEpisodeReward(ctx, user, req);
         console.log(
-          `[collection:episode] claim episodeID=${req.episodeID} difficulty=${req.episodeDifficulty} rewardIndex=${req.rewardIndex}`
+          `[collection:episode] claim episodeID=${req.episodeID} difficulty=${req.episodeDifficulty} rewardIndex=${req.rewardIndex} error=${result.errorCode}`
         );
         send(ctx, socket, packet, PACKETS.EPISODE_COMPLETE_REWARD_ACK, buildEpisodeRewardAckPayload(result));
-        persist(ctx);
+        if (result.changed) persist(ctx);
         return true;
       },
     },
@@ -116,10 +147,12 @@ function createCollectionHandlers() {
       handle(ctx, socket, packet) {
         const user = getSocketUser(ctx, socket);
         const req = decodeEpisodeCompleteRewardAllReq(ctx, packet.payload);
-        const result = claimAllEpisodeRewards(ctx, user, req.episodeID);
-        console.log(`[collection:episode] claim-all episodeID=${req.episodeID} count=${result.episodeCompleteData.length}`);
+        const result = claimAllEpisodeRewards(ctx, user, req);
+        console.log(
+          `[collection:episode] claim-all episodeID=${req.episodeID} count=${result.episodeCompleteData.length} error=${result.errorCode}`
+        );
         send(ctx, socket, packet, PACKETS.EPISODE_COMPLETE_REWARD_ALL_ACK, buildEpisodeRewardAllAckPayload(result));
-        persist(ctx);
+        if (result.changed) persist(ctx);
         return true;
       },
     },
@@ -129,10 +162,10 @@ function createCollectionHandlers() {
       handle(ctx, socket, packet) {
         const user = getSocketUser(ctx, socket);
         const req = decodeSingleIntReq(ctx, packet.payload, "teamID");
-        const result = claimTeamCollectionReward(ctx, user, req.teamID);
-        console.log(`[collection:team] claim teamID=${req.teamID}`);
+        const result = claimTeamCollectionReward(ctx, user, req.valid ? req.teamID : 0);
+        console.log(`[collection:team] claim teamID=${req.teamID} error=${result.errorCode}`);
         send(ctx, socket, packet, PACKETS.TEAM_COLLECTION_REWARD_ACK, buildTeamCollectionRewardAckPayload(result));
-        persist(ctx);
+        if (result.changed) persist(ctx);
         return true;
       },
     },
@@ -142,10 +175,10 @@ function createCollectionHandlers() {
       handle(ctx, socket, packet) {
         const user = getSocketUser(ctx, socket);
         const req = decodeSingleIntReq(ctx, packet.payload, "miscId");
-        const result = claimMiscCollectionReward(ctx, user, req.miscId);
-        console.log(`[collection:misc] claim miscId=${req.miscId}`);
+        const result = claimMiscCollectionReward(ctx, user, req.valid ? req.miscId : 0);
+        console.log(`[collection:misc] claim miscId=${req.miscId} error=${result.errorCode}`);
         send(ctx, socket, packet, PACKETS.MISC_COLLECTION_REWARD_ACK, buildMiscCollectionRewardAckPayload(result));
-        persist(ctx);
+        if (result.changed) persist(ctx);
         return true;
       },
     },
@@ -155,10 +188,12 @@ function createCollectionHandlers() {
       handle(ctx, socket, packet) {
         const user = getSocketUser(ctx, socket);
         const req = decodeMiscCollectionRewardAllReq(ctx, packet.payload);
-        const result = claimAllMiscCollectionRewards(ctx, user, req.miscType);
-        console.log(`[collection:misc] claim-all miscType=${req.miscType} count=${result.miscCollectionDatas.length}`);
+        const result = claimAllMiscCollectionRewards(ctx, user, req.valid ? req.miscType : -1);
+        console.log(
+          `[collection:misc] claim-all miscType=${req.miscType} count=${result.miscCollectionDatas.length} error=${result.errorCode}`
+        );
         send(ctx, socket, packet, PACKETS.MISC_COLLECTION_REWARD_ALL_ACK, buildMiscCollectionRewardAllAckPayload(result));
-        persist(ctx);
+        if (result.changed) persist(ctx);
         return true;
       },
     },
@@ -177,6 +212,7 @@ function ensureCollectionState(user) {
     user.collection.unitMissionsClaimed && typeof user.collection.unitMissionsClaimed === "object"
       ? user.collection.unitMissionsClaimed
       : {};
+  user.collection.unitMissionMaxLevels = normalizePositiveIntMap(user.collection.unitMissionMaxLevels);
   user.collection.teamRewards =
     user.collection.teamRewards && typeof user.collection.teamRewards === "object" ? user.collection.teamRewards : {};
   user.collection.miscRewards =
@@ -196,6 +232,7 @@ function hasCollectionState(user) {
     state.operators.length > 0 ||
     state.skins.length > 0 ||
     Object.keys(state.unitMissionsClaimed).length > 0 ||
+    Object.keys(state.unitMissionMaxLevels).length > 0 ||
     Object.keys(state.teamRewards).length > 0 ||
     Object.keys(state.miscRewards).length > 0 ||
     Object.keys(state.episodeRewards).length > 0
@@ -204,43 +241,65 @@ function hasCollectionState(user) {
 
 function claimUnitMission(ctx, user, req) {
   const state = ensureCollectionState(user);
-  const row = findUnitMissionRow(req);
-  const missionData = buildUnitMissionState({
-    unitId: req.unitId,
-    missionId: row ? row.missionId : req.missionId,
-    stepId: row ? row.stepId : req.stepId,
-  });
-  const key = unitMissionKey(missionData);
-  const reward = createEmptyReward();
-  if (row && !state.unitMissionsClaimed[key] && isUnitMissionEligible(user, missionData, row)) {
-    state.unitMissionsClaimed[key] = {
-      unitId: missionData.unitId,
-      missionId: missionData.missionId,
-      stepId: missionData.stepId,
-      claimedAt: new Date().toISOString(),
-    };
-    mergeReward(reward, grantTableReward(ctx, user, row, "m_Reward"));
+  const missionData = buildUnitMissionState(req);
+  if (!req || req.valid !== true || missionData.unitId <= 0 || missionData.missionId <= 0 || missionData.stepId <= 0) {
+    return unitMissionResult(COLLECTION_ERRORS.INVALID_REQUEST, missionData);
   }
-  return { missionData, reward };
+  if (!isCollectionMissionOpen(ctx, user)) {
+    return unitMissionResult(COLLECTION_ERRORS.OPENTAG_CLOSED, missionData);
+  }
+  const context = resolveUnitMissionContext(user, missionData);
+  if (context.errorCode !== COLLECTION_ERRORS.OK) return unitMissionResult(context.errorCode, missionData);
+  const { row } = context;
+  const key = unitMissionKey(missionData);
+  if (state.unitMissionsClaimed[key]) {
+    return unitMissionResult(COLLECTION_ERRORS.UNIT_MISSION_INVALID_STEP_ID, missionData);
+  }
+  if (!isUnitMissionEligible(user, missionData, row)) {
+    return unitMissionResult(COLLECTION_ERRORS.UNIT_MISSION_NOT_ENOUGH_VALUE, missionData);
+  }
+  captureUnitMissionProgress(user, { unitIds: [missionData.unitId] });
+  state.unitMissionsClaimed[key] = completedUnitMissionState(missionData);
+  return unitMissionResult(
+    COLLECTION_ERRORS.OK,
+    missionData,
+    grantTableReward(ctx, user, row, "m_Reward"),
+    true
+  );
 }
 
-function claimAllUnitMissions(ctx, user, unitId = 0) {
+function claimAllUnitMissions(ctx, user, req) {
   const state = ensureCollectionState(user);
+  const unitId = Number(req && req.unitId) || 0;
+  if (!req || req.valid !== true || unitId <= 0) return unitMissionAllResult(COLLECTION_ERRORS.INVALID_REQUEST);
+  if (!isCollectionMissionOpen(ctx, user)) return unitMissionAllResult(COLLECTION_ERRORS.OPENTAG_CLOSED);
+  const unitContext = resolveUnitMissionUnit(user, unitId);
+  if (unitContext.errorCode !== COLLECTION_ERRORS.OK) return unitMissionAllResult(unitContext.errorCode);
   const reward = createEmptyReward();
   const missionData = [];
-  for (const entry of getRewardEnableUnitMissionStates(user, { unitIds: unitId > 0 ? [unitId] : null })) {
+  for (const entry of getRewardEnableUnitMissionStates(user, { unitIds: [unitId], capture: false })) {
     const key = unitMissionKey(entry);
     if (state.unitMissionsClaimed[key]) continue;
-    state.unitMissionsClaimed[key] = {
-      unitId: entry.unitId,
-      missionId: entry.missionId,
-      stepId: entry.stepId,
-      claimedAt: new Date().toISOString(),
-    };
+    state.unitMissionsClaimed[key] = completedUnitMissionState(entry);
     missionData.push(entry);
     mergeReward(reward, grantTableReward(ctx, user, entry.row, "m_Reward"));
   }
-  return { missionData, reward };
+  if (!missionData.length) return unitMissionAllResult(COLLECTION_ERRORS.UNIT_MISSION_NOT_ENOUGH_VALUE);
+  captureUnitMissionProgress(user, { unitIds: [unitId] });
+  return unitMissionAllResult(COLLECTION_ERRORS.OK, missionData, reward, true);
+}
+
+function unitMissionResult(errorCode, missionData = null, reward = null, changed = false) {
+  return { errorCode, missionData: buildUnitMissionState(missionData), reward, changed };
+}
+
+function unitMissionAllResult(errorCode, missionData = [], reward = null, changed = false) {
+  return { errorCode, missionData, reward, changed };
+}
+
+function completedUnitMissionState(data) {
+  const mission = buildUnitMissionState(data);
+  return { ...mission, claimedAt: new Date().toISOString() };
 }
 
 function getCompletedUnitMissionStates(user) {
@@ -254,22 +313,26 @@ function getCompletedUnitMissionStates(user) {
 function getRewardEnableUnitMissionStates(user, options = {}) {
   const state = ensureCollectionState(user);
   const tables = loadCollectionTables();
-  const owned = buildOwnedCollectionIds(user);
+  if (options.capture !== false) captureUnitMissionProgress(user, options);
+  const illustratedUnitIds = buildIllustratedUnitIds(user);
   const wantedUnitIds = options.unitIds
     ? new Set((Array.isArray(options.unitIds) ? options.unitIds : [options.unitIds]).map(Number).filter((id) => id > 0))
     : null;
   const result = [];
 
-  for (const [unitId, level] of owned.normalUnitLevels.entries()) {
+  for (const unitId of illustratedUnitIds) {
     if (wantedUnitIds && !wantedUnitIds.has(unitId)) continue;
     const templet = getUnitTemplet(unitId) || {};
+    if (String(templet.m_NKM_UNIT_TYPE || "") !== "NUT_NORMAL" || templet.m_bMonster === true) continue;
     const grade = String(templet.m_NKM_UNIT_GRADE || "");
+    const level = getUnitMissionLevel(user, unitId);
     const rows = tables.unitMissionsByGrade.get(grade) || [];
     for (const row of rows) {
       const entry = buildUnitMissionState({ unitId, missionId: row.missionId, stepId: row.stepId });
       const key = unitMissionKey(entry);
       if (state.unitMissionsClaimed[key]) continue;
-      if (String(row.condition || "") === "UNIT_GROWTH_LEVEL" && level < Number(row.value || 0)) continue;
+      if (!isSupportedUnitMissionCondition(row.condition)) continue;
+      if (level < Number(row.value || 0)) continue;
       result.push({ ...entry, row });
     }
   }
@@ -290,26 +353,31 @@ function buildUnitMissionUpdatedNotPayload(user, options = {}) {
 
 function sendUnitMissionUpdatedNot(ctx, socket, user, options = {}) {
   if (!ctx || typeof ctx.sendServerGamePacket !== "function" || !socket || !socket.session || !socket.session.gameReplay) return;
+  if (!isCollectionMissionOpen(ctx, user)) return;
   const payload = buildUnitMissionUpdatedNotPayload(user, options);
   ctx.sendServerGamePacket(socket, PACKETS.UNIT_MISSION_UPDATED_NOT, payload, "unit-mission-updated");
 }
 
 function claimTeamCollectionReward(ctx, user, teamID) {
-  const state = ensureCollectionState(user);
   const tables = loadCollectionTables();
   const team = tables.teamGroups.get(Number(teamID));
-  const data = { teamID: Number(teamID) || 0, reward: false };
-  const reward = createEmptyReward();
-  if (team) {
-    data.teamID = team.teamID;
-    data.reward = true;
-    if (!state.teamRewards[String(team.teamID)] && isTeamCollectionEligible(user, team)) {
-      state.teamRewards[String(team.teamID)] = { teamID: team.teamID, claimedAt: new Date().toISOString() };
-      mergeReward(reward, grantTeamReward(ctx, user, team));
-    }
-  }
-  data.reward = Boolean(state.teamRewards[String(data.teamID)]);
-  return { teamCollectionData: data, reward };
+  if (!team) return teamCollectionResult(COLLECTION_ERRORS.TEAM_INVALID_ID);
+  const state = ensureCollectionState(user);
+  const key = String(team.teamID);
+  if (state.teamRewards[key]) return teamCollectionResult(COLLECTION_ERRORS.TEAM_ALREADY_GIVEN);
+  if (!isTeamCollectionEligible(user, team)) return teamCollectionResult(COLLECTION_ERRORS.TEAM_NOT_ENOUGH_COUNT);
+
+  state.teamRewards[key] = { teamID: team.teamID, claimedAt: new Date().toISOString() };
+  return teamCollectionResult(
+    COLLECTION_ERRORS.OK,
+    { teamID: team.teamID, reward: true },
+    grantTeamReward(ctx, user, team),
+    true
+  );
+}
+
+function teamCollectionResult(errorCode, teamCollectionData = null, reward = null, changed = false) {
+  return { errorCode, teamCollectionData, reward, changed };
 }
 
 function buildTeamCollectionEntries(user) {
@@ -322,37 +390,54 @@ function buildTeamCollectionEntries(user) {
 }
 
 function claimMiscCollectionReward(ctx, user, miscId) {
-  const state = ensureCollectionState(user);
   const tables = loadCollectionTables();
   const row = tables.miscById.get(Number(miscId));
-  const data = { miscId: Number(miscId) || 0, reward: false };
-  const reward = createEmptyReward();
-  if (row) {
-    data.miscId = row.miscId;
-    data.reward = true;
-    if (!state.miscRewards[String(row.miscId)] && isMiscCollectionEligible(user, row)) {
-      state.miscRewards[String(row.miscId)] = { miscId: row.miscId, claimedAt: new Date().toISOString() };
-      mergeReward(reward, grantMiscCollectionReward(ctx, user, row));
-    }
+  if (!row) return miscCollectionResult(COLLECTION_ERRORS.MISC_INVALID_ID, Number(miscId) || 0);
+  if (row.defaultCollection) return miscCollectionResult(COLLECTION_ERRORS.MISC_DEFAULT_COLLECTION, row.miscId);
+  const state = ensureCollectionState(user);
+  const key = String(row.miscId);
+  if (state.miscRewards[key]) return miscCollectionResult(COLLECTION_ERRORS.MISC_ALREADY_GIVEN, row.miscId);
+  if (!isMiscCollectionEligible(user, row)) {
+    return miscCollectionResult(COLLECTION_ERRORS.MISC_NOT_EXISTS_ITEM_HISTORY, row.miscId);
   }
-  data.reward = Boolean(state.miscRewards[String(data.miscId)]);
-  return { miscCollectionData: data, reward };
+
+  state.miscRewards[key] = { miscId: row.miscId, claimedAt: new Date().toISOString() };
+  return miscCollectionResult(COLLECTION_ERRORS.OK, row.miscId, grantMiscCollectionReward(ctx, user, row), true);
 }
 
 function claimAllMiscCollectionRewards(ctx, user, miscType) {
-  const state = ensureCollectionState(user);
   const tables = loadCollectionTables();
-  const numericType = Number(miscType || 0);
-  const rows = tables.miscByType.get(numericType) || [];
+  const numericType = Number(miscType);
+  const rows = Number.isInteger(numericType) ? tables.miscByType.get(numericType) || [] : [];
+  if (!rows.length) return miscCollectionAllResult(COLLECTION_ERRORS.MISC_INVALID_TYPE, numericType);
+  const state = ensureCollectionState(user);
+  const unclaimed = rows.filter((row) => !row.defaultCollection && !state.miscRewards[String(row.miscId)]);
+  if (!unclaimed.length) return miscCollectionAllResult(COLLECTION_ERRORS.MISC_ALREADY_GIVEN, numericType);
+  const eligible = unclaimed.filter((row) => isMiscCollectionEligible(user, row));
+  if (!eligible.length) {
+    return miscCollectionAllResult(COLLECTION_ERRORS.MISC_NOT_EXISTS_ITEM_HISTORY, numericType);
+  }
   const reward = createEmptyReward();
   const miscCollectionDatas = [];
-  for (const row of rows) {
-    if (state.miscRewards[String(row.miscId)] || !isMiscCollectionEligible(user, row)) continue;
+  for (const row of eligible) {
     state.miscRewards[String(row.miscId)] = { miscId: row.miscId, claimedAt: new Date().toISOString() };
     miscCollectionDatas.push({ miscId: row.miscId, reward: true });
     mergeReward(reward, grantMiscCollectionReward(ctx, user, row));
   }
-  return { miscType: numericType, miscCollectionDatas, reward };
+  return miscCollectionAllResult(COLLECTION_ERRORS.OK, numericType, miscCollectionDatas, reward, true);
+}
+
+function miscCollectionResult(errorCode, miscId, reward = null, changed = false) {
+  return {
+    errorCode,
+    miscCollectionData: errorCode === COLLECTION_ERRORS.OK ? { miscId, reward: true } : null,
+    reward,
+    changed,
+  };
+}
+
+function miscCollectionAllResult(errorCode, miscType, miscCollectionDatas = [], reward = null, changed = false) {
+  return { errorCode, miscType: Number.isInteger(miscType) && miscType >= 0 ? miscType : 0, miscCollectionDatas, reward, changed };
 }
 
 function buildMiscCollectionEntries(user) {
@@ -365,49 +450,90 @@ function buildMiscCollectionEntries(user) {
 }
 
 function claimEpisodeReward(ctx, user, req) {
-  const row = findEpisodeRewardRow(req.episodeID, req.episodeDifficulty);
-  const difficulty = row ? row.difficulty : normalizeEpisodeDifficulty(req.episodeDifficulty);
-  const rewardIndex = normalizeRewardIndex(req.rewardIndex);
-  const state = ensureCollectionState(user);
-  const key = episodeRewardKey(req.episodeID, difficulty);
-  const flags = normalizeRewardFlags(state.episodeRewards[key]);
-  const reward = createEmptyReward();
-  if (row && rewardIndex >= 0 && rewardIndex < 3 && isEpisodeRewardEligible(user, row, rewardIndex) && !flags[rewardIndex]) {
-    flags[rewardIndex] = true;
-    state.episodeRewards[key] = flags;
-    mergeReward(reward, grantEpisodeReward(ctx, user, row, rewardIndex));
-  } else {
-    state.episodeRewards[key] = flags;
+  const episodeID = Number(req && req.episodeID);
+  const difficulty = Number(req && req.episodeDifficulty);
+  const rewardIndex = Number(req && req.rewardIndex);
+  if (
+    !req ||
+    req.valid !== true ||
+    Number(req.errorCode) !== COLLECTION_ERRORS.OK ||
+    !Number.isInteger(episodeID) ||
+    episodeID <= 0 ||
+    (difficulty !== 0 && difficulty !== 1) ||
+    !Number.isInteger(rewardIndex) ||
+    rewardIndex < 0 ||
+    rewardIndex > 2
+  ) {
+    return episodeCollectionResult(COLLECTION_ERRORS.EPISODE_INVALID_REWARD);
   }
-  return {
-    reward,
-    episodeCompleteData: buildEpisodeCompleteState(user, Number(req.episodeID || 0), difficulty),
-  };
+  const row = findEpisodeRewardRow(episodeID, difficulty);
+  const configuredReward = row && row.rewards && row.rewards[rewardIndex];
+  if (!configuredReward || !configuredReward.type || configuredReward.id <= 0 || configuredReward.value <= 0) {
+    return episodeCollectionResult(COLLECTION_ERRORS.EPISODE_INVALID_REWARD);
+  }
+  const state = ensureCollectionState(user);
+  const key = episodeRewardKey(episodeID, difficulty);
+  const flags = normalizeRewardFlags(state.episodeRewards[key]);
+  if (flags[rewardIndex]) return episodeCollectionResult(COLLECTION_ERRORS.EPISODE_ALREADY_GIVEN);
+  if (!isEpisodeRewardEligible(user, row, rewardIndex)) {
+    return episodeCollectionResult(COLLECTION_ERRORS.EPISODE_NOT_ENOUGH_COUNT);
+  }
+  flags[rewardIndex] = true;
+  state.episodeRewards[key] = flags;
+  return episodeCollectionResult(
+    COLLECTION_ERRORS.OK,
+    buildEpisodeCompleteState(user, episodeID, difficulty),
+    grantEpisodeReward(ctx, user, row, rewardIndex),
+    true
+  );
 }
 
-function claimAllEpisodeRewards(ctx, user, episodeID = 0) {
-  const tables = loadCollectionTables();
-  const state = ensureCollectionState(user);
-  const reward = createEmptyReward();
-  const episodeCompleteData = [];
-  const wantedEpisodeID = Number(episodeID || 0);
-  for (const row of tables.episodeRows) {
-    if (wantedEpisodeID > 0 && row.episodeID !== wantedEpisodeID) continue;
-    if (!row.rewards.some((rewardEntry) => rewardEntry && rewardEntry.type && rewardEntry.id && rewardEntry.value)) continue;
-    const key = episodeRewardKey(row.episodeID, row.difficulty);
-    const flags = normalizeRewardFlags(state.episodeRewards[key]);
-    let changed = false;
-    for (let rewardIndex = 0; rewardIndex < 3; rewardIndex += 1) {
-      if (flags[rewardIndex] || !isEpisodeRewardEligible(user, row, rewardIndex)) continue;
-      flags[rewardIndex] = true;
-      changed = true;
-      mergeReward(reward, grantEpisodeReward(ctx, user, row, rewardIndex));
-    }
-    if (changed) state.episodeRewards[key] = flags;
-    const data = buildEpisodeCompleteState(user, row.episodeID, row.difficulty);
-    if (data && data.completeCount > 0) episodeCompleteData.push(data);
+function claimAllEpisodeRewards(ctx, user, req) {
+  const episodeID = Number(req && req.episodeID);
+  if (!req || req.valid !== true || Number(req.errorCode) !== COLLECTION_ERRORS.OK || !Number.isInteger(episodeID) || episodeID <= 0) {
+    return episodeCollectionAllResult(COLLECTION_ERRORS.EPISODE_INVALID_REWARD);
   }
-  return { reward, episodeCompleteData };
+  const tables = loadCollectionTables();
+  const rows = tables.episodeRows.filter(
+    (row) => row.episodeID === episodeID && row.rewards.some((entry) => entry && entry.type && entry.id > 0 && entry.value > 0)
+  );
+  if (!rows.length) return episodeCollectionAllResult(COLLECTION_ERRORS.EPISODE_INVALID_REWARD);
+  const state = ensureCollectionState(user);
+  const unclaimed = [];
+  for (const row of rows) {
+    const flags = normalizeRewardFlags(state.episodeRewards[episodeRewardKey(row.episodeID, row.difficulty)]);
+    for (let rewardIndex = 0; rewardIndex < 3; rewardIndex += 1) {
+      const entry = row.rewards[rewardIndex];
+      if (entry && entry.type && entry.id > 0 && entry.value > 0 && !flags[rewardIndex]) {
+        unclaimed.push({ row, rewardIndex, flags });
+      }
+    }
+  }
+  if (!unclaimed.length) return episodeCollectionAllResult(COLLECTION_ERRORS.EPISODE_ALREADY_GIVEN);
+  const eligible = unclaimed.filter(({ row, rewardIndex }) => isEpisodeRewardEligible(user, row, rewardIndex));
+  if (!eligible.length) return episodeCollectionAllResult(COLLECTION_ERRORS.EPISODE_NOT_ENOUGH_COUNT);
+
+  const reward = createEmptyReward();
+  const changedRows = new Set();
+  for (const { row, rewardIndex, flags } of eligible) {
+    const key = episodeRewardKey(row.episodeID, row.difficulty);
+    flags[rewardIndex] = true;
+    state.episodeRewards[key] = flags;
+    changedRows.add(key);
+    mergeReward(reward, grantEpisodeReward(ctx, user, row, rewardIndex));
+  }
+  const episodeCompleteData = rows
+    .filter((row) => changedRows.has(episodeRewardKey(row.episodeID, row.difficulty)))
+    .map((row) => buildEpisodeCompleteState(user, row.episodeID, row.difficulty));
+  return episodeCollectionAllResult(COLLECTION_ERRORS.OK, episodeCompleteData, reward, true);
+}
+
+function episodeCollectionResult(errorCode, episodeCompleteData = null, reward = null, changed = false) {
+  return { errorCode, episodeCompleteData, reward, changed };
+}
+
+function episodeCollectionAllResult(errorCode, episodeCompleteData = [], reward = null, changed = false) {
+  return { errorCode, episodeCompleteData, reward, changed };
 }
 
 function getEpisodeRewardFlags(user, episodeID, difficulty = 0) {
@@ -503,11 +629,81 @@ function isEpisodeRewardEligible(user, row, rewardIndex) {
 }
 
 function isUnitMissionEligible(user, missionData, row) {
-  if (!row) return false;
-  const owned = buildOwnedCollectionIds(user);
-  const level = Number(owned.normalUnitLevels.get(Number(missionData.unitId)) || 0);
-  if (String(row.condition || "") === "UNIT_GROWTH_LEVEL") return level >= Number(row.value || 0);
-  return level > 0;
+  if (!row || !isSupportedUnitMissionCondition(row.condition)) return false;
+  return getUnitMissionLevel(user, missionData && missionData.unitId) >= Number(row.value || 0);
+}
+
+function resolveUnitMissionContext(user, missionData) {
+  const unitContext = resolveUnitMissionUnit(user, missionData.unitId);
+  if (unitContext.errorCode !== COLLECTION_ERRORS.OK) return unitContext;
+  const tables = loadCollectionTables();
+  const mission = tables.unitMissionsById.get(Number(missionData.missionId));
+  if (!mission || mission.grade !== unitContext.grade) {
+    return { errorCode: COLLECTION_ERRORS.UNIT_MISSION_INVALID_MISSION_ID };
+  }
+  const row = tables.unitMissionByKey.get(`${Number(missionData.missionId)}:${Number(missionData.stepId)}`);
+  if (!row || row.grade !== unitContext.grade) {
+    return { errorCode: COLLECTION_ERRORS.UNIT_MISSION_INVALID_STEP_ID };
+  }
+  if (!isSupportedUnitMissionCondition(row.condition)) {
+    return { errorCode: COLLECTION_ERRORS.UNIT_MISSION_UNSUPPORTED_CONDITION };
+  }
+  return { ...unitContext, row };
+}
+
+function resolveUnitMissionUnit(user, unitId) {
+  const id = Number(unitId);
+  const templet = getUnitTemplet(id);
+  if (
+    !Number.isInteger(id) ||
+    id <= 0 ||
+    !templet ||
+    String(templet.m_NKM_UNIT_TYPE || "") !== "NUT_NORMAL" ||
+    templet.m_bMonster === true ||
+    !buildIllustratedUnitIds(user).includes(id)
+  ) {
+    return { errorCode: COLLECTION_ERRORS.UNIT_MISSION_NOT_FOUND_UNIT_HISTORY };
+  }
+  return { errorCode: COLLECTION_ERRORS.OK, templet, grade: String(templet.m_NKM_UNIT_GRADE || "") };
+}
+
+function isSupportedUnitMissionCondition(condition) {
+  return String(condition || "") === "UNIT_GROWTH_LEVEL";
+}
+
+function isCollectionMissionOpen(ctx, user) {
+  const expected = "TAG_COLLECTION_MISSION";
+  if ((user && Array.isArray(user.openTags) ? user.openTags : []).some((tag) => String(tag || "").toUpperCase() === expected)) {
+    return true;
+  }
+  if (!ctx || typeof ctx.getEffectiveOpenTags !== "function") return false;
+  const tags = ctx.getEffectiveOpenTags(Array.isArray(user && user.openTags) ? user.openTags : []);
+  return Array.isArray(tags) && tags.some((tag) => String(tag || "").toUpperCase() === expected);
+}
+
+function captureUnitMissionProgress(user, options = {}) {
+  const state = ensureCollectionState(user);
+  const wantedUnitIds = options.unitIds
+    ? new Set((Array.isArray(options.unitIds) ? options.unitIds : [options.unitIds]).map(Number).filter((id) => id > 0))
+    : null;
+  for (const unit of getArmyUnits(user)) {
+    const unitId = Number(unit && unit.unitId);
+    if (!Number.isInteger(unitId) || unitId <= 0 || (wantedUnitIds && !wantedUnitIds.has(unitId))) continue;
+    const level = Math.max(1, Number(unit.level || 1) || 1);
+    state.unitMissionMaxLevels[String(unitId)] = Math.max(Number(state.unitMissionMaxLevels[String(unitId)] || 0), level);
+  }
+  return state.unitMissionMaxLevels;
+}
+
+function getUnitMissionLevel(user, unitId) {
+  const id = Number(unitId);
+  if (!Number.isInteger(id) || id <= 0) return 0;
+  const state = ensureCollectionState(user);
+  let level = Number(state.unitMissionMaxLevels[String(id)] || 0);
+  for (const unit of getArmyUnits(user)) {
+    if (Number(unit && unit.unitId) === id) level = Math.max(level, Math.max(1, Number(unit.level || 1) || 1));
+  }
+  return level;
 }
 
 function isTeamCollectionEligible(user, team) {
@@ -604,13 +800,6 @@ function addIllustratedUnitId(ids, unitId) {
   ids.add(id);
 }
 
-function findUnitMissionRow(req) {
-  const tables = loadCollectionTables();
-  const missionId = Number(req && req.missionId);
-  const stepId = Number(req && req.stepId);
-  return tables.unitMissionByKey.get(`${missionId}:${stepId}`) || null;
-}
-
 function findEpisodeRewardRow(episodeID, difficulty = 0) {
   const tables = loadCollectionTables();
   return tables.episodeByKey.get(episodeRewardKey(episodeID, difficulty)) || null;
@@ -652,57 +841,57 @@ function grantEpisodeReward(ctx, user, row, rewardIndex) {
 
 function buildUnitMissionRewardAckPayload(result) {
   return Buffer.concat([
-    writeSignedVarInt(0),
+    writeSignedVarInt(Number(result.errorCode || 0)),
     writeNullableObject(buildUnitMissionData(result.missionData)),
-    writeNullableObject(buildRewardData(result.reward || createEmptyReward())),
+    writeNullableObjectOrNull(result.reward ? buildRewardData(result.reward) : null),
   ]);
 }
 
 function buildUnitMissionRewardAllAckPayload(result) {
   return Buffer.concat([
-    writeSignedVarInt(0),
+    writeSignedVarInt(Number(result.errorCode || 0)),
     writeNullableObjectList((result.missionData || []).map(buildUnitMissionData)),
-    writeNullableObject(buildRewardData(result.reward || createEmptyReward())),
+    writeNullableObjectOrNull(result.reward ? buildRewardData(result.reward) : null),
   ]);
 }
 
 function buildEpisodeRewardAckPayload(result) {
   return Buffer.concat([
-    writeSignedVarInt(0),
-    writeNullableObject(buildRewardData(result.reward || createEmptyReward())),
-    writeNullableObject(buildEpisodeCompleteData(result.episodeCompleteData)),
+    writeSignedVarInt(Number(result.errorCode || 0)),
+    writeNullableObjectOrNull(result.reward ? buildRewardData(result.reward) : null),
+    writeNullableObjectOrNull(result.episodeCompleteData ? buildEpisodeCompleteData(result.episodeCompleteData) : null),
   ]);
 }
 
 function buildEpisodeRewardAllAckPayload(result) {
   return Buffer.concat([
-    writeSignedVarInt(0),
-    writeNullableObject(buildRewardData(result.reward || createEmptyReward())),
+    writeSignedVarInt(Number(result.errorCode || 0)),
+    writeNullableObjectOrNull(result.reward ? buildRewardData(result.reward) : null),
     writeNullableObjectList((result.episodeCompleteData || []).map(buildEpisodeCompleteData)),
   ]);
 }
 
 function buildTeamCollectionRewardAckPayload(result) {
   return Buffer.concat([
-    writeSignedVarInt(0),
-    writeNullableObject(buildRewardData(result.reward || createEmptyReward())),
-    writeNullableObject(buildTeamCollectionData(result.teamCollectionData)),
+    writeSignedVarInt(Number(result.errorCode || 0)),
+    writeNullableObjectOrNull(result.reward ? buildRewardData(result.reward) : null),
+    writeNullableObjectOrNull(result.teamCollectionData ? buildTeamCollectionData(result.teamCollectionData) : null),
   ]);
 }
 
 function buildMiscCollectionRewardAckPayload(result) {
   return Buffer.concat([
-    writeSignedVarInt(0),
-    writeNullableObject(buildRewardData(result.reward || createEmptyReward())),
-    writeNullableObject(buildMiscCollectionData(result.miscCollectionData)),
+    writeSignedVarInt(Number(result.errorCode || 0)),
+    writeNullableObjectOrNull(result.reward ? buildRewardData(result.reward) : null),
+    writeNullableObjectOrNull(result.miscCollectionData ? buildMiscCollectionData(result.miscCollectionData) : null),
   ]);
 }
 
 function buildMiscCollectionRewardAllAckPayload(result) {
   return Buffer.concat([
-    writeSignedVarInt(0),
+    writeSignedVarInt(Number(result.errorCode || 0)),
     writeSignedVarInt(Number(result.miscType || 0)),
-    writeNullableObject(buildRewardData(result.reward || createEmptyReward())),
+    writeNullableObjectOrNull(result.reward ? buildRewardData(result.reward) : null),
     writeNullableObjectList((result.miscCollectionDatas || []).map(buildMiscCollectionData)),
   ]);
 }
@@ -732,7 +921,13 @@ function decodeUnitMissionRewardReq(ctx, payload) {
   const missionId = safeReadInt(buffer, offset);
   offset = missionId.offset;
   const stepId = safeReadInt(buffer, offset);
-  return { unitId: unitId.value, missionId: missionId.value, stepId: stepId.value };
+  offset = stepId.offset;
+  return {
+    unitId: unitId.value,
+    missionId: missionId.value,
+    stepId: stepId.value,
+    valid: unitId.valid && missionId.valid && stepId.valid && offset === buffer.length,
+  };
 }
 
 function decodeUnitMissionRewardAllReq(ctx, payload) {
@@ -742,61 +937,62 @@ function decodeUnitMissionRewardAllReq(ctx, payload) {
 function decodeEpisodeCompleteRewardReq(ctx, payload) {
   const buffer = decrypt(ctx, payload);
   let offset = 0;
-  const first = safeReadInt(buffer, offset);
-  offset = first.offset;
-  const second = safeReadInt(buffer, offset);
-  if (first.value > 1) {
-    const reward = safeReadSByte(buffer, second.offset);
-    return {
-      episodeID: first.value,
-      episodeDifficulty: normalizeEpisodeDifficulty(second.value),
-      rewardIndex: reward.value,
-    };
-  }
-  offset = second.offset;
-  const third = safeReadInt(buffer, offset);
-  offset = third.offset;
-  const reward = safeReadSByte(buffer, offset);
+  const errorCode = safeReadInt(buffer, offset);
+  offset = errorCode.offset;
+  const episodeID = safeReadInt(buffer, offset);
+  offset = episodeID.offset;
+  const episodeDifficulty = safeReadInt(buffer, offset);
+  offset = episodeDifficulty.offset;
+  const rewardIndex = safeReadSByte(buffer, offset);
   return {
-    episodeID: second.value,
-    episodeDifficulty: normalizeEpisodeDifficulty(third.value),
-    rewardIndex: reward.value,
+    errorCode: errorCode.value,
+    episodeID: episodeID.value,
+    episodeDifficulty: episodeDifficulty.value,
+    rewardIndex: rewardIndex.value,
+    valid:
+      errorCode.valid &&
+      episodeID.valid &&
+      episodeDifficulty.valid &&
+      rewardIndex.valid &&
+      rewardIndex.offset === buffer.length,
   };
 }
 
 function decodeEpisodeCompleteRewardAllReq(ctx, payload) {
   const buffer = decrypt(ctx, payload);
-  let offset = 0;
-  const first = safeReadInt(buffer, offset);
-  offset = first.offset;
-  const second = safeReadInt(buffer, offset);
-  return { episodeID: first.value > 1 ? first.value : second.value };
+  const errorCode = safeReadInt(buffer, 0);
+  const episodeID = safeReadInt(buffer, errorCode.offset);
+  return {
+    errorCode: errorCode.value,
+    episodeID: episodeID.value,
+    valid: errorCode.valid && episodeID.valid && episodeID.offset === buffer.length,
+  };
 }
 
 function decodeSingleIntReq(ctx, payload, key) {
   const buffer = decrypt(ctx, payload);
   const value = safeReadInt(buffer, 0);
-  return { [key]: value.value };
+  return { [key]: value.value, valid: value.valid && value.offset === buffer.length };
 }
 
 function decodeMiscCollectionRewardAllReq(ctx, payload) {
   const req = decodeSingleIntReq(ctx, payload, "miscType");
-  return { miscType: Number(req.miscType || 0) };
+  return { miscType: Number(req.miscType || 0), valid: req.valid };
 }
 
 function safeReadInt(buffer, offset) {
   try {
-    return readSignedVarInt(buffer, offset);
+    return { ...readSignedVarInt(buffer, offset), valid: true };
   } catch (_) {
-    return { value: 0, offset };
+    return { value: 0, offset, valid: false };
   }
 }
 
 function safeReadSByte(buffer, offset) {
   try {
-    return readSByte(buffer, offset);
+    return { ...readSByte(buffer, offset), valid: true };
   } catch (_) {
-    return { value: 0, offset };
+    return { value: 0, offset, valid: false };
   }
 }
 
@@ -820,6 +1016,10 @@ function persist(ctx) {
   if (ctx && ctx.config && ctx.config.USE_LOCAL_USER_DB && typeof ctx.saveUserDb === "function") ctx.saveUserDb();
 }
 
+function invalidateLobby(ctx, reason) {
+  if (ctx && typeof ctx.invalidateJoinLobbyAckPayloadCache === "function") ctx.invalidateJoinLobbyAckPayloadCache(reason);
+}
+
 function getSocketUser(ctx, socket) {
   if (socket && socket.session && socket.session.user) return socket.session.user;
   const user = ctx && typeof ctx.createEphemeralUser === "function" ? ctx.createEphemeralUser() : {};
@@ -841,11 +1041,13 @@ function loadCollectionTables() {
     m_RewardValue: Number(row.m_RewardValue || 0),
   }));
   const unitMissionsByGrade = new Map();
+  const unitMissionsById = new Map();
   const unitMissionByKey = new Map();
   for (const row of unitMissions) {
     if (!row.grade || !row.missionId || !row.stepId) continue;
     if (!unitMissionsByGrade.has(row.grade)) unitMissionsByGrade.set(row.grade, []);
     unitMissionsByGrade.get(row.grade).push(row);
+    if (!unitMissionsById.has(row.missionId)) unitMissionsById.set(row.missionId, { missionId: row.missionId, grade: row.grade });
     unitMissionByKey.set(`${row.missionId}:${row.stepId}`, row);
   }
   for (const rows of unitMissionsByGrade.values()) rows.sort((a, b) => a.missionId - b.missionId || a.stepId - b.stepId);
@@ -907,7 +1109,7 @@ function loadCollectionTables() {
   const episodeByKey = new Map();
   for (const row of episodeRows) episodeByKey.set(episodeRewardKey(row.episodeID, row.difficulty), row);
 
-  cachedTables = { unitMissionsByGrade, unitMissionByKey, teamGroups, miscById, miscByType, episodeRows, episodeByKey };
+  cachedTables = { unitMissionsByGrade, unitMissionsById, unitMissionByKey, teamGroups, miscById, miscByType, episodeRows, episodeByKey };
   return cachedTables;
 }
 
@@ -967,12 +1169,25 @@ function uniquePositiveInts(values) {
   ).sort((a, b) => a - b);
 }
 
+function normalizePositiveIntMap(value) {
+  const result = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return result;
+  for (const [rawKey, rawValue] of Object.entries(value)) {
+    const key = Number(rawKey);
+    const numericValue = Number(rawValue);
+    if (!Number.isInteger(key) || key <= 0 || !Number.isInteger(numericValue) || numericValue <= 0) continue;
+    result[String(key)] = numericValue;
+  }
+  return result;
+}
+
 function writeBoolList(values) {
   return writeObjectList((Array.isArray(values) ? values : []).map(writeBool));
 }
 
 module.exports = {
   PACKETS,
+  COLLECTION_ERRORS,
   createCollectionHandlers,
   ensureCollectionState,
   hasCollectionState,

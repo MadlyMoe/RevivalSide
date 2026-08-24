@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script",
+    "fileName": "LUA_UNIT_EQUIP_RECOMMEND.json",
+    "tableName": "LUA_UNIT_EQUIP_RECOMMEND"
+  },
+  "key": {
+    "field": "m_UnitID",
+    "value": 26050
+  },
+  "source": {
+    "field": "m_UnitID",
+    "value": 1099
+  },
+  "value": {
+    "m_UnitID": 26050,
+    "EquipSetID_1": 220700,
+    "EquipRecommendGroup_1": [
+      10001,
+      10007,
+      10012
+    ],
+    "EquipSetID_2": 221100,
+    "EquipRecommendGroup_2": [
+      10001,
+      10007,
+      10012
+    ],
+    "EquipSetID_3": 221100,
+    "EquipRecommendGroup_3": [
+      10001,
+      10007,
+      10012
+    ]
+  }
+}

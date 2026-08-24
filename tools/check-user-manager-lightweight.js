@@ -7,7 +7,10 @@ const path = require("path");
 const vm = require("vm");
 
 const { createUserManager } = require("../server/userManager");
-const { readActiveUserUid } = require("../modules/user-db-selection");
+const { createCsharpCombatHost } = require("../combat-handler/csharpHost");
+const { findCounterSideManagedDir } = require("../modules/counterside-install");
+const { getDefaultGameplayTablesDir } = require("../modules/gameplay-jsons");
+const { getActiveOrIndexedUser, readActiveUserUid } = require("../modules/user-db-selection");
 
 async function main() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "revivalside-user-manager-"));
@@ -28,6 +31,7 @@ async function main() {
   fs.writeFileSync(userDbPath, JSON.stringify(userDb), "utf8");
   const originalDb = fs.readFileSync(userDbPath, "utf8");
   let fullSaveCount = 0;
+  const activeSwitches = [];
 
   const manager = createUserManager({
     allowRemote: true,
@@ -37,6 +41,9 @@ async function main() {
     saveUserDb() {
       fullSaveCount += 1;
       fs.writeFileSync(userDbPath, JSON.stringify(userDb), "utf8");
+    },
+    onActiveUserChanged(user, reason) {
+      activeSwitches.push({ userUid: user.userUid, reason });
     },
   });
   const server = http.createServer((req, res) => {
@@ -58,6 +65,8 @@ async function main() {
     const page = await request(port, "GET", "/user-manager");
     assert.strictEqual(page.statusCode, 200);
     assert(page.text.includes('id="loadJsonBtn"'), "user manager is missing the explicit JSON load button");
+    assert(page.text.includes('className = "activate-user"'), "user manager is missing one-tap profile activation");
+    assert(page.text.includes("switchProfileTo(user.userUid)"), "profile activation is not wired to the selected user");
     const clientScript = page.text.match(/<script>([\s\S]*?)<\/script>/);
     assert(clientScript, "user manager client script was not found");
     new vm.Script(clientScript[1], { filename: "user-manager-client.js" });
@@ -78,11 +87,21 @@ async function main() {
     assert.strictEqual(fs.readFileSync(userDbPath, "utf8"), originalDb, "switching changed users.json");
     assert.strictEqual(readActiveUserUid(activeUserPath), "2", "active selection sidecar was not written");
     assert(fs.statSync(activeUserPath).size < 256, "active selection sidecar should remain tiny");
+    assert.deepStrictEqual(activeSwitches, [{ userUid: "2", reason: "switch-user" }]);
+    assert.strictEqual(
+      getActiveOrIndexedUser(userDb, "accessTokens", "old-profile-token").userUid,
+      "2",
+      "active profile must override a stale access token",
+    );
 
     const switchedBack = await request(port, "POST", "/user-manager/api/users/1/switch", "{}");
     assert.strictEqual(switchedBack.statusCode, 200);
     assert.strictEqual(readActiveUserUid(activeUserPath), "1", "active selection sidecar was not replaced");
     assert.strictEqual(fullSaveCount, 0, "repeated switching must not save the full database");
+    assert.deepStrictEqual(activeSwitches, [
+      { userUid: "2", reason: "switch-user" },
+      { userUid: "1", reason: "switch-user" },
+    ]);
 
     const editorProfile = await request(port, "GET", "/user-manager/api/users/2?view=editor");
     assert.strictEqual(editorProfile.statusCode, 200);
@@ -149,6 +168,29 @@ function checkStarterUserSeed(tempDir) {
   assert.strictEqual(result.status, 0, result.stderr || result.stdout || result.error);
   const seededDb = JSON.parse(fs.readFileSync(userDbPath, "utf8"));
   assert.strictEqual(seededDb.users[seededDb.activeUserUid].nickname, "Admin_3114263075");
+  validateJoinLobbyAck(fs.readFileSync(dumpPath));
+}
+
+function validateJoinLobbyAck(payload) {
+  const managedDir = findCounterSideManagedDir({ env: process.env });
+  if (!managedDir) return;
+  const combatHost = createCsharpCombatHost({
+    enabled: true,
+    projectPath: path.join(__dirname, "..", "combat-host", "CombatHost.csproj"),
+    dllPath: process.env.CS_COMBAT_HOST_PATH || undefined,
+    managedDir,
+    gameplayTablesDir: getDefaultGameplayTablesDir({ rootDir: path.join(__dirname, ".."), env: process.env }),
+    timeoutMs: 30000,
+  });
+  try {
+    const validation = combatHost.request("validatePacket", {
+      packetId: 205,
+      payloadBase64: payload.toString("base64"),
+    });
+    assert(validation.ok, `managed client rejected starter JOIN_LOBBY_ACK: ${validation.error || "unknown error"}`);
+  } finally {
+    combatHost.close();
+  }
 }
 
 function listen(server) {

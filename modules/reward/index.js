@@ -2,6 +2,7 @@ const { randomInt } = require("crypto");
 const { grantMiscItem, grantSkin, grantEmoticon, toBigInt } = require("../inventory");
 const {
   getMiscItemTemplet,
+  getCustomBoxTemplet,
   getRandomBoxRewards,
   getCustomPackageRewards,
   getUnitTemplet,
@@ -74,8 +75,9 @@ function grantRewardByType(ctx, user, rewardType, rewardId, value = 1, freeValue
       if (unit) reward.units.push(unit);
     }
   } else if (type === "RT_OPERATOR") {
+    const operatorOptions = buildSelectorOperatorGrantOptions(id, options);
     for (let index = 0; index < Math.max(1, Number(count) || 1); index += 1) {
-      const operator = grantOperator(user, id, { regDate, fromContract: options.fromContract !== false });
+      const operator = grantOperator(user, id, { ...options, ...operatorOptions, regDate, fromContract: options.fromContract !== false });
       if (operator) reward.operators.push(operator);
     }
   } else if (type === "RT_EQUIP" || type === "RT_ITEM_EQUIP" || type === "RT_EQUIP_ITEM") {
@@ -126,13 +128,14 @@ function expandMiscItemReward(ctx, user, itemId, count = 1, options = {}) {
   }
 
   if (type === "IMT_CUSTOM_PACKAGE") {
+    const selected = Array.isArray(options.selectedCustomPackageRewards)
+      ? options.selectedCustomPackageRewards
+      : null;
     const groups = normalizeNumberList(item.m_CustomRewardGroupID);
     for (let index = 0; index < Math.max(1, count); index += 1) {
-      for (const customGroupId of groups) {
-        const records = getCustomPackageRewards(customGroupId);
-        for (const record of records) {
-          mergeReward(total, grantRewardRecord(ctx, user, record, { ...options, depth: depth + 1, regDate, sourceItem: item }));
-        }
+      const records = selected || groups.flatMap((customGroupId) => getCustomPackageRewards(customGroupId));
+      for (const record of records) {
+        mergeReward(total, grantRewardRecord(ctx, user, record, { ...options, depth: depth + 1, regDate, sourceItem: item }));
       }
     }
     return total;
@@ -179,6 +182,47 @@ function expandMiscItemReward(ctx, user, itemId, count = 1, options = {}) {
   }
 
   return null;
+}
+
+function resolveCustomPackageRewardSelection(item, selectIndices, options = {}) {
+  if (!item || String(item.m_ItemMiscType || "") !== "IMT_CUSTOM_PACKAGE") return [];
+  const groups = normalizeNumberList(item.m_CustomRewardGroupID);
+  const selections = Array.isArray(selectIndices) ? selectIndices.map(Number) : [];
+  if (selections.length !== groups.length) return null;
+  const countryTag = String(options.countryTag || "KOR").trim().toUpperCase();
+  const selected = [];
+  for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
+    const selectionIndex = selections[groupIndex];
+    if (!Number.isInteger(selectionIndex) || selectionIndex < 0) return null;
+    const records = getCustomPackageRewards(groups[groupIndex])
+      .filter((record) => isRewardRecordForCountry(record, countryTag))
+      .sort((left, right) => Number(left.m_Index || 0) - Number(right.m_Index || 0));
+    const record = records[selectionIndex];
+    if (!record || Number(record.m_Index) !== selectionIndex) return null;
+    if (typeof options.isRecordEnabled === "function" && !options.isRecordEnabled(record)) return null;
+    selected.push(record);
+  }
+  return selected;
+}
+
+function isRewardRecordForCountry(record, countryTag) {
+  const aliases = countryTag === "KOR" || countryTag === "KR"
+    ? new Set(["KOR", "KR", "GLOBAL"])
+    : countryTag === "TW" || countryTag === "TWN"
+      ? new Set(["TW", "TWN", "GLOBAL"])
+      : new Set([countryTag, "GLOBAL"]);
+  const countryTags = new Set(["GLOBAL", "KOR", "KR", "JPN", "CHN", "SEA", "TW", "TWN"]);
+  const allow = normalizeStringList(record && record.listContentsTagAllow);
+  const ignore = normalizeStringList(record && record.listContentsTagIgnore);
+  if (ignore.some((tag) => aliases.has(tag))) return false;
+  const regionalAllow = allow.filter((tag) => countryTags.has(tag));
+  return regionalAllow.length === 0 || regionalAllow.some((tag) => aliases.has(tag));
+}
+
+function normalizeStringList(value) {
+  return (Array.isArray(value) ? value : value == null ? [] : [value])
+    .map((entry) => String(entry || "").trim().toUpperCase())
+    .filter(Boolean);
 }
 
 function grantChoiceItemReward(ctx, user, itemId, rewardId, count = 1, options = {}) {
@@ -339,6 +383,20 @@ function normalizeNumberList(value) {
 
 function buildSelectorUnitGrantOptions(rewardType, rewardId, options = {}) {
   const sourceItem = options.sourceItem || getMiscItemTemplet(options.sourceItemId || options.itemId || 0) || {};
+  const customBox = getCustomBoxTemplet(sourceItem.m_CustomBoxID);
+  if (customBox) {
+    const level = Math.max(1, Number(customBox.Level || 1));
+    const skillLevel = Math.max(1, Number(customBox.SkillLevel || 1));
+    return {
+      level,
+      maxLevelOverride: level,
+      limitBreakLevel: Math.max(0, Number(customBox.LimitBreak || 0)),
+      tacticLevel: Math.max(0, Number(customBox.TacticUpdate || 0)),
+      reactorLevel: Math.max(0, Number(customBox.ReactorLevel || 0)),
+      loyalty: Math.max(0, Number(customBox.Loyalty || 0)),
+      skillLevels: [skillLevel, skillLevel, skillLevel, skillLevel, skillLevel],
+    };
+  }
   const rewardRecord = options.rewardRecord || {};
   const text = [
     sourceItem.m_ItemMiscType,
@@ -381,6 +439,17 @@ function buildSelectorUnitGrantOptions(rewardType, rewardId, options = {}) {
   return grantOptions;
 }
 
+function buildSelectorOperatorGrantOptions(_rewardId, options = {}) {
+  const sourceItem = options.sourceItem || getMiscItemTemplet(options.sourceItemId || options.itemId || 0) || {};
+  const customBox = getCustomBoxTemplet(sourceItem.m_CustomBoxID);
+  if (!customBox) return {};
+  return {
+    level: Math.max(1, Number(customBox.Level || 1)),
+    mainSkillLevel: Math.max(1, Number(customBox.TacticUpdate || 1)),
+    subSkillLevel: Math.max(1, Number(customBox.SkillLevel || 1)),
+  };
+}
+
 function getUnitLimitBreakRankForLevel(level) {
   const maxLevel = Math.max(1, Number(level) || UNIT_LEVEL_CAP);
   if (maxLevel < 100) return 0;
@@ -403,5 +472,6 @@ module.exports = {
   grantChoiceItemReward,
   resolveChoiceRewardRecord,
   getChoiceRewardRecords,
+  resolveCustomPackageRewardSelection,
   expandMiscItemReward,
 };

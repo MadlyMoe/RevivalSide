@@ -25,6 +25,21 @@ function applyActiveUserSelection(userDb, activeUserPath) {
   return true;
 }
 
+function getActiveUser(userDb) {
+  const activeUserUid = String(userDb && userDb.activeUserUid || "").trim();
+  return activeUserUid && userDb && userDb.users && userDb.users[activeUserUid]
+    ? userDb.users[activeUserUid]
+    : null;
+}
+
+function getActiveOrIndexedUser(userDb, indexName, credential) {
+  const activeUser = getActiveUser(userDb);
+  if (activeUser) return activeUser;
+  const index = userDb && userDb[indexName];
+  const userUid = credential && index && typeof index === "object" ? index[credential] : "";
+  return userUid && userDb.users && userDb.users[userUid] ? userDb.users[userUid] : null;
+}
+
 function writeActiveUserSelection(activeUserPath, activeUserUid) {
   if (!activeUserPath) return false;
   const target = path.resolve(activeUserPath);
@@ -42,6 +57,8 @@ function writeActiveUserSelection(activeUserPath, activeUserUid) {
 
 module.exports = {
   applyActiveUserSelection,
+  getActiveOrIndexedUser,
+  getActiveUser,
   readActiveUserUid,
   resolveActiveUserPath,
   writeActiveUserSelection,

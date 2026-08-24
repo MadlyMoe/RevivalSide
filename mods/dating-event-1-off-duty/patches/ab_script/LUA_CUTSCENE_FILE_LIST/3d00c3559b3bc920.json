@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script",
+    "fileName": "LUA_CUTSCENE_FILE_LIST.json",
+    "tableName": "LUA_CUTSCENE_FILE_LIST"
+  },
+  "key": {
+    "field": "m_CutScenFile",
+    "value": "EP1_ACT4_DATING_EVENT_1"
+  },
+  "value": {
+    "m_CutScenFile": "EP1_ACT4_DATING_EVENT_1",
+    "m_CutScenType": "NCT_MAIN"
+  },
+  "source": "revivalside-episode-maker"
+}

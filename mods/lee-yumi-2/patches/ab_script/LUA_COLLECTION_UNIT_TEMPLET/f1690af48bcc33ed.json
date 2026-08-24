@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script",
+    "fileName": "LUA_COLLECTION_UNIT_TEMPLET.json",
+    "tableName": "LUA_COLLECTION_UNIT_TEMPLET"
+  },
+  "key": {
+    "field": "m_UnitStrID",
+    "value": "NKM_UNIT_C_POLICE_LEE_YUMI_6"
+  },
+  "source": {
+    "field": "m_UnitStrID",
+    "value": "NKM_UNIT_C_POLICE_LEE_YUMI"
+  },
+  "value": {
+    "Idx": 1016,
+    "m_UnitID": 26052,
+    "m_UnitStrID": "NKM_UNIT_C_POLICE_LEE_YUMI_6",
+    "m_NKM_UNIT_TYPE": "NUT_NORMAL",
+    "m_UnitIntro": "SI_COLLECTION_UNIT_INTRO_NKM_UNIT_C_POLICE_LEE_YUMI",
+    "m_CutsceneLifetime_Start": "LIFETIME_START_NKM_UNIT_C_POLICE_LEE_YUMI",
+    "m_CutsceneLifetime_End": "LIFETIME_END_NKM_UNIT_C_POLICE_LEE_YUMI"
+  }
+}

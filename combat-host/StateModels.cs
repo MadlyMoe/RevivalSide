@@ -17,6 +17,7 @@ public sealed class GameLoadReq
     public int RaidLevel { get; set; }
     public double RaidCurHP { get; set; }
     public double RaidMaxHP { get; set; }
+    public int? RewardMultiply { get; set; }
 }
 
 public sealed class StageData
@@ -27,6 +28,8 @@ public sealed class StageData
     public int RaidLevel { get; set; }
     public int MapID { get; set; }
     public int GameType { get; set; }
+    public int TeamBLevelAdd { get; set; }
+    public int TeamBLevelFix { get; set; }
     public string MiscMode { get; set; } = "";
     public int PalaceID { get; set; }
     public int FierceBossId { get; set; }
@@ -40,7 +43,14 @@ public sealed class StageData
     public int EventDeckId { get; set; }
     public bool UsesHybridEventDeck { get; set; }
     public bool EventDeckFreeShipSlot { get; set; }
+    public string GameStatRateId { get; set; } = "";
+    public List<PvpUnitBanData> UnitBans { get; set; } = [];
+    public List<PvpShipBanData> ShipBans { get; set; } = [];
+    public List<PvpOperatorBanData> OperatorBans { get; set; } = [];
+    public List<PvpUnitUpData> UnitUps { get; set; } = [];
     public List<int> BattleConditionIds { get; set; } = [];
+    public List<string> RaidBuffStrIds { get; set; } = [];
+    public float RaidCostChargeRate { get; set; }
     public int FierceBasePoint { get; set; }
     public int FierceMaxDamagePoint { get; set; }
     public int FierceMaxTimePoint { get; set; }
@@ -60,6 +70,30 @@ public sealed class StageData
     public PlayerDeckData? PlayerDeckB { get; set; }
 }
 
+public sealed class PvpUnitBanData
+{
+    public int UnitId { get; set; }
+    public int BanLevel { get; set; }
+}
+
+public sealed class PvpShipBanData
+{
+    public int ShipGroupId { get; set; }
+    public int BanLevel { get; set; }
+}
+
+public sealed class PvpOperatorBanData
+{
+    public int OperatorId { get; set; }
+    public int BanLevel { get; set; }
+}
+
+public sealed class PvpUnitUpData
+{
+    public int UnitId { get; set; }
+    public int UpLevel { get; set; }
+}
+
 public sealed class PlayerDeckData
 {
     public string UserUid { get; set; } = "0";
@@ -73,11 +107,26 @@ public sealed class PlayerDeckData
     public int ShipUnitId { get; set; }
     public int ShipLevel { get; set; } = 1;
     public int ShipSkinId { get; set; }
+    public int ShipLimitBreakLevel { get; set; }
+    public int ShipTacticLevel { get; set; }
+    public List<int> ShipSkillLevels { get; set; } = [];
+    public List<OfficialShipCommandModuleSnapshot> ShipCommandModules { get; set; } = [];
     public string OperatorUid { get; set; } = "0";
     public int OperatorId { get; set; }
     public int OperatorLevel { get; set; } = 1;
+    public int OperatorExp { get; set; }
+    public int OperatorMainSkillId { get; set; }
+    public int OperatorMainSkillLevel { get; set; } = 1;
+    public int OperatorMainSkillExp { get; set; }
+    public int OperatorSubSkillId { get; set; }
+    public int OperatorSubSkillLevel { get; set; } = 1;
+    public int OperatorSubSkillExp { get; set; }
+    public bool OperatorLocked { get; set; }
+    public bool OperatorFromContract { get; set; }
+    public string SupportingUserUid { get; set; } = "0";
     public List<PlayerEquipItemData> EquipItems { get; set; } = [];
     public List<PlayerUnitData> Units { get; set; } = [];
+    public List<PlayerUnitData> AssistUnits { get; set; } = [];
 }
 
 public sealed class PlayerEquipItemData
@@ -127,6 +176,9 @@ public sealed class PlayerUnitData
     public int LimitBreakLevel { get; set; }
     public int TacticLevel { get; set; }
     public int TacticGroup { get; set; }
+    public int Loyalty { get; set; }
+    public bool IsPermanentContract { get; set; }
+    public int ReactorLevel { get; set; }
     public List<int> SkillLevels { get; set; } = [];
     public List<string> EquipItemUids { get; set; } = [];
 }
@@ -139,6 +191,8 @@ public sealed class DynamicGameState
     public int RaidLevel { get; set; }
     public int MapID { get; set; }
     public int GameType { get; set; }
+    public int TeamBLevelAdd { get; set; }
+    public int TeamBLevelFix { get; set; }
     public string MiscMode { get; set; } = "";
     public int PalaceID { get; set; }
     public int FierceBossId { get; set; }
@@ -149,6 +203,7 @@ public sealed class DynamicGameState
     public int ExploreStageId { get; set; }
     public int PhaseId { get; set; }
     public int PhaseIndex { get; set; }
+    public int RewardMultiply { get; set; }
     public List<int> BattleConditionIds { get; set; } = [];
     public int FierceBasePoint { get; set; }
     public int FierceMaxDamagePoint { get; set; }
@@ -267,6 +322,16 @@ public sealed class ShipSkillReq
     public int GameUnitUID { get; set; }
     public int ShipSkillID { get; set; }
     public double SkillPosX { get; set; }
+}
+
+public sealed class UnitRetreatReq
+{
+    public string UnitUID { get; set; } = "";
+}
+
+public sealed class TacticalCommandReq
+{
+    public int TCID { get; set; }
 }
 
 public sealed class UnitState

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script",
+    "fileName": "LUA_SKIN_TEMPLET.json",
+    "tableName": "LUA_SKIN_TEMPLET"
+  },
+  "key": {
+    "field": "m_SkinID",
+    "value": 1006522
+  },
+  "source": {
+    "field": "m_SkinID",
+    "value": 109908
+  },
+  "value": {
+    "m_bEnable": true,
+    "m_OpenTag": "TAG_COMMON_SKIN_UNIT_C_POLICE_LEE_YUMI_CHILD",
+    "m_SkinID": 1006522,
+    "m_SkinStrID": "NKM_UNIT_C_POLICE_LEE_YUMI_CHILD_MOD_26052",
+    "m_SkinEquipUnitID": 26052,
+    "m_SkinGrade": "SG_PREMIUM",
+    "m_bLimited": false,
+    "m_ReturnItemID": 101,
+    "m_ReturnItemCount": 1872,
+    "m_bEffect": false,
+    "m_SkinSkillCutIn": "CUTIN_PRIVATE",
+    "m_Title": "SI_SKIN_TITLE_NKM_UNIT_C_POLICE_LEE_YUMI_CHILD",
+    "m_SkinDesc": "SI_SKIN_DESC_NKM_UNIT_C_POLICE_LEE_YUMI_CHILD",
+    "m_bCubismIllust": false,
+    "m_VoiceBundleName": "AB_UI_SKIN_VOICE_NKM_UNIT_C_POLICE_LEE_YUMI_CHILD",
+    "m_SpriteBundleName": "AB_UNIT_GAME_SPINE_NKM_UNIT_C_POLICE_LEE_YUMI_CHILD",
+    "m_SpriteName": "SPINE_NKM_UNIT_C_POLICE_LEE_YUMI_CHILD",
+    "m_FaceCardName": "AB_UNIT_FACE_CARD_NKM_UNIT_C_POLICE_LEE_YUMI_CHILD",
+    "m_SpineIllustName": "AB_UNIT_ILLUST_NKM_UNIT_C_POLICE_LEE_YUMI_CHILD",
+    "m_SpineSDName": "AB_UNIT_SD_SPINE_NKM_UNIT_C_POLICE_LEE_YUMI_CHILD",
+    "m_InvenIconName": "AB_INVEN_ICON_NKM_UNIT_C_POLICE_LEE_YUMI_CHILD",
+    "m_HyperSkillCutin": "AB_FX_SKILL_CUTIN_NKM_UNIT_C_POLICE_LEE_YUMI_CHILD",
+    "m_CutscenePurchase": "SKIN_BUY_NKM_UNIT_C_POLICE_LEE_YUMI_CHILD",
+    "m_CutsceneLifetime_start": "LIFETIME_START_NKM_UNIT_C_POLICE_LEE_YUMI_CHILD",
+    "m_CutsceneLifetime_end": "LIFETIME_END_NKM_UNIT_C_POLICE_LEE_YUMI_CHILD"
+  }
+}

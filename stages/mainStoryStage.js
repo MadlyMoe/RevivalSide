@@ -58,6 +58,10 @@ const STORY_DIFFICULTY_NORMAL = 0;
 const STORY_DIFFICULTY_HARD = 1;
 const SUPPRESSED_STORY_OPEN_TAGS = Object.freeze(["TAG_COMMON_EPISODE_NO_USE", "TAG_COMMON_EPISODE_SIDE_FAILURE_R_V2"]);
 const SUPPRESSED_STORY_OPEN_TAG_SET = new Set(SUPPRESSED_STORY_OPEN_TAGS.map((tag) => tag.toUpperCase()));
+// RevivalSide ships the complete frozen substream tables and their assets.  Keep
+// the private-server default usable without requiring users to replay historical
+// event chains, while retaining an opt-out for progression-faithful deployments.
+const UNLOCK_ALL_SUBSTREAMS = process.env.CS_UNLOCK_ALL_SUBSTREAMS !== "0";
 const STORY_STAGE_PROGRESS_ALIASES = Object.freeze([
   Object.freeze({ fromStageId: 3224112, fromDungeonId: 211202, toStageId: 3224111, toDungeonId: 211201 }),
 ]);
@@ -524,9 +528,33 @@ function isStoryStageRequirementSatisfied(user, stage) {
       return Number(user && (user.level || user.m_UserLevel || 1)) >= Number(stage.unlockReqValue || 0);
     case "SURT_CLEAR_DUNGEON":
     case "SURT_CLEAR_DUNGEON_START_DATETIME":
+    case "SURT_CLEAR_DUNGEON_INTERVAL":
       return isDungeonClearedForStory(user, stage.unlockReqValue);
     case "SURT_CLEAR_PHASE":
       return isPhaseClearedForStory(user, stage.unlockReqValue);
+    case "SURT_UNIT_GET": {
+      const unitId = Number(stage.unlockReqValue || 0);
+      const collected = user && user.collection && Array.isArray(user.collection.units) ? user.collection.units : [];
+      const army = user && user.army && user.army.units && typeof user.army.units === "object"
+        ? Object.values(user.army.units)
+        : [];
+      return collected.some((value) => Number(value && value.unitId || value) === unitId) ||
+        army.some((unit) => Number(unit && (unit.unitId || unit.m_UnitID) || 0) === unitId);
+    }
+    case "SURT_UNIT_LEVEL_25":
+    case "SURT_UNIT_LEVEL_50":
+    case "SURT_UNIT_LEVEL_80":
+    case "SURT_UNIT_LEVEL_100": {
+      const unitId = Number(stage.unlockReqValue || 0);
+      const requiredLevel = Number(stage.unlockReqType.slice("SURT_UNIT_LEVEL_".length));
+      const army = user && user.army && user.army.units && typeof user.army.units === "object"
+        ? Object.values(user.army.units)
+        : [];
+      return army.some((unit) =>
+        Number(unit && (unit.unitId || unit.m_UnitID) || 0) === unitId &&
+        Number(unit && (unit.level || unit.m_iLevel || 0) || 0) >= requiredLevel
+      );
+    }
     case "SURT_ALWAYS_LOCKED":
     case "SURT_ALWAYS_HIDDEN":
       return false;
@@ -717,7 +745,9 @@ function ensureMainStoryState(user) {
       ? tutorialPhaseComplete || Boolean(clear)
       : Boolean(clear) || Boolean(play) || existing.completed === true;
     const hasLocalProgress = Boolean(clear) || Boolean(play) || completed;
-    const stageUnlocked = stage.tutorial
+    const stageUnlocked = stage.isSubstreamStory && UNLOCK_ALL_SUBSTREAMS && !isSuppressedStoryOpenTag(stage.openTag)
+      ? true
+      : stage.tutorial
       ? previousTutorialPhaseComplete || completed
       : stage.isMainstreamStory && Number(stage.difficulty || 0) === STORY_DIFFICULTY_NORMAL
         ? nextMainStoryStageUnlocked || hasLocalProgress
@@ -760,7 +790,7 @@ function ensureMainStoryState(user) {
         : false,
     };
     user.mainStory.stages[String(stage.stageId)] = stageState;
-    if (completed) backfillCompletedMainStoryStageState(user, stage, stageState);
+    if (completed && !stage.tutorial) backfillCompletedMainStoryStageState(user, stage, stageState);
   }
 
   user.unlockedStageIds = Array.from(unlocked).sort((a, b) => a - b);
@@ -811,6 +841,7 @@ function recordMainStoryDungeonClearForUser(user, dungeonId, stageId, battleStat
         missionResults.MissionResult2 === true ||
         (missionResults.missionResult2 !== false && missionResults.MissionResult2 !== false);
   const previousStagePlay = user.stagePlayData[String(resolvedStageId)] || {};
+  const playCountDelta = Math.max(1, Math.trunc(Number(options.playCountDelta || 1)) || 1);
   const clearTimeCandidates = [Number(previousStagePlay.bestClearTimeSec || 0), bestClearTimeSec].filter((value) => value > 0);
   const bestRecordedClearTimeSec = clearTimeCandidates.length > 0 ? Math.min(...clearTimeCandidates) : bestClearTimeSec;
 
@@ -823,8 +854,8 @@ function recordMainStoryDungeonClearForUser(user, dungeonId, stageId, battleStat
   };
   user.stagePlayData[String(resolvedStageId)] = {
     stageId: resolvedStageId,
-    playCount: Number(previousStagePlay.playCount || 0) + 1,
-    totalPlayCount: Number(previousStagePlay.totalPlayCount || 0) + 1,
+    playCount: Number(previousStagePlay.playCount || 0) + playCountDelta,
+    totalPlayCount: Number(previousStagePlay.totalPlayCount || 0) + playCountDelta,
     bestClearTimeSec: bestRecordedClearTimeSec,
   };
   user.unlockedStageIds = Array.isArray(user.unlockedStageIds) ? user.unlockedStageIds : [];

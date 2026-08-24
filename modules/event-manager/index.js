@@ -109,6 +109,8 @@ const INTERVAL_TAG_FIELDS = Object.freeze([
   "ExchangeDateStrID",
   "RewardDateStrID",
   "m_EventRewardRateDateStrID",
+  "Interval",
+  "TournamentInterval",
 ]);
 
 const CONTENTS_ALLOW_FIELDS = Object.freeze([
@@ -200,6 +202,7 @@ const ID_FIELDS = Object.freeze([
   "m_ContractID",
   "ContractID",
   "SeasonID",
+  "seasonID",
   "m_SeasonID",
   "m_ID",
   "ID",

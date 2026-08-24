@@ -3,6 +3,7 @@ const { getArmyUnits, getArmyShips, getArmyTrophies, getArmyOperators } = requir
 const { getEquipItems } = require("../equipment");
 
 const INVENTORY_EXPAND_ITEM_ID = 101;
+const MAX_INVENTORY_CAPACITY = 2147483647;
 
 const INVENTORY_TYPES = Object.freeze({
   EQUIP: 1,
@@ -19,6 +20,8 @@ const ERROR_CODES = Object.freeze({
   SHIP_FULL: 113,
   EQUIP_ITEM_FULL: 114,
   OPERATOR_FULL: 115,
+  UNKNOWN_EXPAND_TYPE: 333,
+  CANNOT_EXPAND_INVENTORY: 334,
   TROPHY_FULL: 22500,
 });
 
@@ -26,7 +29,7 @@ const INVENTORY_DEFINITIONS = Object.freeze({
   [INVENTORY_TYPES.EQUIP]: Object.freeze({
     key: "equip",
     min: 300,
-    max: 2200,
+    max: MAX_INVENTORY_CAPACITY,
     step: 5,
     cost: 50,
     fullErrorCode: ERROR_CODES.EQUIP_ITEM_FULL,
@@ -35,7 +38,7 @@ const INVENTORY_DEFINITIONS = Object.freeze({
   [INVENTORY_TYPES.UNIT]: Object.freeze({
     key: "unit",
     min: 200,
-    max: 1100,
+    max: MAX_INVENTORY_CAPACITY,
     step: 5,
     cost: 100,
     fullErrorCode: ERROR_CODES.ARMY_FULL,
@@ -44,7 +47,7 @@ const INVENTORY_DEFINITIONS = Object.freeze({
   [INVENTORY_TYPES.SHIP]: Object.freeze({
     key: "ship",
     min: 10,
-    max: 60,
+    max: MAX_INVENTORY_CAPACITY,
     step: 1,
     cost: 100,
     fullErrorCode: ERROR_CODES.SHIP_FULL,
@@ -52,8 +55,8 @@ const INVENTORY_DEFINITIONS = Object.freeze({
   }),
   [INVENTORY_TYPES.OPERATOR]: Object.freeze({
     key: "operator",
-    min: 300,
-    max: 500,
+    min: 10,
+    max: MAX_INVENTORY_CAPACITY,
     step: 5,
     cost: 100,
     fullErrorCode: ERROR_CODES.OPERATOR_FULL,
@@ -62,7 +65,7 @@ const INVENTORY_DEFINITIONS = Object.freeze({
   [INVENTORY_TYPES.TROPHY]: Object.freeze({
     key: "trophy",
     min: 2000,
-    max: 2000,
+    max: MAX_INVENTORY_CAPACITY,
     step: 10,
     cost: 50,
     fullErrorCode: ERROR_CODES.TROPHY_FULL,
@@ -85,8 +88,24 @@ function getInventoryCapacity(user, inventoryType) {
   const definition = getInventoryDefinition(type);
   if (!definition) return 0;
   const stored = getStoredInventoryCapacity(user, type);
-  if (stored > 0) return clampInt(stored, definition.min, definition.max);
-  return definition.min;
+  return stored > 0 ? clampInt(stored, definition.min, definition.max) : definition.min;
+}
+
+function initializeInventoryCapacities(user) {
+  const state = ensureInventoryExpansion(user);
+  for (const [typeText, definition] of Object.entries(INVENTORY_DEFINITIONS)) {
+    const type = Number(typeText);
+    const stored = getStoredInventoryCapacity(user, type);
+    const usage = getInventoryUsage(user, type);
+    const step = Math.max(1, Number(definition.step) || 1);
+    const usageSafe = usage > stored
+      ? Math.ceil((usage + 1) / step) * step
+      : stored;
+    const initial = clampInt(Math.max(definition.min, usageSafe), definition.min, definition.max);
+    state[String(type)] = initial;
+    state[definition.key] = initial;
+  }
+  return state;
 }
 
 function getInventoryCapacities(user) {
@@ -103,12 +122,12 @@ function applyInventoryExpansion(user, inventoryType, count) {
   const type = Number(inventoryType || 0);
   const definition = getInventoryDefinition(type);
   if (!definition) {
-    return inventoryExpansionResult(ERROR_CODES.INSUFFICIENT_ITEM, type, 0, []);
+    return inventoryExpansionResult(ERROR_CODES.UNKNOWN_EXPAND_TYPE, type, 0, []);
   }
 
   const requestedCount = Math.max(0, Math.trunc(Number(count || 0) || 0));
   const current = getInventoryCapacity(user, type);
-  if (requestedCount <= 0) return inventoryExpansionResult(ERROR_CODES.OK, type, current, []);
+  if (requestedCount <= 0) return inventoryExpansionResult(ERROR_CODES.CANNOT_EXPAND_INVENTORY, type, current, []);
 
   const expandedCount = current + definition.step * requestedCount;
   if (expandedCount > definition.max) {
@@ -185,6 +204,7 @@ function clampInt(value, min, max) {
 
 module.exports = {
   INVENTORY_EXPAND_ITEM_ID,
+  MAX_INVENTORY_CAPACITY,
   INVENTORY_TYPES,
   INVENTORY_DEFINITIONS,
   ERROR_CODES,
@@ -194,5 +214,6 @@ module.exports = {
   getInventoryCapacities,
   getInventoryDefinition,
   getInventoryUsage,
+  initializeInventoryCapacities,
   setInventoryCapacity,
 };

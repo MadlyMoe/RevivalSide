@@ -3,11 +3,11 @@ const {
   writeSignedVarLong,
   writeString,
   writeNullableObject,
-  writeNullableObjectList,
   writeNullObject,
 } = require("../../packet-codec");
 const { buildUserProfileData } = require("../../profile");
-const { createReader, ERRORS } = require("..");
+const { writeFriendDataList } = require("../../community");
+const { buildConfig, createReader, ERRORS } = require("..");
 
 const REQUESTS = {
   4100: "PRIVATE_PVP_LOBBY_CREATE_REQ",
@@ -42,11 +42,23 @@ module.exports = Object.entries(REQUESTS).map(([packetIdText, name]) => ({
     if (packetId === 4100) {
       const request = { isObserverMode: reader.bool(), inviteFriendCode: reader.long(), config: reader.config() };
       const created = manager.createRoom(socket, user, request);
+      const invite = request.inviteFriendCode
+        ? beginLocalInvite(ctx, manager, created, manager.getMember(socket), request.inviteFriendCode)
+        : { errorCode: 0 };
+      if (invite.errorCode) {
+        manager.leave(socket, ctx, { quiet: true });
+        ctx.sendGameResponse(socket, packet, 4101, Buffer.concat([writeSignedVarInt(invite.errorCode), writeNullObject()]), "private-pvp-create");
+        return true;
+      }
       ctx.sendGameResponse(socket, packet, 4101, Buffer.concat([writeSignedVarInt(0), writeNullableObject(manager.buildLobbyData(created))]), "private-pvp-create");
       return true;
     }
     if (packetId === 4123) {
       const code = reader.string();
+      if (room || member) {
+        sendAcceptCode(ctx, socket, packet, { errorCode: ERRORS.GAME_ALREADY_JOINED });
+        return true;
+      }
       const local = manager.joinLocal(code, socket, user);
       if (!local.errorCode) {
         sendAcceptCode(ctx, socket, packet, local);
@@ -56,14 +68,51 @@ module.exports = Object.entries(REQUESTS).map(([packetIdText, name]) => ({
       manager.requestRemoteJoin(code, user).then((result) => sendAcceptCode(ctx, socket, packet, result));
       return true;
     }
+    if (packetId === 4110) {
+      const senderUid = reader.long();
+      const accept = reader.bool();
+      const invitation = manager.getInvitation(senderUid, user.userUid);
+      if (!invitation) {
+        ctx.sendGameResponse(socket, packet, 4111, buildInviteAcceptAck(ERRORS.INVALID_TARGET), "private-pvp-accept-invite");
+        return true;
+      }
+      manager.removeInvitation(invitation);
+      if (!accept) {
+        ctx.sendGameResponse(socket, packet, 4111, buildInviteAcceptAck(0, 5), "private-pvp-reject-invite");
+        if (invitation.sender.socket && !invitation.sender.socket.destroyed) {
+          ctx.sendServerGamePacket(invitation.sender.socket, 4109, Buffer.concat([
+            writeSignedVarLong(BigInt(user.userUid)), writeSignedVarInt(4),
+          ]), "private-pvp-invite-rejected");
+        }
+        return true;
+      }
+      const joined = manager.attachMember(invitation.room, socket, user, { teamType: 3 });
+      if (!joined) {
+        ctx.sendGameResponse(socket, packet, 4111, buildInviteAcceptAck(ERRORS.ROOM_FULL), "private-pvp-accept-room-full");
+        return true;
+      }
+      ctx.sendGameResponse(socket, packet, 4111, buildInviteAcceptAck(0), "private-pvp-accept-invite");
+      if (invitation.sender.socket && !invitation.sender.socket.destroyed) {
+        ctx.sendServerGamePacket(invitation.sender.socket, 4112, writeNullableObject(manager.buildLobbyData(invitation.room)), "private-pvp-invite-accepted");
+      }
+      manager.broadcastState(invitation.room, ctx);
+      return true;
+    }
     if (!room || !member) {
       return sendNotInRoom(ctx, socket, packet, packetId);
     }
     if (packetId === 4102) {
-      member.deckIndex = reader.deckIndex();
-      member.ready = reader.bool();
+      const deckIndex = reader.deckIndex();
+      const ready = reader.bool();
+      if (room.matchStarted || member.observer || member.playerState !== 1) {
+        return sendError(ctx, socket, packet, 4103, ERRORS.INVALID_READY_REQUEST);
+      }
+      if (!validDeckIndex(deckIndex)) return sendError(ctx, socket, packet, 4103, ERRORS.INVALID_DECK_INDEX);
+      member.deckIndex = deckIndex;
+      member.ready = ready;
       user.pvp = user.pvp && typeof user.pvp === "object" ? user.pvp : {};
       user.pvp.privateLobbyDeckIndex = member.deckIndex;
+      persist(ctx);
       ctx.sendGameResponse(socket, packet, 4103, writeSignedVarInt(0), "private-pvp-ready");
       manager.broadcastState(room, ctx);
       return true;
@@ -74,9 +123,12 @@ module.exports = Object.entries(REQUESTS).map(([packetIdText, name]) => ({
       return true;
     }
     if (packetId === 4117) {
-      member.deckIndex = reader.deckIndex();
+      const deckIndex = reader.deckIndex();
+      if (!validDeckIndex(deckIndex)) return sendError(ctx, socket, packet, 4118, ERRORS.INVALID_DECK_INDEX);
+      member.deckIndex = deckIndex;
       user.pvp = user.pvp && typeof user.pvp === "object" ? user.pvp : {};
       user.pvp.privateLobbyDeckIndex = member.deckIndex;
+      persist(ctx);
       ctx.sendGameResponse(socket, packet, 4118, writeSignedVarInt(0), "private-pvp-deck");
       manager.broadcastState(room, ctx);
       return true;
@@ -98,18 +150,37 @@ module.exports = Object.entries(REQUESTS).map(([packetIdText, name]) => ({
         ctx.sendServerGamePacket(target.socket, 4127, writeSignedVarInt(0), "private-pvp-kicked");
         delete target.socket.session.privatePvpRoom;
         delete target.socket.session.privatePvpMember;
+        delete target.socket.session.privatePvpTeamType;
       }
       manager.broadcastState(room, ctx);
       return true;
     }
     if (packetId === 4130) {
       if (!member.host) return sendError(ctx, socket, packet, 4131, ERRORS.NOT_JOINED);
-      ctx.sendGameResponse(socket, packet, 4131, writeSignedVarInt(0), "private-pvp-start-setting");
-      ctx.startPrivatePvpMatch(room);
+      if (room.matchStarted) return sendError(ctx, socket, packet, 4131, ERRORS.GAME_ALREADY_JOINED);
+      const players = room.members.filter((entry) => !entry.observer);
+      const observersReady = room.members.filter((entry) => entry.observer).every((entry) => entry.playerState === 1);
+      if (players.length !== 2 || players.some((entry) => !entry.ready || !entry.socket || entry.socket.destroyed) || !observersReady) {
+        return sendError(ctx, socket, packet, 4131, ERRORS.STATE_NOT_SETTING_COMPLETE);
+      }
+      let acknowledged = false;
+      const started = ctx.startPrivatePvpMatch(room, () => {
+        acknowledged = true;
+        ctx.sendGameResponse(socket, packet, 4131, writeSignedVarInt(0), "private-pvp-start-setting");
+      });
+      if (!started) return sendError(ctx, socket, packet, 4131, ERRORS.INVALID_USER_DATA);
+      if (!acknowledged) ctx.sendGameResponse(socket, packet, 4131, writeSignedVarInt(0), "private-pvp-start-setting");
       return true;
     }
     if (packetId === 4136) {
-      member.playerState = reader.int();
+      const playerState = reader.int();
+      if (!Number.isInteger(playerState) || playerState < 0 || playerState > 4) {
+        ctx.sendGameResponse(socket, packet, 4137, Buffer.concat([
+          writeSignedVarInt(ERRORS.INVALID_STATE), writeSignedVarInt(member.playerState),
+        ]), "private-pvp-player-state");
+        return true;
+      }
+      member.playerState = playerState;
       ctx.sendGameResponse(socket, packet, 4137, Buffer.concat([writeSignedVarInt(0), writeSignedVarInt(member.playerState)]), "private-pvp-player-state");
       if (room.matchFinished && member.playerState === 1 && room.members.filter((entry) => !entry.observer).every((entry) => entry.playerState === 1)) {
         ctx.resetPrivatePvpMatch(room);
@@ -120,24 +191,32 @@ module.exports = Object.entries(REQUESTS).map(([packetIdText, name]) => ({
     }
     if (packetId === 4119) {
       const keyword = reader.string().toLowerCase();
-      const found = Object.values(ctx.userDb.users || {}).filter((entry) => !keyword || String(entry.nickname || "").toLowerCase().includes(keyword) || String(entry.friendCode || "").includes(keyword)).slice(0, 20);
-      ctx.sendGameResponse(socket, packet, 4120, Buffer.concat([writeSignedVarInt(0), writeNullableObjectList(found.map(buildUserProfileData))]), "private-pvp-search");
+      const found = Object.values(ctx.userDb.users || {}).filter((entry) =>
+        entry && String(entry.userUid || "") !== String(user.userUid || "") && (
+          !keyword || String(entry.nickname || "").toLowerCase().includes(keyword) || String(entry.friendCode || "").includes(keyword)
+        )
+      ).slice(0, 20);
+      ctx.sendGameResponse(socket, packet, 4120, Buffer.concat([writeSignedVarInt(0), writeFriendDataList(found)]), "private-pvp-search");
       return true;
     }
     if (packetId === 4104) {
-      reader.long();
-      ctx.sendGameResponse(socket, packet, 4105, writeSignedVarInt(0), "private-pvp-invite");
+      const invite = beginLocalInvite(ctx, manager, room, member, reader.long());
+      ctx.sendGameResponse(socket, packet, 4105, writeSignedVarInt(invite.errorCode), "private-pvp-invite");
       return true;
     }
     if (packetId === 4107) {
       const targetUid = reader.long();
-      ctx.sendGameResponse(socket, packet, 4108, Buffer.concat([writeSignedVarInt(0), writeSignedVarLong(targetUid)]), "private-pvp-cancel-invite");
-      return true;
-    }
-    if (packetId === 4110) {
-      reader.long();
-      reader.bool();
-      ctx.sendGameResponse(socket, packet, 4111, Buffer.concat([writeSignedVarInt(ERRORS.INVALID_TARGET), writeSignedVarInt(0), writeString(""), writeSignedVarInt(0), writeString("")]), "private-pvp-accept-invite");
+      const invitation = manager.getInvitation(user.userUid, targetUid);
+      const errorCode = invitation ? 0 : ERRORS.INVALID_TARGET;
+      if (invitation) {
+        manager.removeInvitation(invitation);
+        if (invitation.targetSocket && !invitation.targetSocket.destroyed) {
+          ctx.sendServerGamePacket(invitation.targetSocket, 4109, Buffer.concat([
+            writeSignedVarLong(BigInt(user.userUid)), writeSignedVarInt(1),
+          ]), "private-pvp-cancel-invite");
+        }
+      }
+      ctx.sendGameResponse(socket, packet, 4108, Buffer.concat([writeSignedVarInt(errorCode), writeSignedVarLong(targetUid)]), "private-pvp-cancel-invite");
       return true;
     }
     if (packetId === 4115) {
@@ -164,13 +243,49 @@ module.exports = Object.entries(REQUESTS).map(([packetIdText, name]) => ({
       return true;
     }
     if (packetId === 4133) {
+      if (!room.config.draftBanMode) return sendError(ctx, socket, packet, 4134, ERRORS.INVALID_STATE);
       ctx.sendGameResponse(socket, packet, 4134, writeSignedVarInt(0), "private-pvp-draft-giveup");
       manager.broadcast(room, ctx, 4135, Buffer.alloc(0), "private-pvp-draft-giveup", { except: socket });
+      const host = room.members.find((entry) => entry.host && entry.socket);
+      manager.leave(host ? host.socket : socket, null);
       return true;
     }
     return false;
   },
 }));
+
+function beginLocalInvite(ctx, manager, room, member, friendCode) {
+  const target = Object.values(ctx.userDb && ctx.userDb.users || {}).find((entry) =>
+    String(entry && entry.friendCode || "") === String(friendCode)
+  );
+  if (!target) return { errorCode: ERRORS.TARGET_NOT_FOUND };
+  const targetSocket = typeof ctx.findClientSocketByUserUid === "function" ? ctx.findClientSocketByUserUid(target.userUid) : null;
+  if (!targetSocket || targetSocket.destroyed) return { errorCode: ERRORS.TARGET_NOT_CONNECTED };
+  const result = manager.createInvitation(room, member, targetSocket, target, ctx);
+  if (!result.errorCode) {
+    ctx.sendServerGamePacket(targetSocket, 4106, Buffer.concat([
+      writeNullableObject(buildUserProfileData(member.user)),
+      writeSignedVarInt(10),
+      writeNullableObject(buildConfig(room.config)),
+    ]), "private-pvp-invite");
+  }
+  return result;
+}
+
+function buildInviteAcceptAck(errorCode, cancelType = 0) {
+  return Buffer.concat([
+    writeSignedVarInt(errorCode), writeSignedVarInt(cancelType), writeString(""), writeSignedVarInt(0), writeString(""),
+  ]);
+}
+
+function validDeckIndex(deckIndex) {
+  return deckIndex && Number.isInteger(deckIndex.deckType) && deckIndex.deckType > 0 && deckIndex.deckType <= 10 &&
+    Number.isInteger(deckIndex.index) && deckIndex.index >= 0 && deckIndex.index <= 255;
+}
+
+function persist(ctx) {
+  if (ctx && (!ctx.config || ctx.config.USE_LOCAL_USER_DB) && typeof ctx.saveUserDb === "function") ctx.saveUserDb();
+}
 
 function sendAcceptCode(ctx, socket, packet, result) {
   const errorCode = Number(result && result.errorCode || 0);
@@ -197,7 +312,7 @@ function sendNotInRoom(ctx, socket, packet, packetId) {
   if (packetId === 4115 || packetId === 4121 || packetId === 4125) {
     payload = Buffer.concat([payload, writeNullObject()]);
   }
-  if (packetId === 4119) payload = Buffer.concat([payload, writeNullableObjectList([])]);
+  if (packetId === 4119) payload = Buffer.concat([payload, writeFriendDataList([])]);
   if (packetId === 4136) payload = Buffer.concat([payload, writeSignedVarInt(0)]);
   ctx.sendGameResponse(socket, packet, packetId + 1, payload, "private-pvp-not-in-room");
   return true;

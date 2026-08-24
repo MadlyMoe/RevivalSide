@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script",
+    "fileName": "LUA_COLLECTION_UNIT_TEMPLET.json",
+    "tableName": "LUA_COLLECTION_UNIT_TEMPLET",
+    "format": "json"
+  },
+  "key": {
+    "field": "m_UnitStrID",
+    "value": "NKM_UNIT_CHILLING_CHASER"
+  },
+  "value": {
+    "m_UnitID": 26063,
+    "m_UnitStrID": "NKM_UNIT_CHILLING_CHASER",
+    "m_NKM_UNIT_TYPE": "NUT_NORMAL",
+    "m_UnitIntro": "MODSIDE_UNIT_COLLECTION_INTRO_26063",
+    "Idx": 1019
+  }
+}

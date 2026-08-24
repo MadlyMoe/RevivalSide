@@ -2,15 +2,12 @@ module.exports = {
   packetId: 453,
   name: "GREETING_MESSAGE_REQ",
   handle(ctx, socket, packet) {
-    if (ctx.config.REPLAY_CAPTURED_GAME_FLOW && ctx.capturedGameFlow) {
-      ctx.sendCapturedGameThroughPacketId(socket, ctx.constants.GREETING_MESSAGE_ACK, "greeting-message");
-      return true;
-    }
+    const user = socket && socket.session && socket.session.user;
     ctx.sendGameResponse(
       socket,
       packet,
       ctx.constants.GREETING_MESSAGE_ACK,
-      ctx.buildGreetingMessageAckPayload(),
+      ctx.buildGreetingMessageAckPayload(user && user.friendIntro || ""),
       "greeting-message"
     );
     return true;

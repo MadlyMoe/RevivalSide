@@ -26,6 +26,7 @@ function createUserManager(options) {
     makeToken: options.makeToken || ((prefix) => `${prefix}_${crypto.randomBytes(24).toString("hex")}`),
     invalidateJoinLobbyAckPayloadCache:
       typeof options.invalidateJoinLobbyAckPayloadCache === "function" ? options.invalidateJoinLobbyAckPayloadCache : null,
+    onActiveUserChanged: typeof options.onActiveUserChanged === "function" ? options.onActiveUserChanged : null,
   };
   const html = buildUserManagerHtml(config.basePath);
 
@@ -192,6 +193,7 @@ async function routeRequest(config, html, req, res, requestUrl) {
     const user = switchActiveUser(config.userDb, uid);
     persistActiveSelection(config, "switch-user");
     sendJson(res, 200, { user: buildUserSummary(config.userDb, user), users: buildUserSummaries(config.userDb), meta: buildDbMeta(config.userDb, config.userDbPath) });
+    notifyActiveUserChanged(config, user, "switch-user");
     return;
   }
 
@@ -591,6 +593,15 @@ function persistActiveSelection(config, reason) {
   }
 }
 
+function notifyActiveUserChanged(config, user, reason) {
+  if (!config.onActiveUserChanged) return;
+  try {
+    config.onActiveUserChanged(user, reason);
+  } catch (error) {
+    console.log(`[user-manager] active-user callback failed: ${error.message}`);
+  }
+}
+
 function createBackup(config, reason) {
   if (!config.userDbPath || !fs.existsSync(config.userDbPath)) return;
   try {
@@ -943,7 +954,7 @@ function buildUserManagerHtml(basePath) {
 
     .user-entry {
       display: grid;
-      grid-template-columns: 24px minmax(0, 1fr);
+      grid-template-columns: 24px minmax(0, 1fr) auto;
       align-items: start;
       gap: 6px;
       margin-bottom: 4px;
@@ -974,6 +985,12 @@ function buildUserManagerHtml(basePath) {
 
     .user-row.login-active {
       border-color: #6f927d;
+    }
+
+    .activate-user {
+      align-self: stretch;
+      min-height: 68px;
+      padding: 0 9px;
     }
 
     .user-entry.selected-delete .user-row {
@@ -1224,6 +1241,10 @@ function buildUserManagerHtml(basePath) {
       .user-row {
         min-height: 58px;
         padding: 8px;
+      }
+
+      .activate-user {
+        min-height: 58px;
       }
 
       .delete-check {
@@ -1579,8 +1600,20 @@ function buildUserManagerHtml(basePath) {
         lines[0].textContent = user.userUid + " | " + user.friendCode + (user.importedOfficialProfile ? " | Official" : "");
         lines[1].textContent = "U " + user.units + " S " + user.ships + " O " + user.operators + " E " + user.equips;
         row.addEventListener("click", function () { selectUser(user.userUid); });
+
+        const activate = document.createElement("button");
+        activate.type = "button";
+        activate.className = "activate-user";
+        activate.textContent = isLoginActive ? "Active" : "Use";
+        activate.disabled = isLoginActive;
+        activate.title = isLoginActive ? "Current login profile" : "Use this profile on the next login";
+        activate.addEventListener("click", function (event) {
+          event.stopPropagation();
+          switchProfileTo(user.userUid);
+        });
         entry.appendChild(checkbox);
         entry.appendChild(row);
+        entry.appendChild(activate);
         els.userList.appendChild(entry);
       }
       renderDeleteSelectionControls();
@@ -2046,21 +2079,31 @@ function buildUserManagerHtml(basePath) {
     }
 
     async function switchProfile() {
-      if (!state.selectedUid || state.selectedUid === state.activeUid) return;
+      await switchProfileTo(state.selectedUid);
+    }
+
+    async function switchProfileTo(uid) {
+      if (!uid || uid === state.activeUid) return;
       if (state.dirty && !window.confirm("Discard unsaved edits before switching active profile?")) return;
-      const payload = await requestJson("/users/" + encodeURIComponent(state.selectedUid) + "/switch", {
-        method: "POST",
-        body: "{}"
-      });
-      state.profile = payload.user;
-      state.profileLoaded = false;
-      state.profileOmittedFields = [];
-      state.users = payload.users || state.users;
-      state.db = null;
-      renderMeta(payload.meta);
-      renderProfile();
-      renderUsers();
-      setStatus("Switched active profile to " + state.selectedUid, "ok");
+      setStatus("Switching active profile to " + uid, "warn");
+      try {
+        const payload = await requestJson("/users/" + encodeURIComponent(uid) + "/switch", {
+          method: "POST",
+          body: "{}"
+        });
+        state.selectedUid = uid;
+        state.profile = payload.user;
+        state.profileLoaded = false;
+        state.profileOmittedFields = [];
+        state.users = payload.users || state.users;
+        state.db = null;
+        renderMeta(payload.meta);
+        renderProfile();
+        renderUsers();
+        setStatus("Active profile: " + uid + ". Reopen Counter:Side to log in with it.", "ok");
+      } catch (error) {
+        setStatus(error.message, "invalid");
+      }
     }
 
     async function regenerateTokens() {

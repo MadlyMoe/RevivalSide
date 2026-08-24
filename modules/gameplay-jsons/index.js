@@ -137,6 +137,10 @@ function readGameplayLuacTable(directory, fileName, options = {}) {
     return null;
   }
 
+  const luacPath = path.join(gameplayTablesDir, directory, "luac", normalizeLuacTableFileName(fileName));
+  const sidecar = readGameplayJsonSidecar(luacPath);
+  if (sidecar) return sidecar;
+
   const host = getGameplayTableHost({ rootDir, env, managedDir, gameplayTablesDir, options });
   const response = host.request("exportLuaTable", {
     directory,
@@ -150,11 +154,54 @@ function readGameplayLuacTable(directory, fileName, options = {}) {
     return null;
   }
   try {
-    return JSON.parse(response.tableJson || "null");
+    const parsed = JSON.parse(response.tableJson || "null");
+    if (parsed && typeof parsed === "object") {
+      writeGameplayJsonSidecar(luacPath, fileName, response.tableJson);
+    }
+    return parsed;
   } catch (err) {
     console.log(`[${label}] failed to parse managed table ${directory}\\luac\\${normalizeLuacTableFileName(fileName)}: ${err.message}`);
     return null;
   }
+}
+
+function readGameplayJsonSidecar(luacPath) {
+  const sidecar = path.join(path.dirname(luacPath), `${path.basename(luacPath, path.extname(luacPath))}.json`);
+  if (!fs.existsSync(sidecar)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(sidecar, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeGameplayJsonSidecar(luacPath, fileName, tableJson) {
+  const destination = path.join(path.dirname(luacPath), path.basename(normalizeJsonTableFileName(fileName)));
+  if (fs.existsSync(destination)) return destination;
+  const temporary = `${destination}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temporary, `${String(tableJson || "").trim()}\n`, "utf8");
+    try {
+      fs.renameSync(temporary, destination);
+    } catch (err) {
+      if (!fs.existsSync(destination)) throw err;
+    }
+    return destination;
+  } catch {
+    return "";
+  } finally {
+    try {
+      fs.unlinkSync(temporary);
+    } catch {}
+  }
+}
+
+function closeGameplayTableHost() {
+  const host = gameplayTableHost;
+  gameplayTableHost = null;
+  gameplayTableHostKey = "";
+  return host ? host.close() : Promise.resolve();
 }
 
 function getGameplayTableHost({ rootDir, env, managedDir, gameplayTablesDir, options = {} }) {
@@ -766,6 +813,7 @@ module.exports = {
   DEFAULT_GAMEPLAY_LUA_CACHE_ROOT,
   DEFAULT_GAMEPLAY_TABLE_ROOT,
   LUA_CACHE_MANIFEST_NAME,
+  closeGameplayTableHost,
   ensureGameplayLuaCache,
   expandTableRoots,
   extractTableRecords,
@@ -778,6 +826,8 @@ module.exports = {
   listGameplayTableFiles,
   normalizeTableBaseName,
   parsePathList,
+  readGameplayJsonSidecar,
   readGameplayTable,
   readGameplayTableRecords,
+  writeGameplayJsonSidecar,
 };

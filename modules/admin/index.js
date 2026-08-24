@@ -33,10 +33,18 @@ const {
   getTrophyUnitIds,
   getPlayableOperatorIds,
   getAllEquipIds,
+  getAllEquipMoldTemplets,
+  getEquipMoldTemplet,
   getAllSkinIds,
   getAllEmoticonIds,
 } = require("../game-data");
 const { validateEquipCustomSubstats } = require("../equipment");
+const {
+  INVENTORY_TYPES,
+  getInventoryCapacity,
+  getInventoryUsage,
+} = require("../inventory-capacity");
+const { readGameplayTableRecords } = require("../gameplay-jsons");
 const worldMap = require("../world-map");
 
 const PACKETS = Object.freeze({
@@ -45,6 +53,7 @@ const PACKETS = Object.freeze({
   POST_RECEIVE_REQ: 1616,
   POST_RECEIVE_ACK: 1617,
   POST_ARRIVE_NOT: 1618,
+  POST_LIST_NOT: 1645,
   PRIVATE_CHAT_REQ: 3800,
   PRIVATE_CHAT_ACK: 3801,
   PRIVATE_CHAT_NOT: 3802,
@@ -61,6 +70,23 @@ const ADMIN_MAIN_UNIT_ID = Number(process.env.CS_ADMIN_MAIN_UNIT_ID || 1006);
 const ADMIN_MAX_REWARDS_PER_MAIL = Math.max(1, Number(process.env.CS_ADMIN_MAX_REWARDS_PER_MAIL || 80));
 const CHAT_HISTORY_LIMIT = Math.max(10, Number(process.env.CS_ADMIN_CHAT_HISTORY_LIMIT || 100));
 const ADMIN_POST_ID = Number(process.env.CS_ADMIN_POST_ID || 0);
+const PRIVATE_CHAT_MAX_LENGTH = 70;
+const PRIVATE_CHAT_ERRORS = Object.freeze({
+  INVALID_REQUEST: 20190,
+  INVALID_USER_UID: 22100,
+  BLOCKED_USER_UID: 22101,
+});
+const POST_ERRORS = Object.freeze({
+  ITEM_FULL: 229,
+  INVALID_POST_INDEX: 230,
+  EXPIRED: 231,
+});
+const postAllowReceiveAll = new Map(
+  readGameplayTableRecords("ab_script", "LUA_POST_TEMPLET.json")
+    .map((row) => [Number(row && row.m_PostID), Boolean(row && row.m_AllowReceiveAll)])
+    .filter(([postId]) => Number.isInteger(postId))
+);
+const trophyUnitIds = new Set(getTrophyUnitIds().map(Number));
 
 const REWARD_TYPE_ENUM = Object.freeze({
   RT_NONE: 0,
@@ -194,6 +220,7 @@ function createAdminHandler(packetId, name) {
         );
       }
       for (const notice of result.notices || []) sendServerNotice(ctx, socket, notice.packetId, notice.payload, notice.label);
+      for (const notice of result.userNotices || []) sendUserNotice(ctx, notice.userUid, notice.packetId, notice.payload, notice.label);
       if (result.worldMapRefresh) {
         worldMap.sendRaidSnapshotData(ctx, socket, user, {
           now: ctx && typeof ctx.dateTimeBinaryNow === "function" ? ctx.dateTimeBinaryNow() : undefined,
@@ -209,7 +236,7 @@ function createAdminHandler(packetId, name) {
           includeEmpty: true,
         });
       }
-      persistUserDb(ctx);
+      if (result.persist !== false) persistUserDb(ctx);
       return true;
     },
   };
@@ -218,112 +245,269 @@ function createAdminHandler(packetId, name) {
 function buildResponse(ctx, socket, user, packetId, request) {
   switch (packetId) {
     case PACKETS.POST_LIST_REQ:
-      return postListAck(user, request);
+      return postListAck(ctx, user, request);
     case PACKETS.POST_RECEIVE_REQ:
       return postReceiveAck(ctx, user, request);
     case PACKETS.PRIVATE_CHAT_REQ:
       return privateChatAck(ctx, user, request);
     case PACKETS.PRIVATE_CHAT_LIST_REQ:
-      return privateChatListAck(user, request);
+      return privateChatListAck(ctx, user, request);
     case PACKETS.PRIVATE_CHAT_ALL_LIST_REQ:
-      return privateChatAllListAck(user);
+      return privateChatAllListAck(ctx, user);
     default:
       return { packetId: packetId + 1, payload: writeSignedVarInt(0) };
   }
 }
 
-function postListAck(user, request) {
-  const posts = listVisiblePosts(user, request.lastPostIndex);
+function postListAck(ctx, user, request) {
+  const lastPostIndex = toBigInt(request.lastPostIndex || 0);
+  const errorCode = request.valid === false || lastPostIndex < 0n ? POST_ERRORS.INVALID_POST_INDEX : 0;
+  const posts = errorCode === 0 ? listVisiblePosts(ctx, user, lastPostIndex) : [];
   return {
     packetId: PACKETS.POST_LIST_ACK,
     payload: Buffer.concat([
       writeObjectList(posts.map((post) => writeNullableObject(buildPostData(post)))),
-      writeSignedVarInt(countPendingPosts(user)),
-      writeSignedVarInt(0),
+      writeSignedVarInt(countPendingPosts(ctx, user)),
+      writeSignedVarInt(errorCode),
     ]),
+    persist: false,
   };
 }
 
 function postReceiveAck(ctx, user, request) {
-  const state = ensureAdminState(user);
   const postIndex = toBigInt(request.postIndex || 0);
-  const posts =
-    postIndex === 0n
-      ? state.posts.filter((post) => !post.received)
-      : state.posts.filter((post) => !post.received && toBigInt(post.postIndex) === postIndex);
+  if (request.valid === false || postIndex < 0n) return postReceiveResult(ctx, user, postIndex, createEmptyReward(), POST_ERRORS.INVALID_POST_INDEX, false);
+  const state = ensureAdminState(user);
+  const pending = state.posts.filter((post) => !post.received);
+  const candidates = postIndex === 0n
+    ? pending.filter((post) => postAllowReceiveAll.get(Number(post.postId || 0)) === true)
+    : pending.filter((post) => toBigInt(post.postIndex) === postIndex);
+  if (!candidates.length) return postReceiveResult(ctx, user, postIndex, createEmptyReward(), POST_ERRORS.INVALID_POST_INDEX, false);
+  if (postIndex !== 0n && isPostExpired(ctx, candidates[0])) {
+    return postReceiveResult(ctx, user, postIndex, createEmptyReward(), POST_ERRORS.EXPIRED, false);
+  }
+
   const reward = createEmptyReward();
-  for (const post of posts) {
+  let inventoryFull = false;
+  let received = 0;
+  for (const post of candidates) {
+    if (isPostExpired(ctx, post)) continue;
+    if (!canReceivePost(user, post)) {
+      inventoryFull = true;
+      if (postIndex !== 0n) break;
+      continue;
+    }
     mergeReward(reward, grantPostRewards(ctx, user, post));
     post.received = true;
-    post.receivedAt = String(dateTimeBinaryNow());
+    post.receivedAt = String(getChatTimestamp(ctx));
+    received += 1;
   }
+  const errorCode = inventoryFull ? POST_ERRORS.ITEM_FULL : received > 0 ? 0 : POST_ERRORS.INVALID_POST_INDEX;
+  return postReceiveResult(ctx, user, postIndex, reward, errorCode, received > 0);
+}
+
+function postReceiveResult(ctx, user, postIndex, reward, errorCode, persist) {
   return {
     packetId: PACKETS.POST_RECEIVE_ACK,
     payload: Buffer.concat([
       writeSignedVarLong(postIndex),
       writeNullableObject(buildRewardData(reward)),
-      writeSignedVarInt(countPendingPosts(user)),
-      writeSignedVarInt(0),
+      writeSignedVarInt(countPendingPosts(ctx, user)),
+      writeSignedVarInt(errorCode),
     ]),
+    persist,
   };
 }
 
 function privateChatAck(ctx, user, request) {
-  const targetUid = toBigInt(request.userUid || ADMIN_UID);
-  const messageText = String(request.message || "").slice(0, 512);
-  const userMessage = appendChatMessage(user, targetUid, buildUserChatMessage(user, messageText, request.emotionId));
+  const targetUid = toBigInt(request.userUid || 0);
+  const target = targetUid === ADMIN_UID ? null : findLocalUser(ctx, targetUid);
+  const validationError = validatePrivateChatRequest(user, targetUid, target, request);
+  if (validationError !== 0) return privateChatAckError(validationError);
+
+  const messageText = String(request.message || "");
+  const messageUid = allocatePrivateChatMessageUid(ctx, user);
+  const userMessage = appendChatMessage(
+    user,
+    targetUid,
+    buildUserChatMessage(ctx, user, messageUid, messageText, request.emotionId)
+  );
   const notices = [
     { packetId: PACKETS.PRIVATE_CHAT_NOT, payload: buildPrivateChatNot(userMessage), label: "private-chat-self" },
   ];
+  const userNotices = [];
   let worldMapRefresh = false;
   let worldMapRefreshOptions = null;
-  if (targetUid === ADMIN_UID || isAdminCommand(messageText)) {
+  if (targetUid === ADMIN_UID) {
+    const postCountBefore = ensureAdminState(user).posts.length;
     const result = handleAdminCommand(ctx, user, messageText);
     const replyText = result.reply || "Command handled.";
-    const adminMessage = appendChatMessage(user, ADMIN_UID, buildAdminChatMessage(replyText));
+    const adminMessage = appendChatMessage(
+      user,
+      ADMIN_UID,
+      buildAdminChatMessage(replyText, allocatePrivateChatMessageUid(ctx, user), getChatTimestamp(ctx))
+    );
     notices.push({ packetId: PACKETS.PRIVATE_CHAT_NOT, payload: buildPrivateChatNot(adminMessage), label: "private-chat-admin" });
     if (result.createdPosts > 0) {
-      notices.push({ packetId: PACKETS.POST_ARRIVE_NOT, payload: writeSignedVarInt(result.createdPosts), label: "post-arrive" });
+      const createdPosts = ensureAdminState(user).posts.slice(postCountBefore);
+      notices.push(result.postListNotify
+        ? {
+            packetId: PACKETS.POST_LIST_NOT,
+            payload: buildPostListNot(ctx, user, createdPosts),
+            label: "post-list-not",
+          }
+        : {
+            packetId: PACKETS.POST_ARRIVE_NOT,
+            payload: writeSignedVarInt(result.createdPosts),
+            label: "post-arrive",
+          }
+      );
     }
     worldMapRefresh = Boolean(result.worldMapRefresh);
     worldMapRefreshOptions = {
       cancelCityIds: result.cancelCityIds,
       raidDetailUids: result.raidDetailUids,
     };
+  } else {
+    appendChatMessage(target, toBigInt(user.userUid), userMessage);
+    userNotices.push({
+      userUid: targetUid,
+      packetId: PACKETS.PRIVATE_CHAT_NOT,
+      payload: buildPrivateChatNot(userMessage),
+      label: "private-chat-recipient",
+    });
   }
   return {
     packetId: PACKETS.PRIVATE_CHAT_ACK,
     payload: Buffer.concat([writeSignedVarInt(0), writeSignedVarLong(toBigInt(userMessage.messageUid))]),
     notices,
+    userNotices,
+    persist: true,
     worldMapRefresh,
     cancelCityIds: worldMapRefreshOptions && worldMapRefreshOptions.cancelCityIds,
     raidDetailUids: worldMapRefreshOptions && worldMapRefreshOptions.raidDetailUids,
   };
 }
 
-function privateChatListAck(user, request) {
-  const targetUid = toBigInt(request.userUid || ADMIN_UID);
+function privateChatAckError(errorCode) {
+  return {
+    packetId: PACKETS.PRIVATE_CHAT_ACK,
+    payload: Buffer.concat([writeSignedVarInt(errorCode), writeSignedVarLong(0)]),
+    persist: false,
+  };
+}
+
+function privateChatListAck(ctx, user, request) {
+  const targetUid = toBigInt(request.userUid || 0);
+  const target = targetUid === ADMIN_UID ? null : findLocalUser(ctx, targetUid);
+  const errorCode = validatePrivateChatTarget(user, targetUid, target, request.valid);
+  const welcomeAdded = errorCode === 0 && targetUid === ADMIN_UID ? ensureAdminWelcome(user) : false;
   const messages = getChatMessages(user, targetUid);
   return {
     packetId: PACKETS.PRIVATE_CHAT_LIST_ACK,
     payload: Buffer.concat([
-      writeSignedVarInt(0),
+      writeSignedVarInt(errorCode),
       writeSignedVarLong(targetUid),
-      writeObjectList(messages.map((message) => writeNullableObject(buildChatMessageData(message)))),
+      writeObjectList((errorCode === 0 ? messages : []).map((message) => writeNullableObject(buildChatMessageData(message)))),
     ]),
+    persist: welcomeAdded,
   };
 }
 
-function privateChatAllListAck(user) {
-  const adminListData = buildPrivateChatListData(getAdminProfile(), getLastAdminChatMessage(user));
+function privateChatAllListAck(ctx, user) {
+  const welcomeAdded = ensureAdminWelcome(user);
+  const friends = [buildPrivateChatListData(getAdminProfile(), getLastAdminChatMessage(user))];
+  const seen = new Set([String(user.userUid || "0"), ADMIN_UID.toString()]);
+  for (const target of getFriendUsers(ctx, user)) {
+    const uid = String(target.userUid || "0");
+    if (seen.has(uid)) continue;
+    seen.add(uid);
+    friends.push(buildPrivateChatListData(getUserProfile(target), getLastChatMessage(user, uid)));
+  }
+  const guildMembers = [];
+  for (const target of getGuildUsers(ctx, user)) {
+    const uid = String(target.userUid || "0");
+    if (seen.has(uid)) continue;
+    seen.add(uid);
+    guildMembers.push(buildPrivateChatListData(getUserProfile(target), getLastChatMessage(user, uid)));
+  }
   return {
     packetId: PACKETS.PRIVATE_CHAT_ALL_LIST_ACK,
     payload: Buffer.concat([
       writeSignedVarInt(0),
-      writeObjectList([writeNullableObject(adminListData)]),
-      writeVarInt(0),
+      writeObjectList(friends.map((entry) => writeNullableObject(entry))),
+      writeObjectList(guildMembers.map((entry) => writeNullableObject(entry))),
     ]),
+    persist: welcomeAdded,
   };
+}
+
+function validatePrivateChatRequest(user, targetUid, target, request) {
+  const targetError = validatePrivateChatTarget(user, targetUid, target, request && request.valid);
+  if (targetError !== 0) return targetError;
+  const message = String(request.message || "");
+  const emotionId = Number(request.emotionId || 0);
+  const hasText = !/^\s*$/.test(message);
+  if (hasText) {
+    return emotionId === 0 && message.length <= PRIVATE_CHAT_MAX_LENGTH ? 0 : PRIVATE_CHAT_ERRORS.INVALID_REQUEST;
+  }
+  if (!Number.isInteger(emotionId) || emotionId <= 0) return PRIVATE_CHAT_ERRORS.INVALID_REQUEST;
+  const templet = getEmoticonTemplet(emotionId);
+  const owned = ensureInventory(user).emoticons.includes(emotionId);
+  return templet && templet.m_EmoticonType === "NET_ANI" && owned ? 0 : PRIVATE_CHAT_ERRORS.INVALID_REQUEST;
+}
+
+function validatePrivateChatTarget(user, targetUid, target, requestValid = true) {
+  if (!requestValid) return PRIVATE_CHAT_ERRORS.INVALID_REQUEST;
+  const uid = toBigInt(targetUid || 0);
+  if (uid <= 0n || uid === toBigInt(user && user.userUid || 0)) return PRIVATE_CHAT_ERRORS.INVALID_USER_UID;
+  if (uid !== ADMIN_UID && !target) return PRIVATE_CHAT_ERRORS.INVALID_USER_UID;
+  if (uid !== ADMIN_UID && (hasBlockedUser(user, uid) || hasBlockedUser(target, user && user.userUid))) {
+    return PRIVATE_CHAT_ERRORS.BLOCKED_USER_UID;
+  }
+  return 0;
+}
+
+function hasBlockedUser(user, userUid) {
+  const blocked = user && user.community && Array.isArray(user.community.blocked) ? user.community.blocked : [];
+  const target = String(toBigInt(userUid || 0));
+  return blocked.some((uid) => String(toBigInt(uid || 0)) === target);
+}
+
+function findLocalUser(ctx, userUid) {
+  const users = ctx && ctx.userDb && ctx.userDb.users && typeof ctx.userDb.users === "object" ? ctx.userDb.users : {};
+  return users[String(toBigInt(userUid || 0))] || null;
+}
+
+function getFriendUsers(ctx, user) {
+  const friendUids = user && user.community && Array.isArray(user.community.friends) ? user.community.friends : [];
+  return friendUids.map((uid) => findLocalUser(ctx, uid)).filter(Boolean);
+}
+
+function getGuildUsers(ctx, user) {
+  const guildUid = toBigInt(user && user.guildUid || 0);
+  if (guildUid <= 0n) return [];
+  const users = ctx && ctx.userDb && ctx.userDb.users && typeof ctx.userDb.users === "object"
+    ? Object.values(ctx.userDb.users)
+    : [];
+  return users.filter(
+    (target) => target && String(target.userUid || "0") !== String(user.userUid || "0") && toBigInt(target.guildUid || 0) === guildUid
+  );
+}
+
+function allocatePrivateChatMessageUid(ctx, user) {
+  if (!ctx || !ctx.userDb || typeof ctx.userDb !== "object") return allocateMessageUid(ensureAdminState(user));
+  ctx.userDb.privateChat = ctx.userDb.privateChat && typeof ctx.userDb.privateChat === "object" ? ctx.userDb.privateChat : {};
+  const state = ctx.userDb.privateChat;
+  const timestamp = toBigInt(getChatTimestamp(ctx), 1n);
+  let next = toBigInt(state.nextMessageUid || timestamp, timestamp);
+  if (next < timestamp) next = timestamp;
+  state.nextMessageUid = (next + 1n).toString();
+  return next;
+}
+
+function getChatTimestamp(ctx) {
+  return ctx && typeof ctx.dateTimeBinaryNow === "function" ? ctx.dateTimeBinaryNow() : dateTimeBinaryNow();
 }
 
 function handleAdminCommand(ctx, user, messageText) {
@@ -580,7 +764,7 @@ function parseGiveCommand(tokens, user = null) {
 
   if (kind === "everything") {
     countText = idText || countText;
-    return buildAllRewards(["items", "skins", "emoticons", "units", "trophies", "ships", "operators", "gears"], countText);
+    return buildAllRewards(["items", "molds", "skins", "emoticons", "units", "trophies", "ships", "operators", "gears"], countText);
   }
   if (kind === "maxmaze" || kind === "maze") return buildMaxMazeGearRewards(user);
   if (kind === "all") {
@@ -1353,6 +1537,7 @@ function handleServerTimeCommand(ctx, user, tokens) {
     return {
       reply: "Server time override cleared. I sent the current server time to Mail.",
       createdPosts: 1,
+      postListNotify: true,
     };
   }
 
@@ -1373,6 +1558,7 @@ function handleServerTimeCommand(ctx, user, tokens) {
     return {
       reply: `Server time set to ${updated.toISOString()}. I sent a confirmation to Mail.`,
       createdPosts: 1,
+      postListNotify: true,
     };
   }
 
@@ -1381,6 +1567,7 @@ function handleServerTimeCommand(ctx, user, tokens) {
   return {
     reply: "I sent the current server date and time to Mail.",
     createdPosts: 1,
+    postListNotify: true,
   };
 }
 
@@ -1548,6 +1735,14 @@ function buildPostData(post) {
   ]);
 }
 
+function buildPostListNot(ctx, user, posts) {
+  const visible = (Array.isArray(posts) ? posts : []).filter((post) => post && !post.received && !isPostExpired(ctx, post));
+  return Buffer.concat([
+    writeObjectList(visible.map((post) => writeNullableObject(buildPostData(post)))),
+    writeSignedVarInt(countPendingPosts(ctx, user)),
+  ]);
+}
+
 function buildRewardInfoData(reward) {
   const spec = normalizeRewardSpec(reward) || {};
   return Buffer.concat([
@@ -1565,12 +1760,12 @@ function buildPrivateChatNot(message) {
 function buildPrivateChatListData(profile, lastMessage) {
   return Buffer.concat([
     writeNullableObject(buildCommonProfileData(profile)),
-    writeNullableObject(buildChatMessageData(lastMessage || buildAdminChatMessage("Admin console ready. Type /help."))),
+    writeNullableObject(buildChatMessageData(lastMessage || buildEmptyChatMessage(profile))),
   ]);
 }
 
 function buildChatMessageData(message) {
-  const data = message || buildAdminChatMessage("Admin console ready. Type /help.");
+  const data = message || buildEmptyChatMessage(getAdminProfile());
   return Buffer.concat([
     writeSignedVarLong(toBigInt(data.messageUid || 0)),
     writeSignedVarInt(Number(data.messageType || 0) || 0),
@@ -1598,28 +1793,40 @@ function buildCommonProfileData(profile) {
   ]);
 }
 
-function buildUserChatMessage(user, message, emotionId = 0) {
-  const state = ensureAdminState(user);
+function buildUserChatMessage(ctx, user, messageUid, message, emotionId = 0) {
   return {
-    messageUid: allocateMessageUid(state).toString(),
+    messageUid: String(messageUid),
     messageType: 0,
     profile: getUserProfile(user),
     emotionId: Number(emotionId || 0) || 0,
     message,
-    createdAt: String(dateTimeBinaryNow()),
+    createdAt: String(getChatTimestamp(ctx)),
     typeParam: "0",
     blocked: false,
   };
 }
 
-function buildAdminChatMessage(message) {
+function buildAdminChatMessage(message, messageUid = 0, createdAt = dateTimeBinaryNow()) {
   return {
-    messageUid: "0",
+    messageUid: String(messageUid),
     messageType: 0,
     profile: getAdminProfile(),
     emotionId: 0,
     message,
-    createdAt: String(dateTimeBinaryNow()),
+    createdAt: String(createdAt),
+    typeParam: "0",
+    blocked: false,
+  };
+}
+
+function buildEmptyChatMessage(profile) {
+  return {
+    messageUid: "0",
+    messageType: 0,
+    profile,
+    emotionId: 0,
+    message: "",
+    createdAt: "0",
     typeParam: "0",
     blocked: false,
   };
@@ -1641,22 +1848,28 @@ function appendChatMessage(user, roomUid, message) {
 }
 
 function getChatMessages(user, roomUid) {
-  ensureAdminWelcome(user);
   const state = ensureAdminState(user);
   return (state.chats[String(toBigInt(roomUid))] || []).slice(-CHAT_HISTORY_LIMIT);
 }
 
 function getLastAdminChatMessage(user) {
+  ensureAdminWelcome(user);
   const messages = getChatMessages(user, ADMIN_UID);
   return messages[messages.length - 1] || buildAdminChatMessage("Admin console ready. Type /help.");
+}
+
+function getLastChatMessage(user, roomUid) {
+  const messages = getChatMessages(user, roomUid);
+  return messages[messages.length - 1] || null;
 }
 
 function ensureAdminWelcome(user) {
   const state = ensureAdminState(user);
   const roomKey = ADMIN_UID.toString();
   state.chats[roomKey] = Array.isArray(state.chats[roomKey]) ? state.chats[roomKey] : [];
-  if (state.chats[roomKey].length) return;
+  if (state.chats[roomKey].length) return false;
   appendChatMessage(user, ADMIN_UID, buildAdminChatMessage("Admin console ready. Type /help for commands."));
+  return true;
 }
 
 function ensureAdminState(user) {
@@ -1846,17 +2059,45 @@ function formatLocalDateKey(date) {
   return `${year}-${month}-${day}`;
 }
 
-function listVisiblePosts(user, lastPostIndex = 0) {
+function listVisiblePosts(ctx, user, lastPostIndex = 0) {
   const last = toBigInt(lastPostIndex || 0);
   return ensureAdminState(user).posts
-    .filter((post) => !post.received)
-    .filter((post) => last <= 0n || toBigInt(post.postIndex) > last)
-    .sort((a, b) => Number(toBigInt(a.postIndex) - toBigInt(b.postIndex)))
+    .filter((post) => !post.received && !isPostExpired(ctx, post))
+    .filter((post) => last <= 0n || toBigInt(post.postIndex) < last)
+    .sort((a, b) => Number(toBigInt(b.postIndex) - toBigInt(a.postIndex)))
     .slice(0, 50);
 }
 
-function countPendingPosts(user) {
-  return ensureAdminState(user).posts.filter((post) => !post.received).length;
+function countPendingPosts(ctx, user) {
+  return ensureAdminState(user).posts.filter((post) => !post.received && !isPostExpired(ctx, post)).length;
+}
+
+function isPostExpired(ctx, post) {
+  const expiration = toBigInt(post && post.expirationDate || 0);
+  return expiration > 0n && expiration < toBigInt(getChatTimestamp(ctx));
+}
+
+function canReceivePost(user, post) {
+  const demand = postInventoryDemand(post);
+  return Object.entries(demand).every(([inventoryType, count]) =>
+    getInventoryUsage(user, Number(inventoryType)) + count <= getInventoryCapacity(user, Number(inventoryType))
+  );
+}
+
+function postInventoryDemand(post) {
+  const demand = {};
+  const add = (type, count) => {
+    demand[type] = Number(demand[type] || 0) + Math.max(0, Number(count || 0) || 0);
+  };
+  for (const reward of post && Array.isArray(post.rewards) ? post.rewards : []) {
+    const type = normalizeRewardType(reward.rewardType);
+    const count = Math.max(0, Number(reward.count || 0) || 0);
+    if (type === "RT_EQUIP") add(INVENTORY_TYPES.EQUIP, count);
+    if (type === "RT_SHIP") add(INVENTORY_TYPES.SHIP, count);
+    if (type === "RT_OPERATOR") add(INVENTORY_TYPES.OPERATOR, count);
+    if (type === "RT_UNIT") add(trophyUnitIds.has(Number(reward.id)) ? INVENTORY_TYPES.TROPHY : INVENTORY_TYPES.UNIT, count);
+  }
+  return demand;
 }
 
 function allocatePostIndex(state) {
@@ -1916,6 +2157,8 @@ function rewardTypeForKind(kind) {
       return "RT_OPERATOR";
     case "gear":
       return "RT_EQUIP";
+    case "mold":
+      return "RT_MOLD";
     case "skin":
       return "RT_SKIN";
     case "emoticon":
@@ -1934,6 +2177,7 @@ function normalizeKind(kind) {
   if (["ship", "ships"].includes(value)) return "ship";
   if (["operator", "operators", "op", "ops"].includes(value)) return "operator";
   if (["gear", "gears", "equip", "equips", "equipment"].includes(value)) return "gear";
+  if (["mold", "molds", "craftmold", "craftmolds"].includes(value)) return "mold";
   if (["skin", "skins"].includes(value)) return "skin";
   if (["emoticon", "emoticons", "emote", "emotes"].includes(value)) return "emoticon";
   return value;
@@ -1966,6 +2210,8 @@ function idsForKind(kind) {
       return getPlayableOperatorIds();
     case "gear":
       return getAllEquipIds();
+    case "mold":
+      return getAllEquipMoldTemplets().map((entry) => Number(entry && entry.m_MoldID)).filter((id) => id > 0);
     case "skin":
       return getAllSkinIds();
     case "emoticon":
@@ -1985,6 +2231,8 @@ function rewardIdExists(rewardType, id) {
       return Boolean(getUnitTemplet(id));
     case "RT_EQUIP":
       return Boolean(getEquipTemplet(id));
+    case "RT_MOLD":
+      return Boolean(getEquipMoldTemplet(id));
     case "RT_SKIN":
       return Boolean(getSkinTemplet(id));
     case "RT_EMOTICON":
@@ -2178,11 +2426,12 @@ function adminHelpText() {
     "/give ship <id> [count]",
     "/give operator <id> [count]",
     "/give gear <id> [count] [set=<setId|alias>] [main=<stat>=<value|max>] [substat=value|max] [substat=value|max]",
+    "/give mold <id> [count]",
     "/give maxmaze",
     "/help gear",
     "/give skin <id>",
     "/give emoticon <id>",
-    "/give all items|units|trophies|ships|operators|gears|skins|emoticons [count]",
+    "/give all items|molds|units|trophies|ships|operators|gears|skins|emoticons [count]",
     "/give everything [count]",
     "/raid level <level> branch <branch>",
     "/sephira branch <branch>",
@@ -2289,19 +2538,21 @@ function decodeRequest(ctx, packetId, encryptedPayload) {
   try {
     switch (packetId) {
       case PACKETS.POST_LIST_REQ:
-        return { lastPostIndex: takeLong() };
+        return { valid: true, lastPostIndex: takeLong() };
       case PACKETS.POST_RECEIVE_REQ:
-        return { postIndex: takeLong() };
+        return { valid: true, postIndex: takeLong() };
       case PACKETS.PRIVATE_CHAT_REQ:
-        return { userUid: takeLong(), emotionId: takeInt(), message: takeString() };
+        return { valid: true, userUid: takeLong(), emotionId: takeInt(), message: takeString() };
       case PACKETS.PRIVATE_CHAT_LIST_REQ:
-        return { userUid: takeLong() };
+        return { valid: true, userUid: takeLong() };
       default:
         return {};
     }
   } catch (err) {
     console.log(`[admin] request decode failed packetId=${packetId}: ${err.message}`);
-    return {};
+    return [PACKETS.POST_LIST_REQ, PACKETS.POST_RECEIVE_REQ, PACKETS.PRIVATE_CHAT_REQ, PACKETS.PRIVATE_CHAT_LIST_REQ].includes(packetId)
+      ? { valid: false }
+      : {};
   }
 }
 
@@ -2314,6 +2565,10 @@ function safeDecrypt(ctx, payload) {
 }
 
 function sendServerNotice(ctx, socket, packetId, payload, label = "admin-not") {
+  if (socket && !socket.destroyed && ctx && typeof ctx.sendServerGamePacket === "function") {
+    ctx.sendServerGamePacket(socket, packetId, payload || Buffer.alloc(0), label);
+    return;
+  }
   if (!socket || socket.destroyed || !ctx || typeof ctx.buildEncryptedPacket !== "function") return;
   const session = socket.session || (socket.session = {});
   const replay = session.gameReplay;
@@ -2328,6 +2583,11 @@ function sendServerNotice(ctx, socket, packetId, payload, label = "admin-not") {
   const packet = ctx.buildEncryptedPacket(sequence, packetId, payload || Buffer.alloc(0));
   socket.write(packet);
   console.log(`[admin:${label}] NOT packetId=${packetId} sequence=${sequence} payloadSize=${(payload || Buffer.alloc(0)).length}`);
+}
+
+function sendUserNotice(ctx, userUid, packetId, payload, label) {
+  const socket = ctx && typeof ctx.findClientSocketByUserUid === "function" ? ctx.findClientSocketByUserUid(userUid) : null;
+  if (socket && !socket.destroyed) sendServerNotice(ctx, socket, packetId, payload, label);
 }
 
 function writeInt64FromStoredDate(value) {
@@ -2371,4 +2631,6 @@ module.exports = {
   handleAdminCommand,
   buildPostData,
   buildChatMessageData,
+  parseGiveCommand,
+  adminHelpText,
 };

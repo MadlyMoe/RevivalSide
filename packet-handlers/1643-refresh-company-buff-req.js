@@ -1,19 +1,31 @@
 const REFRESH_COMPANY_BUFF_ACK = 1644;
+const {
+  ERRORS,
+  buildRefreshCompanyBuffAckPayload,
+  isStrictEmptyRequest,
+  pruneExpiredCompanyBuffs,
+} = require("../modules/company-buff");
 
 module.exports = {
   packetId: 1643,
   name: "REFRESH_COMPANY_BUFF_REQ",
   handle(ctx, socket, packet) {
-    // Do not replay the captured 1644 here: that fixture contains expired buff
-    // records, which makes the client show an expiry banner and immediately ask
-    // for the list again. A success ACK with an empty buff list keeps the scene
-    // load path satisfied without injecting stale account state.
-    const payload = Buffer.concat([ctx.writeSignedVarInt(0), ctx.writeSignedVarInt(0)]);
+    const user = socket && socket.session && socket.session.user;
+    const valid = isStrictEmptyRequest(ctx, packet && packet.payload);
+    const nowTicks = ctx && typeof ctx.dateTimeTicksNow === "function" ? ctx.dateTimeTicksNow() : undefined;
+    const changed = valid && pruneExpiredCompanyBuffs(user, { nowTicks });
+    const payload = buildRefreshCompanyBuffAckPayload(user, valid ? ERRORS.OK : ERRORS.INVALID_REQUEST, { nowTicks });
     if (socket.session && socket.session.gameReplay) {
       ctx.sendServerGamePacket(socket, REFRESH_COMPANY_BUFF_ACK, payload, "refresh-company-buff");
-      return true;
+    } else {
+      ctx.sendGameResponse(socket, packet, REFRESH_COMPANY_BUFF_ACK, payload, "refresh-company-buff");
     }
-    ctx.sendGameResponse(socket, packet, REFRESH_COMPANY_BUFF_ACK, payload, "refresh-company-buff");
+    if (changed && (!ctx.config || ctx.config.USE_LOCAL_USER_DB) && typeof ctx.saveUserDb === "function") {
+      ctx.saveUserDb();
+      if (typeof ctx.invalidateJoinLobbyAckPayloadCache === "function") {
+        ctx.invalidateJoinLobbyAckPayloadCache("company-buff-expiry");
+      }
+    }
     return true;
   },
 };

@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script_unit_data",
+    "fileName": "LUA_UNIT_TEMPLET_BASE.json",
+    "tableName": "LUA_UNIT_TEMPLET_BASE",
+    "format": "json"
+  },
+  "key": {
+    "field": "m_UnitStrID",
+    "value": "NKM_UNIT_CHILLING_CHASER"
+  },
+  "source": {
+    "field": "m_UnitStrID",
+    "value": "NKM_MOB_BOSS_EVENT_ESPR2_NEPHILIM_ESPR2"
+  },
+  "value": {
+    "m_UnitID": 26063,
+    "m_UnitStrID": "NKM_UNIT_CHILLING_CHASER",
+    "m_NKM_UNIT_TYPE": "NUT_NORMAL",
+    "m_NKM_UNIT_STYLE_TYPE": "NUST_CORRUPTED",
+    "m_NKM_UNIT_ROLE_TYPE": "NURT_RANGER",
+    "m_bMonster": false,
+    "m_Title": "MODSIDE_UNIT_TITLE_26063",
+    "m_Name": "MODSIDE_UNIT_NAME_26063",
+    "m_bCubismIllust": false,
+    "m_UnitTempletFileName": "NKM_UNIT_CHILLING_CHASER",
+    "m_SpriteBundleName": "AB_UNIT_GAME_SPINE_NKM_MONSTER_BOSS_BASIC_NEPHILIM_ESPR2",
+    "m_SpriteName": "SPINE_NKM_MONSTER_BOSS_BASIC_NEPHILIM_ESPR2",
+    "m_FaceCardName": "AB_UNIT_FACE_CARD_NKM_MOB_BOSS_EVENT_ESPR2_NEPHILIM_ESPR2",
+    "m_MiniMapFaceName": "AB_UNIT_MINI_MAP_FACE_NKM_MOB_BOSS_EVENT_ESPR2_NEPHILIM_ESPR2",
+    "m_InvenIconName": "AB_INVEN_ICON_NKM_MOB_BOSS_EVENT_ESPR2_NEPHILIM_ESPR2",
+    "m_ContractTime": 0,
+    "m_bContractable": true,
+    "m_StarGradeMax": 6,
+    "m_NKM_UNIT_GRADE": "NUG_SSR",
+    "m_OnRemoveItemID_1": 0,
+    "m_OnRemoveItemCount_1": 0,
+    "m_OnRemoveItemID_2": 0,
+    "m_OnRemoveItemCount_2": 0,
+    "m_NKM_FIND_TARGET_TYPE": "NFTT_NEAR_ENEMY",
+    "m_bTagPatrol": false,
+    "m_bTagSwingby": false,
+    "m_bTagRevenge": false,
+    "m_bRespawnFreePos": false,
+    "m_bAirUnit": false,
+    "m_StopDefaultCoolTime": false,
+    "m_bExistVoiceBundle": false,
+    "m_OnRemoveItemID_Contract": 0,
+    "m_OnRemoveItemCount_Contract": 0,
+    "m_BaseUnitID": 26063,
+    "m_NKM_UNIT_SOURCE_TYPE": "NUST_CONFLICT",
+    "m_UnitDesc": "MODSIDE_UNIT_DESC_26063",
+    "m_TacticGroup": 0
+  }
+}

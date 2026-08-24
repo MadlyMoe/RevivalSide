@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script",
+    "fileName": "LUA_COLLECTION_V2_EMPLOYEE.json",
+    "tableName": "LUA_COLLECTION_V2_EMPLOYEE",
+    "format": "json"
+  },
+  "key": {
+    "field": "UnitID",
+    "value": 26063
+  },
+  "value": {
+    "UnitID": 26063,
+    "CharacterType": "SI_COLLECTION_PROFILE_TYPE_CHARACTER",
+    "NameType": "SI_COLLECTION_PROFILE_TYPE_NAME",
+    "NameValue": "MODSIDE_UNIT_NAME_26063",
+    "TeamConceptStrID": "MODSIDE_UNIT_TITLE_26063",
+    "TeamUpStrID": "SI_BLANK",
+    "GenderType": "SI_COLLECTION_PROFILE_TYPE_GENDER",
+    "GenderValueStrID": "SI_BLANK",
+    "BirthType": "SI_COLLECTION_PROFILE_TYPE_BIRTH",
+    "BirthValueStrID": "SI_BLANK",
+    "HeightType": "SI_COLLECTION_PROFILE_TYPE_HEIGHT",
+    "HeightValueStrID": "SI_BLANK",
+    "SpecialityType": "SI_COLLECTION_PROFILE_TYPE_SPECIALITY",
+    "SpecialityValueStrID": "SI_BLANK",
+    "LikeType": "SI_COLLECTION_PROFILE_TYPE_LIKE",
+    "LikeValueStrID": "SI_BLANK",
+    "DisLikeType": "SI_COLLECTION_PROFILE_TYPE_DISLIKE",
+    "DisLikeValueStrID": "SI_BLANK",
+    "CombatLevelType": "SI_COLLECTION_PROFILE_TYPE_LEVEL_COMBAT",
+    "CombatLevelValue": "SI_BLANK",
+    "CommandLevelType": "SI_COLLECTION_PROFILE_TYPE_LEVEL_COMMAND",
+    "CommandLevelValue": "SI_BLANK",
+    "ProfileType_1": "SI_COLLECTION_PROFILE_TYPE_PROFILE_PROFILE",
+    "ProfileValue_1": "MODSIDE_UNIT_PROFILE_BIO_26063"
+  }
+}

@@ -1,5 +1,14 @@
 "use strict";
 
+const REQUIRED_CORE_OPEN_TAGS = Object.freeze([
+  "EPISODE_TAB_SUPPLY",
+  "EPISODE_TAB_CHALLENGE",
+  "TAG_COMMON_EPISODE_SUPPLY_RESOURCE_1",
+  "TAG_COMMON_EPISODE_SUPPLY_UNIT",
+  "TAG_COMMON_EPISODE_SUPPLY_RESOURCE_3",
+  "TAG_COMMON_EPISODE_CHALLENGE_1",
+]);
+
 function getCapturedContentsTags(profiles, targetVersion) {
   return mergeTags(
     ...compatibleProfiles(profiles, targetVersion, ["contentsVersionAck", "loginAck", "gamebaseLoginAck"])
@@ -68,6 +77,7 @@ function mergeTags(...groups) {
 }
 
 module.exports = {
+  REQUIRED_CORE_OPEN_TAGS,
   areCompatibleContentsVersions,
   getCapturedOpenTags,
   getCapturedContentsTags,

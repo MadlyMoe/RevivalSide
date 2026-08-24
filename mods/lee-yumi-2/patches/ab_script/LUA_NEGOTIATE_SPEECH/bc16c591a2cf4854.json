@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script",
+    "fileName": "LUA_NEGOTIATE_SPEECH.json",
+    "tableName": "LUA_NEGOTIATE_SPEECH"
+  },
+  "key": {
+    "field": "m_UnitID",
+    "value": 26048
+  },
+  "source": {
+    "field": "m_UnitID",
+    "value": 1099
+  },
+  "value": {
+    "m_UnitID": 26048,
+    "m_NegoStanby": "SI_DESC_NEGO_STANBY_1099",
+    "m_NegoOffered": "SI_DESC_NEGO_OFFERED_1099",
+    "m_NegoGood": "SI_DESC_NEGO_GOOD_1099",
+    "m_NegoBad": "SI_DESC_NEGO_BAD_1099",
+    "m_NegoFury": "SI_DESC_NEGO_FURY_1099",
+    "m_NegoThink": "SI_DESC_NEGO_THINK_1099",
+    "m_NegoGreatSuccess": "SI_DESC_NEGO_GREATSUCCESS_1099",
+    "m_NegoSuccess": "SI_DESC_NEGO_SUCCESS_1099",
+    "m_NegoFail": "SI_DESC_NEGO_FAIL_1099",
+    "m_NegoGreatGreatSuccess": "SI_DESC_NEGO_GREATSUCCESS_1099"
+  }
+}

@@ -5,6 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const {
+  REQUIRED_CORE_OPEN_TAGS,
   areCompatibleContentsVersions,
   getCapturedOpenTags,
   getCapturedContentsTags,
@@ -16,6 +17,15 @@ const { createEventManager } = require("../modules/event-manager");
 const { filterEventClockShopOpenTags, getActiveEventShopState } = require("../modules/shop");
 const dateProfiles = require("../modules/event-manager/date-profiles.json");
 const ROOT_DIR = path.resolve(__dirname, "..");
+
+assert.deepStrictEqual(REQUIRED_CORE_OPEN_TAGS, [
+  "EPISODE_TAB_SUPPLY",
+  "EPISODE_TAB_CHALLENGE",
+  "TAG_COMMON_EPISODE_SUPPLY_RESOURCE_1",
+  "TAG_COMMON_EPISODE_SUPPLY_UNIT",
+  "TAG_COMMON_EPISODE_SUPPLY_RESOURCE_3",
+  "TAG_COMMON_EPISODE_CHALLENGE_1",
+]);
 
 const profiles = {
   contentsVersionAck: {

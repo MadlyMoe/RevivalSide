@@ -75,6 +75,18 @@ internal data class AndroidClientContract(
 
 internal data class AndroidClientValidation(val ok: Boolean, val message: String)
 
+internal enum class AndroidClientMode {
+    MISSING,
+    OFFICIAL,
+    PATCHED,
+    UNSUPPORTED,
+}
+
+internal data class AndroidClientDetection(
+    val mode: AndroidClientMode,
+    val message: String,
+)
+
 internal fun validateAndroidPayloadManifest(
     contract: AndroidClientContract,
     manifestBytes: ByteArray,
@@ -129,44 +141,57 @@ internal fun validateInstalledAndroidClient(
 ): AndroidClientValidation {
     val contract = runCatching { AndroidClientContract.load(context) }
         .getOrElse { return AndroidClientValidation(false, "Client contract failed: ${it.message}") }
-    if (targetPackage != contract.packageName) {
-        return AndroidClientValidation(false, "Expected ${contract.packageName}, not $targetPackage.")
-    }
     if (httpPort != contract.localHttpPort) {
         return AndroidClientValidation(false, "HTTP port must be ${contract.localHttpPort} for the patched client.")
+    }
+
+    val detection = detectInstalledAndroidClient(context, targetPackage)
+    return AndroidClientValidation(detection.mode == AndroidClientMode.PATCHED, detection.message)
+}
+
+internal fun detectInstalledAndroidClient(
+    context: Context,
+    targetPackage: String,
+): AndroidClientDetection {
+    val contract = runCatching { AndroidClientContract.load(context) }
+        .getOrElse { return AndroidClientDetection(AndroidClientMode.UNSUPPORTED, "Client contract failed: ${it.message}") }
+    if (targetPackage != contract.packageName) {
+        return AndroidClientDetection(AndroidClientMode.UNSUPPORTED, "Expected ${contract.packageName}, not $targetPackage.")
     }
 
     val packageInfo = try {
         context.packageManager.getPackageInfo(targetPackage, 0)
     } catch (_: PackageManager.NameNotFoundException) {
-        return AndroidClientValidation(false, "Counter:Side is not installed.")
+        return AndroidClientDetection(AndroidClientMode.MISSING, "Counter:Side is not installed.")
     }
     val installedVersionCode = if (Build.VERSION.SDK_INT >= 28) packageInfo.longVersionCode else {
         @Suppress("DEPRECATION")
         packageInfo.versionCode.toLong()
     }
-    if (installedVersionCode != contract.versionCode || packageInfo.versionName != contract.versionName) {
-        return AndroidClientValidation(
-            false,
-            "Counter:Side ${packageInfo.versionName} ($installedVersionCode) does not match ${contract.versionName} (${contract.versionCode}).",
-        )
-    }
+    val versionLabel = "${packageInfo.versionName} ($installedVersionCode)"
 
     val sourceApk = packageInfo.applicationInfo?.sourceDir?.let(::File)
-        ?: return AndroidClientValidation(false, "Counter:Side base APK was not found.")
+        ?: return AndroidClientDetection(AndroidClientMode.UNSUPPORTED, "Counter:Side base APK was not found.")
     return runCatching {
         ZipFile(sourceApk).use { apk ->
             val entry = apk.getEntry(contract.metadataEntry)
-                ?: return@use AndroidClientValidation(false, "Counter:Side IL2CPP metadata is missing.")
+                ?: return@use AndroidClientDetection(AndroidClientMode.UNSUPPORTED, "Counter:Side IL2CPP metadata is missing.")
             apk.getInputStream(entry).use { input ->
                 if (input.containsBytes(contract.patchedServerInfoBaseUrl.toByteArray(Charsets.UTF_8))) {
-                    AndroidClientValidation(true, "Patched client ${contract.versionName} / ${contract.patchVersion} ready")
+                    if (installedVersionCode == contract.versionCode && packageInfo.versionName == contract.versionName) {
+                        AndroidClientDetection(AndroidClientMode.PATCHED, "Patched client ${contract.versionName} / ${contract.patchVersion} ready")
+                    } else {
+                        AndroidClientDetection(
+                            AndroidClientMode.UNSUPPORTED,
+                            "Patched Counter:Side $versionLabel does not match ${contract.versionName} (${contract.versionCode}).",
+                        )
+                    }
                 } else {
-                    AndroidClientValidation(false, "Official client detected. Install the RevivalSide-patched Counter:Side APK set first.")
+                    AndroidClientDetection(AndroidClientMode.OFFICIAL, "Official Counter:Side $versionLabel detected")
                 }
             }
         }
-    }.getOrElse { AndroidClientValidation(false, "Could not inspect Counter:Side: ${it.message}") }
+    }.getOrElse { AndroidClientDetection(AndroidClientMode.UNSUPPORTED, "Could not inspect Counter:Side: ${it.message}") }
 }
 
 internal fun validateAndroidPayloadHost(

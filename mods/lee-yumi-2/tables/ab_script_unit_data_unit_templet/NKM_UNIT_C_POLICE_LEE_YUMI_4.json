@@ -1,0 +1,947 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script_unit_data_unit_templet",
+    "fileName": "NKM_UNIT_C_POLICE_LEE_YUMI_4.json",
+    "tableName": "NKM_UNIT_C_POLICE_LEE_YUMI_4",
+    "format": "json"
+  },
+  "compiled": {
+    "source": "revivalside-unit-maker",
+    "rootName": "NKMUnitTemplet",
+    "root": {
+      "m_UnitSizeX": 120,
+      "m_UnitSizeY": 270,
+      "m_SpriteScale": 1,
+      "m_fGageOffsetY": 290,
+      "m_fShadowScaleX": 150,
+      "m_fShadowScaleY": 150,
+      "m_fForceRespawnZposMin": 0.11,
+      "m_fForceRespawnZposMax": 0.2,
+      "m_SpeedRun": 380,
+      "m_SeeRange": 800,
+      "m_SeeRangeMax": 900,
+      "m_TargetNearRange": 200,
+      "m_NKM_FIND_TARGET_TYPE": "NFTT_NEAR_ENEMY_LAND",
+      "m_AttackedTargetTime": 1,
+      "m_bAttackedTarget": false,
+      "m_bUseMotionBlur": true,
+      "m_listAttackStateData": [
+        {
+          "m_NKM_ATTACK_STATE_DATA_TYPE": "NASDT_NORMAL",
+          "m_StateName": "USN_ATTACK1"
+        }
+      ],
+      "m_listSkillStateData": [
+        {
+          "m_NKM_ATTACK_STATE_DATA_TYPE": "NASDT_NORMAL",
+          "m_StateName": "USN_SKILL1",
+          "m_fRangeMax": 800
+        }
+      ],
+      "m_listHyperSkillStateData": [
+        {
+          "m_NKM_ATTACK_STATE_DATA_TYPE": "NASDT_NORMAL",
+          "m_StateName": "USN_HYPER1",
+          "m_fStartCool": 0.7,
+          "m_fRangeMax": 300
+        }
+      ],
+      "m_dicNKMUnitState": [
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_START",
+          "m_StateName": "USN_START",
+          "m_AnimName": "START",
+          "m_bAnimLoop": false,
+          "m_fAnimSpeed": 1.5,
+          "m_AnimEndChangeState": "USN_ASTAND",
+          "m_listNKMEventBuff": [
+            {
+              "m_Condition": {
+                "m_SkillStrID": "NKM_UNIT_C_POLICE_LEE_YUMI_PASSIVE",
+                "m_SkillLevel": [
+                  1,
+                  4
+                ]
+              },
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_bStateEndTime": false,
+              "m_BuffStrID": "BUFF_POLICE_LEE_YUMI_PASSIVE"
+            },
+            {
+              "m_Condition": {
+                "m_SkillStrID": "NKM_UNIT_C_POLICE_LEE_YUMI_PASSIVE",
+                "m_SkillLevel": [
+                  5,
+                  99
+                ]
+              },
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_bStateEndTime": false,
+              "m_BuffStrID": "BUFF_POLICE_LEE_YUMI_PASSIVE_LV5"
+            }
+          ],
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_FOOT_STEP_LANDING_SMALL"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.6666666666666666,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_SWORD_SLASH_SMALL_13"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.6666666666666666,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_MAGIC_SPELL_83"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 1.8333333333333333,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_SWORD_SLASH_SMALL_13"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 1.8333333333333333,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_MAGIC_SPELL_LIGHT"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_bVoice": true,
+              "m_PlayRate": 0.7,
+              "m_listSoundName": [
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_START_1",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_START_2"
+              ],
+              "m_dicSkinSound": [
+                [
+                  1006516,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_START_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_START_2"
+                ],
+                [
+                  1006517,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_START_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_START_2",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_ATTACK_6"
+                ]
+              ]
+            },
+            {
+              "m_SkinID": 1006517,
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.16666666666666666,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_MAGIC_SPELL_WATER_04"
+              ]
+            }
+          ]
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_ATTACK",
+          "m_StateName": "USN_ATTACK1",
+          "m_AnimName": "ATTACK1",
+          "m_bAnimLoop": false,
+          "m_fAnimSpeed": 1.2,
+          "m_NKM_SKILL_TYPE": "NST_ATTACK",
+          "m_bNoDamageBackSpeed": true,
+          "m_listNKMEventAttack": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 0.3333333333333333,
+              "m_fEventTimeMax": 0.4,
+              "m_fRangeMin": -100,
+              "m_fRangeMax": 250,
+              "m_bHitAir": false,
+              "m_NKM_DAMAGE_TARGET_TYPE": "NDTT_ENEMY",
+              "m_AttackUnitCount": 2,
+              "m_DamageTempletName": "DT_NKM_UNIT_C_POLICE_LEE_YUMI_ATTACK1"
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 1.3333333333333333,
+              "m_fEventTimeMax": 1.3666666666666667,
+              "m_fRangeMin": -100,
+              "m_fRangeMax": 250,
+              "m_bHitAir": false,
+              "m_NKM_DAMAGE_TARGET_TYPE": "NDTT_ENEMY",
+              "m_AttackUnitCount": 2,
+              "m_DamageTempletName": "DT_NKM_UNIT_C_POLICE_LEE_YUMI_ATTACK1"
+            }
+          ],
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.3333333333333333,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_SWORD_SLASH_SMALL_13"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.6666666666666666,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_SWORD_SLASH_SMALL_13"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 1.3333333333333333,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_SWORD_SLASH_SMALL_13"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 1.6,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_SWORD_SLASH_SMALL_13"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.3333333333333333,
+              "m_bVoice": true,
+              "m_PlayRate": 0.33,
+              "m_listSoundName": [
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_ATTACK_1",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_ATTACK_2",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_ATTACK_3"
+              ],
+              "m_dicSkinSound": [
+                [
+                  1006516,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_ATTACK_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_ATTACK_2",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_ATTACK_3"
+                ],
+                [
+                  1006517,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_ATTACK_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_ATTACK_2",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_ATTACK_3",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_ATTACK_4"
+                ]
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 1.3333333333333333,
+              "m_bVoice": true,
+              "m_PlayRate": 0.33,
+              "m_listSoundName": [
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_ATTACK_4",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_ATTACK_5",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_ATTACK_6"
+              ],
+              "m_dicSkinSound": [
+                [
+                  1006516,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_ATTACK_4",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_ATTACK_6",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_ATTACK_7"
+                ],
+                [
+                  1006517,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_ATTACK_7",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_ATTACK_8",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_ATTACK_9"
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_ATTACK",
+          "m_StateName": "USN_SKILL1",
+          "m_AnimName": "SKILL1",
+          "m_bAnimLoop": false,
+          "m_fAnimSpeed": 1,
+          "m_NKM_SKILL_TYPE": "NST_SKILL",
+          "m_SuperArmorLevel": "NSAL_SKILL",
+          "m_bSkillCutIn": true,
+          "m_listNKMEventAttack": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 0.8333333333333334,
+              "m_fEventTimeMax": 1,
+              "m_fRangeMin": -250,
+              "m_fRangeMax": 250,
+              "m_bHitAir": false,
+              "m_NKM_DAMAGE_TARGET_TYPE": "NDTT_ENEMY",
+              "m_AttackUnitCount": 2,
+              "m_DamageTempletName": "DT_NKM_UNIT_C_POLICE_LEE_YUMI_SKILL1",
+              "m_bDamageSpeedDependRight": true
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 1.3333333333333333,
+              "m_fEventTimeMax": 1.4,
+              "m_fRangeMin": -250,
+              "m_fRangeMax": 250,
+              "m_bHitAir": false,
+              "m_NKM_DAMAGE_TARGET_TYPE": "NDTT_ENEMY",
+              "m_AttackUnitCount": 2,
+              "m_DamageTempletName": "DT_NKM_UNIT_C_POLICE_LEE_YUMI_SKILL1",
+              "m_bDamageSpeedDependRight": true
+            },
+            {
+              "m_Condition": {
+                "m_SkillStrID": "NKM_UNIT_C_POLICE_LEE_YUMI_SKILL",
+                "m_SkillLevel": [
+                  1,
+                  4
+                ]
+              },
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 1.6666666666666667,
+              "m_fEventTimeMax": 1.7333333333333334,
+              "m_fRangeMin": -250,
+              "m_fRangeMax": 250,
+              "m_bHitAir": false,
+              "m_NKM_DAMAGE_TARGET_TYPE": "NDTT_ENEMY",
+              "m_AttackUnitCount": 2,
+              "m_DamageTempletName": "DT_NKM_UNIT_C_POLICE_LEE_YUMI_SKILL1_END",
+              "m_fGetAgroTime": 5,
+              "m_bDamageSpeedDependRight": true
+            },
+            {
+              "m_Condition": {
+                "m_SkillStrID": "NKM_UNIT_C_POLICE_LEE_YUMI_SKILL",
+                "m_SkillLevel": [
+                  5,
+                  99
+                ]
+              },
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 1.6666666666666667,
+              "m_fEventTimeMax": 1.7333333333333334,
+              "m_fRangeMin": -250,
+              "m_fRangeMax": 250,
+              "m_bHitAir": false,
+              "m_NKM_DAMAGE_TARGET_TYPE": "NDTT_ENEMY",
+              "m_AttackUnitCount": 2,
+              "m_DamageTempletName": "DT_NKM_UNIT_C_POLICE_LEE_YUMI_SKILL1_END_LV5",
+              "m_fGetAgroTime": 5,
+              "m_bDamageSpeedDependRight": true
+            }
+          ],
+          "m_listNKMEventBuff": [
+            {
+              "m_bStateEndTime": true,
+              "m_BuffStrID": "BUFF_UNIT_C_POLICE_LEE_YUMI_REACTOR1"
+            }
+          ],
+          "m_listNKMEventCameraCrash": [
+            {
+              "m_fEventTime": 0.8333333333333334,
+              "m_CameraCrashType": "NCCT_UP_DOWN",
+              "m_fCrashRadius": 1250,
+              "m_fCameraCrashSpeed": 10,
+              "m_fCameraCrashGap": 7,
+              "m_fCameraCrashTime": 0.16666666666666666
+            },
+            {
+              "m_fEventTime": 1.0333333333333334,
+              "m_CameraCrashType": "NCCT_UP_DOWN",
+              "m_fCrashRadius": 1250,
+              "m_fCameraCrashSpeed": 10,
+              "m_fCameraCrashGap": 3,
+              "m_fCameraCrashTime": 0.5
+            },
+            {
+              "m_fEventTime": 1.7333333333333334,
+              "m_CameraCrashType": "NCCT_UP_DOWN",
+              "m_fCrashRadius": 1250,
+              "m_fCameraCrashSpeed": 10,
+              "m_fCameraCrashGap": 7,
+              "m_fCameraCrashTime": 0.3333333333333333
+            }
+          ],
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_SKILL_START"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.8333333333333334,
+              "m_bStateEndTime": false,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_SWORD_SPIN_SMALL_02"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 1.6666666666666667,
+              "m_bStateEndTime": false,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_SWORD_SLASH_SMALL_08"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_bVoice": true,
+              "m_PlayRate": 0.7,
+              "m_listSoundName": [
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_ACTIVE_1",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_ACTIVE_2",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_ATTACK_7"
+              ],
+              "m_dicSkinSound": [
+                [
+                  1006516,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_ACTIVE_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_ACTIVE_2",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_ATTACK_10"
+                ],
+                [
+                  1006517,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_ACTIVE_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_ACTIVE_2",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_ATTACK_5"
+                ]
+              ]
+            }
+          ],
+          "m_listNKMEventMove": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.8333333333333334,
+              "m_bTargetUnit": true,
+              "m_bOffsetDependMe": true,
+              "m_OffsetX": -200,
+              "m_OffsetZ": 0,
+              "m_MoveTime": 1,
+              "m_bLandMove": true
+            }
+          ],
+          "m_listNKMEventMotionBlur": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 0,
+              "m_fEventTimeMax": 99999,
+              "m_fColorR": 0.5,
+              "m_fColorG": 0.5,
+              "m_fColorB": 1
+            }
+          ]
+        },
+        {
+          "m_StateName": "USN_HYPER1",
+          "m_NKM_UNIT_STATE_TYPE": "NUST_ATTACK",
+          "m_bAnimLoop": false,
+          "m_fAnimSpeed": 1,
+          "m_AnimName": "HYPER_SKILL1",
+          "m_NKM_SKILL_TYPE": "NST_HYPER",
+          "m_SuperArmorLevel": "NSAL_HYPER",
+          "m_AnimEndChangeState": "USN_HYPER1_LOOP",
+          "m_listNKMEventHyperSkillCutIn": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.2,
+              "m_fDurationTime": 1.66,
+              "m_BGEffectName": "AB_FX_SKILL_CUTIN_COMMON_A",
+              "m_CutInEffectName": "AB_FX_SKILL_CUTIN_NKM_UNIT_C_POLICE_LEE_YUMI",
+              "m_CutInEffectAnimName": "BASE"
+            }
+          ],
+          "m_listNKMEventInvincible": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 0,
+              "m_fEventTimeMax": 3.3
+            }
+          ],
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_HYPER_ATTACK_START"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_listSoundName": [
+                "FX_COMBAT_ONLY_YUI_HYPER_ATTACK_START"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_bVoice": true,
+              "m_PlayRate": 1,
+              "m_listSoundName": [
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_HYPER_1",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_HYPER_2",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_ATTACK_10"
+              ],
+              "m_dicSkinSound": [
+                [
+                  1006516,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_HYPER_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_HYPER_2"
+                ],
+                [
+                  1006517,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_HYPER_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_HYPER_2",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_ATTACK_11"
+                ]
+              ]
+            }
+          ],
+          "m_listNKMEventCameraMove": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 0.03333333333333333,
+              "m_fEventTimeMax": 2.1666666666666665,
+              "m_fPosXOffset": -280,
+              "m_fPosYOffset": 130,
+              "m_fZoom": -200,
+              "m_fFocusBlur": 0,
+              "m_fMoveTrackingTime": 0.1,
+              "m_fZoomTrackingTime": 0.1,
+              "m_fCameraRadius": 0
+            }
+          ],
+          "m_listNKMEventFadeWorld": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 0.03333333333333333,
+              "m_fEventTimeMax": 2.6666666666666665,
+              "m_fColorR": 0,
+              "m_fColorG": 0,
+              "m_fColorB": 0,
+              "m_fMapColorKeepTime": 0.3,
+              "m_fMapColorReturnTime": 1
+            }
+          ],
+          "m_listNKMEventMotionBlur": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 0,
+              "m_fEventTimeMax": 99999,
+              "m_fColorR": 1,
+              "m_fColorG": 0.5,
+              "m_fColorB": 0.5
+            }
+          ],
+          "m_listNKMEventStopTime": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_StopTimeIndex": "NSTI_SKILL",
+              "m_fStopTime": 1.5,
+              "m_bStopEnemyOnly": false,
+              "m_bMyStop": false,
+              "m_fRange": 800
+            }
+          ],
+          "m_listNKMEventCameraCrash": [
+            {
+              "m_fEventTime": 0.03333333333333333,
+              "m_CameraCrashType": "NCCT_UP_DOWN",
+              "m_fCrashRadius": 1250,
+              "m_fCameraCrashSpeed": 10,
+              "m_fCameraCrashGap": 8,
+              "m_fCameraCrashTime": 0.23333333333333334
+            },
+            {
+              "m_fEventTime": 0.4,
+              "m_CameraCrashType": "NCCT_UP_DOWN",
+              "m_fCrashRadius": 1250,
+              "m_fCameraCrashSpeed": 10,
+              "m_fCameraCrashGap": 3,
+              "m_fCameraCrashTime": 3
+            }
+          ]
+        },
+        {
+          "m_StateName": "USN_HYPER1_LOOP",
+          "m_NKM_UNIT_STATE_TYPE": "NUST_ATTACK",
+          "m_bAnimLoop": true,
+          "m_fAnimSpeed": 1.5,
+          "m_AnimName": "HYPER_SKILL1_LOOP",
+          "m_NKM_SKILL_TYPE": "NST_HYPER",
+          "m_SuperArmorLevel": "NSAL_HYPER",
+          "m_StateTimeChangeStateTime": 1.5,
+          "m_StateTimeChangeState": "USN_HYPER1_END",
+          "m_TargetLostOrDieStateDurationTime": 0.2,
+          "m_TargetLostOrDieState": "USN_HYPER1_END",
+          "m_TargetDistOverChangeStateDist": 500,
+          "m_TargetDistOverChangeState": "USN_HYPER1_END",
+          "m_listNKMEventAttack": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 0.06666666666666667,
+              "m_fEventTimeMax": 0.13333333333333333,
+              "m_fRangeMin": -350,
+              "m_fRangeMax": 350,
+              "m_bHitAir": false,
+              "m_NKM_DAMAGE_TARGET_TYPE": "NDTT_ENEMY",
+              "m_AttackUnitCount": 2,
+              "m_DamageTempletName": "DT_NKM_UNIT_C_POLICE_LEE_YUMI_HYPER1"
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 0.7333333333333333,
+              "m_fEventTimeMax": 0.8,
+              "m_fRangeMin": -300,
+              "m_fRangeMax": 300,
+              "m_bHitAir": false,
+              "m_NKM_DAMAGE_TARGET_TYPE": "NDTT_ENEMY",
+              "m_AttackUnitCount": 2,
+              "m_DamageTempletName": "DT_NKM_UNIT_C_POLICE_LEE_YUMI_HYPER1"
+            }
+          ],
+          "m_listNKMEventCameraMove": [
+            {
+              "m_bAnimTime": false,
+              "m_fEventTimeMin": 0.03333333333333333,
+              "m_fEventTimeMax": 4,
+              "m_fPosXOffset": 200,
+              "m_fPosYOffset": 150,
+              "m_fZoom": -100,
+              "m_fMoveTrackingTime": 5,
+              "m_fZoomTrackingTime": 5,
+              "m_fCameraRadius": 0
+            }
+          ],
+          "m_listNKMEventMotionBlur": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 0,
+              "m_fEventTimeMax": 99999,
+              "m_fColorR": 1,
+              "m_fColorG": 0.5,
+              "m_fColorB": 0.5
+            }
+          ],
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_SWORD_SLASH_BIG"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.26666666666666666,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_SWORD_SLASH_BIG"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.5,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_SWORD_SLASH_BIG"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.7333333333333333,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_SWORD_SLASH_BIG"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.9666666666666667,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_SWORD_SLASH_BIG"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 1.2,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_SWORD_SLASH_BIG"
+              ]
+            }
+          ]
+        },
+        {
+          "m_StateName": "USN_HYPER1_END",
+          "m_NKM_UNIT_STATE_TYPE": "NUST_ATTACK",
+          "m_bAnimLoop": false,
+          "m_fAnimSpeed": 1.2,
+          "m_AnimName": "HYPER_SKILL1_END",
+          "m_NKM_SKILL_TYPE": "NST_HYPER",
+          "m_SuperArmorLevel": "NSAL_HYPER",
+          "m_listNKMEventAttack": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTimeMin": 0.3333333333333333,
+              "m_fEventTimeMax": 0.6666666666666666,
+              "m_fRangeMin": -350,
+              "m_fRangeMax": 350,
+              "m_bHitAir": false,
+              "m_NKM_DAMAGE_TARGET_TYPE": "NDTT_ENEMY",
+              "m_AttackUnitCount": 2,
+              "m_DamageTempletName": "DT_NKM_UNIT_C_POLICE_LEE_YUMI_HYPER1_END"
+            }
+          ],
+          "m_listNKMEventBuff": [
+            {
+              "m_Condition": {
+                "m_SkillStrID": "NKM_UNIT_C_POLICE_LEE_YUMI_HYPER",
+                "m_SkillLevel": [
+                  1,
+                  4
+                ]
+              },
+              "m_bStateEndTime": true,
+              "m_BuffStrID": "BUFF_POLICE_LEE_YUMI_HYPER"
+            },
+            {
+              "m_Condition": {
+                "m_SkillStrID": "NKM_UNIT_C_POLICE_LEE_YUMI_HYPER",
+                "m_SkillLevel": [
+                  5,
+                  99
+                ]
+              },
+              "m_bStateEndTime": true,
+              "m_BuffStrID": "BUFF_POLICE_LEE_YUMI_HYPER_LV5"
+            }
+          ],
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.3333333333333333,
+              "m_listSoundName": [
+                "FX_COMBAT_ALL_SWORD_SLASH_BIG_08"
+              ]
+            },
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 1.2666666666666666,
+              "m_listSoundName": [
+                "FX_COMBAT_ONLY_YUI_HYPER_ATTACK_START_02"
+              ]
+            }
+          ],
+          "m_listNKMEventCameraCrash": [
+            {
+              "m_fEventTime": 0.16666666666666666,
+              "m_CameraCrashType": "NCCT_UP_DOWN",
+              "m_fCrashRadius": 1250,
+              "m_fCameraCrashSpeed": 10,
+              "m_fCameraCrashGap": 8,
+              "m_fCameraCrashTime": 0.23333333333333334
+            }
+          ],
+          "m_listNKMEventCameraMove": [
+            {
+              "m_bAnimTime": false,
+              "m_fEventTimeMin": 0.3333333333333333,
+              "m_fEventTimeMax": 2.3333333333333335,
+              "m_fPosXOffset": 300,
+              "m_fPosYOffset": 100,
+              "m_fZoom": 0,
+              "m_fFocusBlur": 0,
+              "m_fMoveTrackingTime": 0.1,
+              "m_fZoomTrackingTime": 0.1,
+              "m_fCameraRadius": 0
+            }
+          ]
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_DAMAGE",
+          "m_StateName": "USN_DAMAGE_A",
+          "m_AnimName": "DAMAGE_A",
+          "m_bAnimLoop": false,
+          "m_AnimEndChangeState": "USN_ASTAND",
+          "m_FootOffLandChangeState": "USN_DAMAGE_AIR_DOWN",
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_bVoice": true,
+              "m_PlayRate": 0.25,
+              "m_listSoundName": [
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_DAMAGE_1",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_DAMAGE_2",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_DAMAGE_3"
+              ],
+              "m_dicSkinSound": [
+                [
+                  1006516,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_DAMAGE_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_DAMAGE_2",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_DAMAGE_3"
+                ],
+                [
+                  1006517,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_DAMAGE_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_DAMAGE_2",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_DAMAGE_3"
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_DAMAGE",
+          "m_StateName": "USN_DAMAGE_B",
+          "m_AnimName": "DAMAGE_B",
+          "m_bAnimLoop": false,
+          "m_AnimEndChangeState": "USN_ASTAND",
+          "m_FootOffLandChangeState": "USN_DAMAGE_AIR_DOWN",
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_bVoice": true,
+              "m_PlayRate": 0.25,
+              "m_listSoundName": [
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_DAMAGE_1",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_DAMAGE_2",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_DAMAGE_3"
+              ],
+              "m_dicSkinSound": [
+                [
+                  1006516,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_DAMAGE_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_DAMAGE_2",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_DAMAGE_3"
+                ],
+                [
+                  1006517,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_DAMAGE_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_DAMAGE_2",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_DAMAGE_3"
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_DAMAGE",
+          "m_StateName": "USN_DAMAGE_AIR_UP",
+          "m_AnimName": "DAMAGE_AIR_UP",
+          "m_bAnimLoop": false,
+          "m_SpeedY0NegativeChangeState": "USN_DAMAGE_AIR_DOWN",
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_bVoice": true,
+              "m_PlayRate": 0.25,
+              "m_listSoundName": [
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_DAMAGE_1",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_DAMAGE_2",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_DAMAGE_3"
+              ],
+              "m_dicSkinSound": [
+                [
+                  1006516,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_DAMAGE_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_DAMAGE_2",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_DAMAGE_3"
+                ],
+                [
+                  1006517,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_DAMAGE_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_DAMAGE_2",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_DAMAGE_3"
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_DAMAGE",
+          "m_StateName": "USN_DAMAGE_DOWN",
+          "m_AnimName": "DAMAGE_DOWN",
+          "m_bAnimLoop": false,
+          "m_AnimEndDyingState": "USN_DAMAGE_DIE",
+          "m_AnimEndChangeState": "USN_DAMAGE_STAND",
+          "m_FootOffLandChangeState": "USN_DAMAGE_AIR_DOWN",
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_bVoice": true,
+              "m_PlayRate": 0.25,
+              "m_listSoundName": [
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_DAMAGE_1",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_DAMAGE_2",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_DAMAGE_3"
+              ],
+              "m_dicSkinSound": [
+                [
+                  1006516,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_DAMAGE_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_DAMAGE_2",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_DAMAGE_3"
+                ],
+                [
+                  1006517,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_DAMAGE_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_DAMAGE_2",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_DAMAGE_3"
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "m_NKM_UNIT_STATE_TYPE": "NUST_DIE",
+          "m_StateName": "USN_DAMAGE_DIE",
+          "m_AnimName": "DAMAGE_DIE",
+          "m_bAnimLoop": false,
+          "m_bShowGage": false,
+          "m_listNKMEventSound": [
+            {
+              "m_bAnimTime": true,
+              "m_fEventTime": 0.03333333333333333,
+              "m_bVoice": true,
+              "m_PlayRate": 0.7,
+              "m_listSoundName": [
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_DEATH_1",
+                "VOICE_UNIT_C_POLICE_LEE_YUMI_BATTLE_DEATH_2"
+              ],
+              "m_dicSkinSound": [
+                [
+                  1006516,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_DEATH_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_CHILD_BATTLE_DEATH_2"
+                ],
+                [
+                  1006517,
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_DEATH_1",
+                  "VOICE_UNIT_C_POLICE_LEE_YUMI_SUMMER_BATTLE_DEATH_2"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

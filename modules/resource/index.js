@@ -30,7 +30,7 @@ function isCoreResourceItemId(itemId) {
   return Object.values(RESOURCE_ITEM_IDS).includes(id);
 }
 
-function grantShopProduct(ctx, user, record, productCount = 1) {
+function grantShopProduct(ctx, user, record, productCount = 1, options = {}) {
   if (!record) return grantFallbackResource(ctx, user, productCount);
 
   const count = Math.max(1, Number(productCount) || 1);
@@ -49,26 +49,28 @@ function grantShopProduct(ctx, user, record, productCount = 1) {
     toBigInt(record.m_FreeValue != null ? record.m_FreeValue : record.m_Value || 1, 1n) * BigInt(count),
     toBigInt(record.m_FreeValue != null ? record.m_FreeValue : record.m_Value || 1, 1n) * BigInt(count),
     toBigInt(record.m_PaidValue || 0, 0n) * BigInt(count),
-    { regDate, expandPackages: true }
+    { ...options, regDate, expandPackages: true }
   );
   for (const key of ["miscItems", "skinIds", "emoticonIds", "units", "operators", "equips", "moldItems", "interiors"]) {
     if (Array.isArray(granted[key])) reward[key].push(...granted[key]);
   }
 
-  recordShopPurchase(user, Number(record.m_ProductID) || 0, count, {
-    now: getCurrentRawTicks(ctx),
-    nextResetDate: getNextShopResetDate(ctx, record),
-    resetType: record.resetType || record.m_QuantityLimitCond || "",
-  });
+  if (options.recordPurchase !== false) {
+    recordShopPurchase(user, Number(record.m_ProductID) || 0, count, {
+      now: getCurrentRawTicks(ctx),
+      nextResetDate: options.nextResetDate || getNextShopResetDate(ctx, record),
+      resetType: options.resetType || record.resetType || record.m_QuantityLimitCond || "",
+    });
+  }
   return reward;
 }
 
-function spendShopPrice(ctx, user, record, productCount = 1) {
+function spendShopPrice(ctx, user, record, productCount = 1, options = {}) {
   if (!record || isRealMoneyProduct(record)) return null;
   const itemId = Number(record.m_PriceItemID);
   const unitPrice = toBigInt(record.m_Price || 0, 0n);
   const count = Math.max(1, Number(productCount) || 1);
-  const totalPrice = unitPrice * BigInt(count);
+  const totalPrice = options.totalPrice == null ? unitPrice * BigInt(count) : toBigInt(options.totalPrice, 0n);
   if (!Number.isInteger(itemId) || itemId <= 0 || totalPrice <= 0n) return null;
 
   const regDate = ctx && ctx.dateTimeBinaryNow ? ctx.dateTimeBinaryNow() : 0n;
@@ -150,9 +152,7 @@ function getShopTotalPaidAmount(user) {
         ? user.totalPaidAmount
         : user.totalPayment || 0
   );
-  const normalized = Number.isFinite(existing) && existing > 0 ? existing : 0;
-  user.shopTotalPaidAmount = normalized;
-  return normalized;
+  return Number.isFinite(existing) && existing > 0 ? existing : 0;
 }
 
 function recordShopTotalPaidAmount(user, amount) {
@@ -210,7 +210,8 @@ function getPurchaseKey(source, productId, request = {}) {
   const normalizedSource = source || "shop";
   let explicit = "";
   if (normalizedSource === "steam") {
-    explicit = request.productId || productId;
+    const resolvedProductId = request.productId || productId;
+    explicit = request.orderId ? `${request.orderId}:${resolvedProductId}` : resolvedProductId;
   } else if (normalizedSource === "cash") {
     explicit = request.productMarketID || request.productId || request.productID || productId;
   } else if (normalizedSource === "gamebase") {

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script",
+    "fileName": "LUA_CUTSCENE_CHAR_TEMPLET.json",
+    "tableName": "LUA_CUTSCENE_CHAR_TEMPLET"
+  },
+  "key": {
+    "field": "m_CharStrID",
+    "value": "EP1_ACT4_DATING_EVENT_1_SPEAKER_ADMINISTRATOR"
+  },
+  "value": {
+    "m_CutsceneSetting_Key": "EP1_ACT4_DATING_EVENT_1_SPEAKER_ADMINISTRATOR@CSETTINGKEY",
+    "m_CharStrID": "EP1_ACT4_DATING_EVENT_1_SPEAKER_ADMINISTRATOR",
+    "m_CharStr_KOREA": "Administrator",
+    "m_PrefabStr": "NKM_PLAYER_ADMINISTRATOR",
+    "m_CharStr_JPN": "Administrator",
+    "m_CharStr_ENG": "Administrator",
+    "m_CharStr_TWN": "Administrator",
+    "m_CharStr_THA": "Administrator",
+    "m_CharStr_VTN": "Administrator",
+    "m_CharStr_SCN": "Administrator",
+    "m_CharStr_DEU": "Administrator",
+    "m_CharStr_FRA": "Administrator"
+  },
+  "source": "revivalside-episode-maker"
+}

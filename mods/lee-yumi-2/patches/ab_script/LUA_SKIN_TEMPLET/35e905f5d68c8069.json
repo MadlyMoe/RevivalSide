@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script",
+    "fileName": "LUA_SKIN_TEMPLET.json",
+    "tableName": "LUA_SKIN_TEMPLET"
+  },
+  "key": {
+    "field": "m_SkinID",
+    "value": 1006512
+  },
+  "source": {
+    "field": "m_SkinID",
+    "value": 109915
+  },
+  "value": {
+    "m_bEnable": true,
+    "m_OpenTag": "TAG_COMMON_SKIN_UNIT_C_POLICE_LEE_YUMI_FOOLSDAY",
+    "m_SkinID": 1006512,
+    "m_SkinStrID": "NKM_UNIT_C_POLICE_LEE_YUMI_FOOLSDAY_MOD_26048",
+    "m_SkinEquipUnitID": 26048,
+    "m_SkinGrade": "SG_NORMAL",
+    "m_bLimited": false,
+    "m_ReturnItemID": 101,
+    "m_ReturnItemCount": 972,
+    "m_bEffect": false,
+    "m_SkinSkillCutIn": "CUTIN_NORMAL",
+    "m_Title": "SI_SKIN_TITLE_NKM_UNIT_C_POLICE_LEE_YUMI_FOOLSDAY",
+    "m_SkinDesc": "SI_SKIN_DESC_NKM_UNIT_C_POLICE_LEE_YUMI_FOOLSDAY",
+    "m_bCubismIllust": false,
+    "m_SpriteBundleName": "AB_UNIT_GAME_SPINE_NKM_UNIT_C_POLICE_LEE_YUMI",
+    "m_SpriteName": "SPINE_NKM_UNIT_C_POLICE_LEE_YUMI",
+    "m_FaceCardName": "AB_UNIT_FACE_CARD_NKM_UNIT_C_POLICE_LEE_YUMI_FOOLSDAY",
+    "m_SpineIllustName": "AB_UNIT_ILLUST_NKM_UNIT_C_POLICE_LEE_YUMI_FOOLSDAY",
+    "m_SpineSDName": "AB_UNIT_SD_SPINE_NKM_UNIT_C_POLICE_LEE_YUMI_FOOLSDAY",
+    "m_InvenIconName": "AB_INVEN_ICON_NKM_UNIT_C_POLICE_LEE_YUMI_FOOLSDAY",
+    "m_HyperSkillCutin": "AB_FX_SKILL_CUTIN_NKM_UNIT_C_POLICE_LEE_YUMI_FOOLSDAY"
+  }
+}

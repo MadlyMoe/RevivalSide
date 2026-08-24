@@ -125,7 +125,7 @@ function createLoginLikeHydratedHandler(packetId, options = {}) {
       const user = getOrCreateHydratedLoginUser(ctx, socket, packet, { ...options, name, ackPacketId });
       ctx.setLastEffectiveAccessToken && ctx.setLastEffectiveAccessToken(user.accessToken || "");
       if (typeof ctx.prepareUserLobbySession === "function") {
-        ctx.prepareUserLobbySession(user, { source: name, force: true });
+        ctx.prepareUserLobbySession(user, { source: name });
       }
       console.log(`[hydrate:${name}] login-like ACK packetId=${ackPacketId} uid=${user.userUid || "(ephemeral)"}`);
       ctx.sendResponse(socket, packet.sequence, ackPacketId, () => {
@@ -153,6 +153,18 @@ function createLoginLikeHydratedHandler(packetId, options = {}) {
         const finalPayload = ackPacketId === 230 ? Buffer.concat([payload, writeSignedVarInt(0)]) : payload;
         return ctx.buildEncryptedPacket(packet.sequence, ackPacketId, finalPayload);
       });
+      if (socket.session.user && typeof ctx.prewarmJoinLobbyAckPayload === "function") {
+        try {
+          const cached = typeof ctx.takePrewarmedJoinLobbyAckPayload === "function"
+            ? ctx.takePrewarmedJoinLobbyAckPayload(socket.session.user, { consume: false })
+            : null;
+          if (!cached) ctx.prewarmJoinLobbyAckPayload(socket.session.user, { source: name.toLowerCase() });
+        } catch (error) {
+          console.log(
+            `[JOIN_LOBBY_ACK warm-cache] ${name.toLowerCase()} skipped: ${error && error.message ? error.message : error}`
+          );
+        }
+      }
       return true;
     },
   };
@@ -248,7 +260,7 @@ function getOrCreateHydratedLoginUser(ctx, socket, packet, options = {}) {
     user = ctx.getOrCreateUserForGuest(loginReq);
     if (typeof ctx.issueUserTokens === "function") ctx.issueUserTokens(user, loginReq.accessToken || "");
     if (typeof ctx.prepareTutorialLogin === "function") ctx.prepareTutorialLogin(user);
-    if (typeof ctx.saveUserDb === "function") ctx.saveUserDb();
+    if (typeof ctx.saveUserDb === "function") ctx.saveUserDb({ affectsJoinLobby: false });
     console.log(
       `[hydrate:${options.name || "GAMEBASE_LOGIN_REQ"}] guest login deviceUid=${JSON.stringify(
         loginReq.deviceUid || ""

@@ -14,6 +14,7 @@ public sealed class HostOptions
     public string ManagedDir { get; set; } = "";
     public string GameplayTablesDir { get; set; } = "";
     public List<string> ContentsTags { get; set; } = [];
+    public List<string> OpenTags { get; set; } = [];
     public double SyncIntervalSeconds { get; set; } = 0.25;
     public int DefaultUnitDamage { get; set; } = 10;
     public int DefaultUnitAttackRange { get; set; } = 130;
@@ -165,6 +166,8 @@ public sealed class HostPacket
     public double? BattlePlayTime { get; set; }
     public int? FiercePoint { get; set; }
     public int? FiercePenaltyPoint { get; set; }
+    public int? DefencePoint { get; set; }
+    public int? TrimPoint { get; set; }
     public List<BattleUnitRecord>? BattleRecords { get; set; }
 }
 
@@ -211,6 +214,9 @@ public sealed class JoinLobbyMergeData
     public bool FilterInactiveEventIntervals { get; set; }
     public bool PreserveOfficialContractData { get; set; }
     public bool OverlayLocalContractData { get; set; }
+    public bool OverlayLocalPvpRankData { get; set; }
+    public bool OverlayLocalAsyncPvpData { get; set; }
+    public bool OverlayLocalLeaguePvpData { get; set; }
 }
 
 public sealed class JoinLobbyNormalizeData

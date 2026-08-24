@@ -86,8 +86,15 @@ function Write-AndroidPayloadArchive([string[]]$SourcePaths, [string]$Destinatio
                   try {
                     $temporaryStream = [System.IO.File]::Create($temporaryListener)
                     try { $input.CopyTo($temporaryStream) } finally { $temporaryStream.Dispose() }
-                    & node $officialBridgePatcher $temporaryListener | Write-Host
-                    if ($LASTEXITCODE -ne 0) { throw "Failed to add the Android official-server bridge to the PC release listener." }
+                    $listenerText = [System.IO.File]::ReadAllText($temporaryListener)
+                    $hasEmbeddedServerInfoMode =
+                      $listenerText.Contains('url.pathname === "/launcher/api/server-info-mode"') -and
+                      ($listenerText.Contains('rewriteCapturedServerInfo = serverInfoMode === "revivalside";') -or
+                       $listenerText.Contains('serverInfoMode = normalizeServerInfoMode('))
+                    if (-not $hasEmbeddedServerInfoMode) {
+                      & node $officialBridgePatcher $temporaryListener | Write-Host
+                      if ($LASTEXITCODE -ne 0) { throw "Failed to add the Android official-server bridge to the PC release listener." }
+                    }
                     $patchedListener = [System.IO.File]::ReadAllBytes($temporaryListener)
                     $output.Write($patchedListener, 0, $patchedListener.Length)
                   } finally {

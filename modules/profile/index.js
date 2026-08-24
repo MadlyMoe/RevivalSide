@@ -10,22 +10,21 @@ const {
   writeObjectList,
   writeNullableObjectList,
   writeIntList,
+  writeLongArray,
   readSignedVarInt,
   readSignedVarLong,
   readBool,
   readByte,
   readSByte,
   readString,
-  buildEquipProfileInfoData,
   toBigInt,
 } = require("../packet-codec");
-const { getMiscItem } = require("../inventory");
+const { ensureInventory, getMiscItem } = require("../inventory");
+const { getMiscItemTemplet, getSkinTemplet } = require("../game-data");
 const { ensureArmy, ensureDeck } = require("../unit");
-const { getEquipItems } = require("../equipment");
 const { buildSupportUnitData: buildPersistedSupportUnitData, ensureSupportUnit } = require("../combat-roster");
 const {
   ensureAccountProgress,
-  getAchievePoint,
   setProfileEmblem,
   setProfileFrame,
   setProfileIntro,
@@ -44,9 +43,22 @@ const PROFILE_PACKET_NAMES = Object.freeze({
   451: "MY_USER_PROFILE_INFO_REQ",
   467: "USER_PROFILE_CHANGE_FRAME_REQ",
   495: "UPDATE_TITLE_REQ",
-  3200: "LEADERBOARD_ACHIEVE_LIST_REQ",
 });
 const NEC_DB_FAIL_USER_DATA = 1;
+const PROFILE_ERROR = Object.freeze({
+  DECK_TYPE: 452,
+  NOT_FOUND: 20176,
+  UNIT: 20177,
+  DECK_INDEX: 20181,
+  EMBLEM_INDEX: 20184,
+  EMBLEM_ITEM: 20185,
+  EMBLEM_DUPLICATE: 20186,
+  FRAME: 20516,
+  TITLE_ITEM: 26200,
+  TITLE_TEMPLATE: 26202,
+  TITLE_SAME: 26205,
+});
+const PROFILE_EMBLEM_SLOTS = 3;
 
 function createProfileHandlers() {
   return Object.keys(PROFILE_PACKET_NAMES).map((packetIdText) => {
@@ -89,7 +101,13 @@ function buildResponse(ctx, user, packetId, req) {
       );
     }
     case 420: {
-      setProfileMainUnit(user, req.mainCharId, req.mainCharSkinId, findTacticLevel(user, req.mainCharId));
+      const unit = findOwnedUnit(user, req.mainCharId);
+      if (!unit || !isOwnedUnitSkin(user, req.mainCharId, req.mainCharSkinId)) {
+        return ack(421, Buffer.concat([
+          writeSignedVarInt(PROFILE_ERROR.UNIT), writeSignedVarInt(0), writeSignedVarInt(0), writeSignedVarInt(0),
+        ]), "invalid-main-unit", false);
+      }
+      setProfileMainUnit(user, req.mainCharId, req.mainCharSkinId, Number(unit.tacticLevel || 0));
       return ack(
         421,
         Buffer.concat([
@@ -102,10 +120,13 @@ function buildResponse(ctx, user, packetId, req) {
       );
     }
     case 422: {
-      setProfileIntro(user, req.intro);
+      setProfileIntro(user, String(req.intro || "").slice(0, 20));
       return ack(423, Buffer.concat([writeSignedVarInt(0), writeString(user.friendIntro || "")]), `introLen=${String(user.friendIntro || "").length}`);
     }
     case 424: {
+      if (!isValidProfileDeckIndex(req.deckIndex)) {
+        return ack(425, Buffer.concat([writeSignedVarInt(PROFILE_ERROR.DECK_INDEX), writeNullObject()]), "invalid-deck", false);
+      }
       user.profileDeckIndex = normalizeDeckIndex(req.deckIndex);
       return ack(
         425,
@@ -114,6 +135,12 @@ function buildResponse(ctx, user, packetId, req) {
       );
     }
     case 426: {
+      const emblemError = validateEmblem(user, req.index, req.itemId);
+      if (emblemError) {
+        return ack(427, Buffer.concat([
+          writeSignedVarInt(emblemError), writeSByte(req.index), writeSignedVarInt(req.itemId), writeSignedVarLong(0n),
+        ]), "invalid-emblem", false);
+      }
       const count = getEmblemCount(user, req.itemId);
       const emblem = setProfileEmblem(user, req.index, req.itemId, count);
       return ack(
@@ -128,36 +155,42 @@ function buildResponse(ctx, user, packetId, req) {
       );
     }
     case 428:
-    case 429:
+    case 429: {
+      if (packetId === 428 && !isValidRequestedDeckType(req.deckType)) {
+        return ack(430, Buffer.concat([writeSignedVarInt(PROFILE_ERROR.DECK_TYPE), writeNullObject(), writeNullObject()]), "invalid-deck-type", false);
+      }
+      const target = packetId === 428 ? findUserByUid(ctx, req.userUid) : findUserByFriendCode(ctx, req.friendCode);
+      if (!target) {
+        return ack(430, Buffer.concat([writeSignedVarInt(PROFILE_ERROR.NOT_FOUND), writeNullObject(), writeNullObject()]), "profile-not-found", false);
+      }
+      const requestedDeckIndex = packetId === 428 ? { deckType: req.deckType, index: 0 } : null;
       return ack(
         430,
         Buffer.concat([
           writeSignedVarInt(0),
-          writeNullableObject(buildUserProfileData(user)),
-          writeNullableObject(buildSupportUnitData(user)),
+          writeNullableObject(buildUserProfileData(target, requestedDeckIndex)),
+          writeNullableObject(buildSupportUnitData(target)),
         ]),
-        "profile"
-      );
-    case 451:
-      return ack(452, Buffer.concat([writeSignedVarInt(0), writeNullableObject(buildUserProfileData(user))]), "self");
-    case 467:
-      setProfileFrame(user, req.selfiFrameId);
-      return ack(468, Buffer.concat([writeSignedVarInt(0), writeSignedVarInt(user.selfiFrameId || 0)]), `frame=${user.selfiFrameId || 0}`);
-    case 495:
-      setProfileTitle(user, req.titleId);
-      return ack(496, Buffer.concat([writeSignedVarInt(0), writeSignedVarInt(user.titleId || 0)]), `title=${user.titleId || 0}`);
-    case 3200:
-      return ack(
-        3201,
-        Buffer.concat([
-          writeSignedVarInt(0),
-          writeNullableObject(buildLeaderBoardAchieveData(user)),
-          writeSignedVarInt(1),
-          writeBool(Boolean(req.isAll)),
-        ]),
-        `achievePoint=${getAchievePoint(user).toString()}`,
+        `profile uid=${target.userUid}`,
         false
       );
+    }
+    case 451:
+      return ack(452, Buffer.concat([writeSignedVarInt(0), writeNullableObject(buildUserProfileData(user))]), "self", false);
+    case 467:
+      if (!isOwnedMiscType(user, req.selfiFrameId, "IMT_SELFIE_FRAME")) {
+        return ack(468, Buffer.concat([writeSignedVarInt(PROFILE_ERROR.FRAME), writeSignedVarInt(req.selfiFrameId)]), "invalid-frame", false);
+      }
+      setProfileFrame(user, req.selfiFrameId);
+      return ack(468, Buffer.concat([writeSignedVarInt(0), writeSignedVarInt(user.selfiFrameId || 0)]), `frame=${user.selfiFrameId || 0}`);
+    case 495: {
+      const titleError = validateTitle(user, req.titleId);
+      if (titleError) {
+        return ack(496, Buffer.concat([writeSignedVarInt(titleError), writeSignedVarInt(req.titleId)]), "invalid-title", false);
+      }
+      setProfileTitle(user, req.titleId);
+      return ack(496, Buffer.concat([writeSignedVarInt(0), writeSignedVarInt(user.titleId || 0)]), `title=${user.titleId || 0}`);
+    }
     default:
       return ack(packetId + 1, writeSignedVarInt(0));
   }
@@ -189,8 +222,6 @@ function decodeRequest(ctx, packetId, encryptedPayload) {
         return { selfiFrameId: reader.int() };
       case 495:
         return { titleId: reader.int() };
-      case 3200:
-        return { isAll: reader.bool() };
       case 226:
         return { birthDay: reader.birthDayDate() };
       default:
@@ -202,17 +233,19 @@ function decodeRequest(ctx, packetId, encryptedPayload) {
   }
 }
 
-function buildUserProfileData(user) {
+function buildUserProfileData(user, requestedDeckIndex = null, pvpProfiles = {}) {
   ensureAccountProgress(user);
   return Buffer.concat([
     writeNullableObject(buildCommonProfileData(user)),
     writeString(String(user.friendIntro || "")),
-    writeNullableObject(buildPvpProfileData()),
-    writeNullableObject(buildPvpProfileData()),
-    writeNullableObject(buildPvpProfileData()),
-    user.profileDeckIndex ? writeNullableObject(buildDummyDeckData(user, user.profileDeckIndex)) : writeNullObject(),
-    writeNullObject(),
-    writeNullableObject(buildAsyncDeckData(user)),
+    writeNullableObject(buildPvpProfileData(pvpProfiles.rankPvpData)),
+    writeNullableObject(buildPvpProfileData(pvpProfiles.asyncPvpData)),
+    writeNullableObject(buildPvpProfileData(pvpProfiles.leaguePvpData)),
+    requestedDeckIndex || user.profileDeckIndex
+      ? writeNullableObject(buildDummyDeckData(user, requestedDeckIndex || user.profileDeckIndex))
+      : writeNullObject(),
+    writeNullObject(), // leagueDeck
+    writeNullableObject(buildAsyncDeckData(user)), // defenceDeck
     writeNullableObjectList((user.profileEmblems || []).map(buildEmblemData)),
     writeSignedVarInt(Number(user.selfiFrameId || user.frameId || 0) || 0),
     writeNullableObject(buildGuildSimpleData()),
@@ -243,8 +276,12 @@ function buildEmblemData(emblem) {
   ]);
 }
 
-function buildPvpProfileData() {
-  return Buffer.concat([writeSignedVarInt(0), writeSignedVarInt(0), writeSignedVarInt(0)]);
+function buildPvpProfileData(value = {}) {
+  return Buffer.concat([
+    writeSignedVarInt(Number(value && (value.seasonId ?? value.SeasonID)) || 0),
+    writeSignedVarInt(Number(value && (value.leagueTierId ?? value.LeagueTierID)) || 0),
+    writeSignedVarInt(Number(value && (value.score ?? value.Score)) || 0),
+  ]);
 }
 
 function buildDummyDeckData(user, deckIndex) {
@@ -292,7 +329,6 @@ function buildAsyncDeckData(user) {
 
 function buildAsyncUnitData(unit) {
   const equipUids = unit && Array.isArray(unit.equipItemUids) ? unit.equipItemUids : [];
-  const equipMap = new Map(getEquipItems({ army: {}, inventory: {} }).map((equip) => [String(toBigInt(equip.equipUid || 0)), equip]));
   return Buffer.concat([
     writeSignedVarLong(toBigInt(unit && unit.unitUid ? unit.unitUid : 0)),
     writeSignedVarInt(Number(unit && unit.unitId) || 0),
@@ -301,7 +337,7 @@ function buildAsyncUnitData(unit) {
     writeSignedVarInt(Number(unit && unit.limitBreakLevel) || 0),
     writeIntList(unit && unit.skillLevels ? unit.skillLevels : []),
     writeIntList([]),
-    writeObjectList(equipUids.map((uid) => writeNullableObject(buildEquipProfileInfoData(equipMap.get(String(toBigInt(uid || 0))))))),
+    writeLongArray(equipUids.map((uid) => toBigInt(uid || 0))),
     writeObjectList([]),
     writeSignedVarInt(Number(unit && unit.tacticLevel) || 0),
     writeSignedVarInt(Number(unit && unit.reactorLevel) || 0),
@@ -322,23 +358,79 @@ function buildGuildSimpleData() {
   return Buffer.concat([writeSignedVarLong(0n), writeString(""), writeSignedVarLong(0n)]);
 }
 
-function buildLeaderBoardAchieveData(user) {
-  return writeNullableObjectList([buildAchieveData(user)]);
-}
-
-function buildAchieveData(user) {
-  return Buffer.concat([
-    writeNullableObject(buildCommonProfileData(user)),
-    writeSignedVarLong(getAchievePoint(user)),
-    writeNullableObject(buildGuildSimpleData()),
-  ]);
-}
-
 function findTacticLevel(user, unitId) {
   const army = ensureArmy(user);
   const id = Number(unitId || 0);
   const unit = Object.values(army.units || {}).find((entry) => Number(entry && entry.unitId) === id);
   return Number(unit && unit.tacticLevel) || 0;
+}
+
+function findOwnedUnit(user, unitId) {
+  const id = Number(unitId || 0);
+  return Object.values(ensureArmy(user).units || {}).find((entry) => Number(entry && entry.unitId) === id) || null;
+}
+
+function isOwnedUnitSkin(user, unitId, skinId) {
+  const id = Number(skinId || 0);
+  if (!id) return true;
+  const template = getSkinTemplet(id);
+  return Boolean(
+    template && Number(template.m_SkinEquipUnitID || 0) === Number(unitId || 0) && ensureInventory(user).skins.includes(id)
+  );
+}
+
+function isValidProfileDeckIndex(deckIndex) {
+  const data = deckIndex && typeof deckIndex === "object" ? deckIndex : {};
+  const deckType = Number(data.deckType);
+  const index = Number(data.index);
+  return Number.isInteger(deckType) && deckType >= 1 && deckType <= 10 && Number.isInteger(index) && index >= 0 && index < 20;
+}
+
+function isValidRequestedDeckType(deckType) {
+  const value = Number(deckType);
+  return Number.isInteger(value) && value >= 1 && value <= 10;
+}
+
+function validateEmblem(user, index, itemId) {
+  const slot = Number(index);
+  const id = Number(itemId || 0);
+  if (!Number.isInteger(slot) || slot < 0 || slot >= PROFILE_EMBLEM_SLOTS) return PROFILE_ERROR.EMBLEM_INDEX;
+  if (!id) return 0;
+  const template = getMiscItemTemplet(id);
+  if (!template || !["IMT_EMBLEM", "IMT_EMBLEM_RANK"].includes(template.m_ItemMiscType) || getEmblemCount(user, id) <= 0n) {
+    return PROFILE_ERROR.EMBLEM_ITEM;
+  }
+  if ((user.profileEmblems || []).some((entry, entryIndex) => entryIndex !== slot && Number(entry && entry.id) === id)) {
+    return PROFILE_ERROR.EMBLEM_DUPLICATE;
+  }
+  return 0;
+}
+
+function isOwnedMiscType(user, itemId, type) {
+  const id = Number(itemId || 0);
+  if (!id) return true;
+  const template = getMiscItemTemplet(id);
+  return Boolean(template && template.m_ItemMiscType === type && getEmblemCount(user, id) > 0n);
+}
+
+function validateTitle(user, titleId) {
+  const id = Number(titleId || 0);
+  if (!id) return 0;
+  const template = getMiscItemTemplet(id);
+  if (!template || template.m_ItemMiscType !== "IMT_TITLE") return PROFILE_ERROR.TITLE_TEMPLATE;
+  if (getEmblemCount(user, id) <= 0n) return PROFILE_ERROR.TITLE_ITEM;
+  if (Number(user.titleId || 0) === id) return PROFILE_ERROR.TITLE_SAME;
+  return 0;
+}
+
+function findUserByUid(ctx, userUid) {
+  const id = String(userUid == null ? "" : userUid);
+  return Object.values(ctx && ctx.userDb && ctx.userDb.users || {}).find((entry) => String(entry && entry.userUid || "") === id) || null;
+}
+
+function findUserByFriendCode(ctx, friendCode) {
+  const code = String(friendCode == null ? "" : friendCode);
+  return Object.values(ctx && ctx.userDb && ctx.userDb.users || {}).find((entry) => String(entry && entry.friendCode || "") === code) || null;
 }
 
 function getEmblemCount(user, itemId) {

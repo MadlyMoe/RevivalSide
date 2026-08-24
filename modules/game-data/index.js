@@ -20,6 +20,11 @@ function loadGameData() {
 
   const randomItemBoxes = groupByNumber(readRecords("ab_script", "LUA_RANDOM_ITEM_BOX.json"), "m_RewardGroupID");
   const customPackageBoxes = groupByNumber(readRecords("ab_script", "LUA_CUSTOM_PACKAGE_ITEM_BOX.json"), "m_CustomRewardGroupID");
+  const customBoxes = new Map();
+  for (const record of readRecords("ab_script_item_templet", "LUA_CUSTOM_BOX_TEMPLET.json")) {
+    const customBoxId = Number(record && record.CustomBoxID);
+    if (Number.isInteger(customBoxId) && customBoxId > 0 && !customBoxes.has(customBoxId)) customBoxes.set(customBoxId, record);
+  }
   const acqPackages = groupByNumber(readRecords("ab_script", "LUA_ACQ_PACKAGE_TEMPLET.json"), "m_PackageID");
   const rewardGroups = groupByNumber(readRecords("ab_script", "LUA_REWARD_TEMPLET_CL.json"), "m_RewardGroupID");
 
@@ -56,6 +61,7 @@ function loadGameData() {
   }
 
   const unitSkillsById = new Map();
+  const unitSkillsByStrId = new Map();
   const unitSkillStrIdById = new Map();
   for (const record of readRecords("ab_script_unit_data", "LUA_UNIT_SKILL_TEMPLET.json")) {
     const skillId = Number(record && record.m_UnitSkillID);
@@ -66,6 +72,57 @@ function loadGameData() {
     if (!byLevel.has(level)) byLevel.set(level, record);
     if (record.m_UnitSkillStrID && !unitSkillStrIdById.has(skillId)) {
       unitSkillStrIdById.set(skillId, String(record.m_UnitSkillStrID));
+    }
+    const skillStrId = String(record.m_UnitSkillStrID || "");
+    if (skillStrId) {
+      if (!unitSkillsByStrId.has(skillStrId)) unitSkillsByStrId.set(skillStrId, new Map());
+      const byStrLevel = unitSkillsByStrId.get(skillStrId);
+      if (!byStrLevel.has(level)) byStrLevel.set(level, record);
+    }
+  }
+
+  const operatorSkillsById = new Map();
+  const operatorSkillsByStrId = new Map();
+  for (const record of readRecords("ab_script_unit_data", "LUA_OPERATOR_SKILL_TEMPLET.json")) {
+    const skillId = Number(record && record.m_OperSkillID);
+    const skillStrId = String(record && record.m_OperSkillStrID || "");
+    if (!Number.isInteger(skillId) || skillId <= 0) continue;
+    if (!operatorSkillsById.has(skillId)) operatorSkillsById.set(skillId, record);
+    if (skillStrId && !operatorSkillsByStrId.has(skillStrId)) operatorSkillsByStrId.set(skillStrId, record);
+  }
+
+  const unitReactorsById = new Map();
+  for (const record of readRecords("ab_script", "LUA_REACTOR_TEMPLET.json")) {
+    const reactorId = Number(record && record.ReactorID);
+    if (Number.isInteger(reactorId) && reactorId > 0 && !unitReactorsById.has(reactorId)) {
+      unitReactorsById.set(reactorId, record);
+    }
+  }
+  const reactorSkillsById = new Map();
+  for (const record of readRecords("ab_script", "LUA_REACTOR_SKILL_TEMPLET.json")) {
+    const skillId = Number(record && record.IDX);
+    if (Number.isInteger(skillId) && skillId > 0 && !reactorSkillsById.has(skillId)) {
+      reactorSkillsById.set(skillId, record);
+    }
+  }
+  const rearmamentByUnitId = new Map();
+  for (const record of readRecords("ab_script", "LUA_REARMAMENT_TEMPLET.json")) {
+    const unitId = Number(record && record.m_RearmUnitID);
+    if (Number.isInteger(unitId) && unitId > 0 && !rearmamentByUnitId.has(unitId)) {
+      rearmamentByUnitId.set(unitId, record);
+    }
+  }
+  const operatorRandomPassiveByKey = new Map();
+  const operatorPassiveSkillByTokenId = new Map();
+  for (const record of readRecords("ab_script_unit_data", "LUA_OPERATOR_RANDOM_PASSIVE_TEMPLET.json")) {
+    const groupId = Number(record && record.m_OprPassiveGroupID);
+    const skillId = Number(record && record.m_OperSkillID);
+    if (groupId > 0 && skillId > 0) operatorRandomPassiveByKey.set(`${groupId}|${skillId}`, record);
+    for (const suffix of ["SSR", "SR", "R", "N"]) {
+      const itemId = Number(record && record[`m_ExtractItemID_${suffix}`]);
+      if (itemId > 0 && skillId > 0 && !operatorPassiveSkillByTokenId.has(itemId)) {
+        operatorPassiveSkillByTokenId.set(itemId, { itemId, skillId, itemGrade: `NIG_${suffix}` });
+      }
     }
   }
 
@@ -141,6 +198,13 @@ function loadGameData() {
     const moldId = Number(record && record.m_MoldID);
     if (Number.isInteger(moldId) && moldId > 0 && !equipMolds.has(moldId)) equipMolds.set(moldId, record);
   }
+  const resetCounterGroups = new Map();
+  for (const record of readRecords("ab_script", "LUA_RESET_COUNT_TEMPLET.json")) {
+    const groupId = Number(record && record.GroupID);
+    if (Number.isInteger(groupId) && groupId > 0 && !resetCounterGroups.has(groupId)) {
+      resetCounterGroups.set(groupId, record);
+    }
+  }
   const moldRewardGroups = groupByNumber(readRecords("ab_script_item_templet", "LUA_RANDOM_MOLD_BOX_CL.json"), "m_RewardGroupID");
   const equipUpgradeByCoreId = new Map();
   for (const record of readRecords("ab_script", "LUA_ITEM_EQUIP_UPGRADE.json")) {
@@ -151,6 +215,87 @@ function loadGameData() {
   }
   const equipPotentialOptions = groupByNumber(readRecords("ab_script", "LUA_ITEM_EQUIP_POTENTIAL_OPTION.json"), "m_PotentialOptionGroupID");
   const commonConst = readTableObject("ab_script", "LUA_COMMON_CONST.json");
+  const operatorLevelUpConfig = normalizeOperatorLevelUpConfig(
+    commonConst && commonConst.globals && commonConst.globals.Operater
+  );
+  const extractBonus = commonConst && commonConst.globals && commonConst.globals.EXTRACT_BONUS || {};
+  const unitExtractConfig = {
+    awakenRatePercent: Math.max(0, Math.trunc(Number(extractBonus.ExtractBonusRatePercent_Awaken) || 0)),
+    ssrRatePercent: Math.max(0, Math.trunc(Number(extractBonus.ExtractBonusRatePercent_SSR) || 0)),
+    srRatePercent: Math.max(0, Math.trunc(Number(extractBonus.ExtractBonusRatePercent_SR) || 0)),
+    maxUnitSelect: Math.max(1, Math.trunc(Number(extractBonus.MaxExtractUnitSelect) || 1)),
+  };
+  const unitExtractBonusRewards = readRecords("ab_script", "LUA_EXTRACT_BONUS_TEMPLET.json")
+    .map((record) => ({
+      itemId: Number(record && record.m_ExtractBonusItemID),
+      count: Math.max(0, Math.trunc(Number(record && record.m_ExtractBonusItemCount) || 0)),
+      weight: Math.max(0, Math.trunc(Number(record && record.m_Ratio) || 0)),
+    }))
+    .filter((reward) => Number.isInteger(reward.itemId) && reward.itemId > 0 && reward.count > 0 && reward.weight > 0);
+  const recallRewardUnitPieceToPoint = Math.max(
+    0,
+    Number(commonConst && commonConst.globals && commonConst.globals.RECALL &&
+      commonConst.globals.RECALL.RECALL_REWARD_UNIT_PIECE_TO_POINT) || 0
+  );
+  const recallIntervalsByStrId = new Map();
+  for (const record of readRecords("ab_script", "LUA_INTERVAL_TEMPLET.json")) {
+    const strId = String(record && record.m_DateStrID || "");
+    if (strId && !recallIntervalsByStrId.has(strId)) recallIntervalsByStrId.set(strId, record);
+  }
+  const recallTempletsByUnitId = new Map();
+  for (const record of readRecords("ab_script", "LUA_RECALL_TEMPLET.json")) {
+    const unitId = Number(record && record.UnitID);
+    const interval = recallIntervalsByStrId.get(String(record && record.ExchangeDateStrID || ""));
+    const startDate = parseGameTableDate(interval && interval.m_DateStart);
+    const endDate = parseGameTableDate(interval && interval.m_DateEnd);
+    if (!Number.isInteger(unitId) || unitId <= 0 || !startDate || !endDate || endDate <= startDate) continue;
+    if (!recallTempletsByUnitId.has(unitId)) recallTempletsByUnitId.set(unitId, []);
+    recallTempletsByUnitId.get(unitId).push({ ...record, startDate, endDate });
+  }
+  const recallExchangeByGroupId = groupByNumber(
+    readRecords("ab_script", "LUA_RECALL_EXCHANGE_UNIT_LIST.json"),
+    "UnitExchangeGroupID"
+  );
+  const operatorExtractHostByGrade = new Map();
+  const operatorHostUnits =
+    commonConst && commonConst.globals && commonConst.globals.Operater && commonConst.globals.Operater.HostUnit;
+  for (const record of Array.isArray(operatorHostUnits) ? operatorHostUnits : []) {
+    const grade = normalizeUnitGrade(record && record.m_NKM_UNIT_GRADE);
+    if (grade && !operatorExtractHostByGrade.has(grade)) operatorExtractHostByGrade.set(grade, record);
+  }
+  const operatorEnhanceRatesByGrade = new Map();
+  const operatorMaterialUnits =
+    commonConst && commonConst.globals && commonConst.globals.Operater && commonConst.globals.Operater.MaterialUnit;
+  for (const record of Array.isArray(operatorMaterialUnits) ? operatorMaterialUnits : []) {
+    const grade = normalizeUnitGrade(record && record.m_NKM_UNIT_GRADE);
+    if (!grade || operatorEnhanceRatesByGrade.has(grade)) continue;
+    operatorEnhanceRatesByGrade.set(grade, {
+      commandLevelUpPercent: Math.max(0, Math.trunc(Number(record.CommandLevelUpPercent) || 0)),
+      levelUpSuccessRatePercent: Math.max(0, Math.trunc(Number(record.LevelUpSuccessRatePercent) || 0)),
+      transportSuccessRatePercent: Math.max(0, Math.trunc(Number(record.TransportSuccessRatePercent) || 0)),
+    });
+  }
+  const operatorPassiveTokenByItemId = new Map();
+  const operatorPassiveMaterials =
+    commonConst && commonConst.globals && commonConst.globals.Operater &&
+    commonConst.globals.Operater.PassiveToken && commonConst.globals.Operater.PassiveToken.Materials;
+  for (const record of Array.isArray(operatorPassiveMaterials) ? operatorPassiveMaterials : []) {
+    const itemGrade = String(record && record.m_NKM_ITEM_GRADE || "");
+    const levelUpSuccessRatePercent = Math.max(0, Math.trunc(Number(record && record.LevelUpSuccessRatePercent) || 0));
+    const transportSuccessRatePercent = Math.max(0, Math.trunc(Number(record && record.TransportSuccessRatePercent) || 0));
+    for (const itemIdValue of Array.isArray(record && record.ItemID) ? record.ItemID : []) {
+      const itemId = Number(itemIdValue);
+      const skill = operatorPassiveSkillByTokenId.get(itemId);
+      if (!skill || !itemGrade || operatorPassiveTokenByItemId.has(itemId)) continue;
+      operatorPassiveTokenByItemId.set(itemId, {
+        itemId,
+        itemGrade,
+        skillId: skill.skillId,
+        levelUpSuccessRatePercent,
+        transportSuccessRatePercent,
+      });
+    }
+  }
   const equipEnchantMaterials = normalizeEquipEnchantMaterials(
     commonConst && commonConst.globals && commonConst.globals.EquipEnchantModule
   );
@@ -208,6 +353,21 @@ function loadGameData() {
         Number(left.m_ShipLimitBreakGrade || 0) - Number(right.m_ShipLimitBreakGrade || 0) ||
         Number(left.m_ShipMaxLevel || 0) - Number(right.m_ShipMaxLevel || 0)
     );
+  }
+
+  const shipBuildById = new Map();
+  for (const record of readRecords("ab_script", "LUA_SHIP_BUILD_TEMPLET.json")) {
+    const shipId = Number(record && record.m_ShipID);
+    if (Number.isInteger(shipId) && shipId > 0 && !shipBuildById.has(shipId)) shipBuildById.set(shipId, record);
+  }
+
+  const shipLimitBreakByKey = new Map();
+  for (const record of readRecords("ab_script", "LUA_SHIP_LIMITBREAK_TEMPLET.json")) {
+    const shipId = Number(record && record.ShipID);
+    const grade = Number(record && record.ShipLimitBreakGrade);
+    if (!Number.isInteger(shipId) || shipId <= 0 || !Number.isInteger(grade) || grade <= 0) continue;
+    const key = makeShipLimitBreakKey(shipId, grade);
+    if (!shipLimitBreakByKey.has(key)) shipLimitBreakByKey.set(key, record);
   }
 
   const playerExpTable = new Map();
@@ -290,6 +450,7 @@ function loadGameData() {
     miscItemsByStrId,
     randomItemBoxes,
     customPackageBoxes,
+    customBoxes,
     acqPackages,
     rewardGroups,
     unitById,
@@ -297,7 +458,24 @@ function loadGameData() {
     collectionUnitById,
     collectionUnitByStrId,
     unitSkillsById,
+    unitSkillsByStrId,
     unitSkillStrIdById,
+    operatorSkillsById,
+    operatorSkillsByStrId,
+    unitReactorsById,
+    reactorSkillsById,
+    rearmamentByUnitId,
+    operatorRandomPassiveByKey,
+    operatorEnhanceRatesByGrade,
+    operatorPassiveTokenByItemId,
+    operatorLevelUpConfig,
+    operatorExtractHostByGrade,
+    unitExtractConfig,
+    unitExtractBonusRewards,
+    recallRewardUnitPieceToPoint,
+    recallIntervalsByStrId,
+    recallTempletsByUnitId,
+    recallExchangeByGroupId,
     pieceByItemId,
     contracts,
     selectableContracts,
@@ -314,6 +492,7 @@ function loadGameData() {
     equipEnchantExp,
     equipEnchantMaterials,
     equipMolds,
+    resetCounterGroups,
     moldRewardGroups,
     equipUpgradeByCoreId,
     equipPotentialOptions,
@@ -323,6 +502,8 @@ function loadGameData() {
     emoticonById,
     unitExpTable,
     shipLevelUpByKey,
+    shipBuildById,
+    shipLimitBreakByKey,
     playerExpTable,
     operatorExpTable,
     limitBreakInfoByRank,
@@ -373,6 +554,31 @@ function getUnitRemoveRewards(unitIdOrStrId, options = {}) {
   return mergeItemCosts(rewards);
 }
 
+function getUnitExtractRewards(unitIdOrStrId, options = {}) {
+  const record = getUnitTemplet(unitIdOrStrId);
+  if (!record) return [];
+  const rewards = [];
+  for (let index = 1; index <= 2; index += 1) {
+    const itemId = Number(record[`m_OnExtractItemID_${index}`] || 0);
+    const count = Math.max(0, Math.trunc(Number(record[`m_OnExtractItemCount_${index}`] || 0)));
+    if (itemId > 0 && count > 0) rewards.push({ itemId, count });
+  }
+  if (options.fromContract === true) {
+    const itemId = Number(record.m_OnExtractItemID_Contract || 0);
+    const count = Math.max(0, Math.trunc(Number(record.m_OnExtractItemCount_Contract || 0)));
+    if (itemId > 0 && count > 0) rewards.push({ itemId, count });
+  }
+  return mergeItemCosts(rewards);
+}
+
+function getUnitExtractConfig() {
+  return { ...loadGameData().unitExtractConfig };
+}
+
+function getUnitExtractBonusRewards() {
+  return loadGameData().unitExtractBonusRewards.map((reward) => ({ ...reward }));
+}
+
 function getCollectionUnitTemplet(unitIdOrStrId) {
   const data = loadGameData();
   if (typeof unitIdOrStrId === "string" && !/^\d+$/.test(unitIdOrStrId)) {
@@ -400,6 +606,150 @@ function getUnitSkillMaxLevel(skillId) {
   const byLevel = loadGameData().unitSkillsById.get(Number(skillId));
   if (!byLevel) return 0;
   return Array.from(byLevel.keys()).reduce((max, level) => Math.max(max, Number(level) || 0), 0);
+}
+
+function getUnitSkillMaxLevelFromLimitBreakLevel(skillId, limitBreakLevel) {
+  const byLevel = loadGameData().unitSkillsById.get(Number(skillId));
+  if (!byLevel) return 0;
+  const nextLimitBreakLevel = Math.max(0, Math.trunc(Number(limitBreakLevel || 0))) + 1;
+  for (const [level, record] of Array.from(byLevel.entries()).sort((left, right) => left[0] - right[0])) {
+    if (Number(record && record.m_UnlockReqUpgrade || 0) === nextLimitBreakLevel) return level - 1;
+  }
+  return getUnitSkillMaxLevel(skillId);
+}
+
+function getUnitSkillMaxLevelByStrId(skillStrId) {
+  const byLevel = loadGameData().unitSkillsByStrId.get(String(skillStrId || ""));
+  if (!byLevel) return 0;
+  return Array.from(byLevel.keys()).reduce((max, level) => Math.max(max, Number(level) || 0), 0);
+}
+
+function getUnitReactorTemplet(unitIdOrTemplet) {
+  const templet =
+    unitIdOrTemplet && typeof unitIdOrTemplet === "object"
+      ? unitIdOrTemplet
+      : getUnitTemplet(unitIdOrTemplet);
+  if (!templet) return null;
+  const unitId = Number(templet.m_UnitID || 0);
+  const reactorId = Number(templet.m_ReactorID || templet.m_ReactorId || unitId || 0);
+  return loadGameData().unitReactorsById.get(reactorId) || null;
+}
+
+function getReactorSkillTemplet(skillId) {
+  return loadGameData().reactorSkillsById.get(Number(skillId)) || null;
+}
+
+function getUnitRearmamentTemplet(unitIdOrTemplet) {
+  if (unitIdOrTemplet && typeof unitIdOrTemplet === "object" && Number(unitIdOrTemplet.m_RearmID || 0) > 0) {
+    return unitIdOrTemplet;
+  }
+  const templet = unitIdOrTemplet && typeof unitIdOrTemplet === "object" ? unitIdOrTemplet : getUnitTemplet(unitIdOrTemplet);
+  const unitId = Number(templet && templet.m_UnitID || unitIdOrTemplet || 0);
+  return loadGameData().rearmamentByUnitId.get(unitId) || null;
+}
+
+function getUnitRearmamentCosts(unitIdOrTemplet) {
+  const record = getUnitRearmamentTemplet(unitIdOrTemplet);
+  if (!record) return [];
+  const costs = [];
+  for (let index = 1; index <= 4; index += 1) {
+    const itemId = Number(record[`m_RearmUseItemID${index}`] || 0);
+    const count = Math.max(0, Math.trunc(Number(record[`m_RearmUseItemValue${index}`] || 0)));
+    if (itemId > 0 && count > 0) costs.push({ itemId, count });
+  }
+  return mergeItemCosts(costs);
+}
+
+function getRecallTemplets(unitId) {
+  return (loadGameData().recallTempletsByUnitId.get(Number(unitId)) || []).slice();
+}
+
+function getActiveRecallTemplet(unitId, now = new Date()) {
+  const timestamp = now instanceof Date && !Number.isNaN(now.getTime()) ? now.getTime() : Number.NaN;
+  if (!Number.isFinite(timestamp)) return null;
+  return getRecallTemplets(unitId).find((record) => timestamp >= record.startDate.getTime() && timestamp < record.endDate.getTime()) || null;
+}
+
+function getRecallExchangeUnitIds(groupId) {
+  return uniquePositiveInts(
+    (loadGameData().recallExchangeByGroupId.get(Number(groupId)) || []).map((record) => record && record.UnitID)
+  );
+}
+
+function getFirstLevelShipId(shipId) {
+  let current = Number(shipId);
+  let first = current;
+  if (!Number.isInteger(current) || current <= 0) return 0;
+  while (getShipBuildTemplet(current)) {
+    first = current;
+    current -= 1000;
+  }
+  return first;
+}
+
+function getRecallRewardUnitPieceToPoint() {
+  return loadGameData().recallRewardUnitPieceToPoint;
+}
+
+function getOperatorSkillTemplet(skillIdOrStrId) {
+  const data = loadGameData();
+  if (typeof skillIdOrStrId === "string" && !/^\d+$/.test(skillIdOrStrId)) {
+    return data.operatorSkillsByStrId.get(skillIdOrStrId) || null;
+  }
+  return data.operatorSkillsById.get(Number(skillIdOrStrId)) || null;
+}
+
+function getOperatorMainSkillId(unitIdOrTemplet) {
+  const templet = unitIdOrTemplet && typeof unitIdOrTemplet === "object" ? unitIdOrTemplet : getUnitTemplet(unitIdOrTemplet);
+  const skill = getOperatorSkillTemplet(templet && templet.m_SkillStrID1);
+  return Number(skill && skill.m_OperSkillID) || 0;
+}
+
+function getOperatorEnhanceCost(unitIdOrGrade) {
+  const templet = unitIdOrGrade && typeof unitIdOrGrade === "object" ? unitIdOrGrade : getUnitTemplet(unitIdOrGrade);
+  const grade = normalizeUnitGrade(templet ? templet.m_NKM_UNIT_GRADE : unitIdOrGrade);
+  const record = loadGameData().operatorExtractHostByGrade.get(grade);
+  const itemId = Number(record && record.ItemId);
+  const count = Math.max(0, Math.trunc(Number(record && record.ItemCount) || 0));
+  return itemId > 0 && count > 0 ? { itemId, count } : null;
+}
+
+function getOperatorEnhanceRates(unitIdOrGrade) {
+  const templet = unitIdOrGrade && typeof unitIdOrGrade === "object" ? unitIdOrGrade : getUnitTemplet(unitIdOrGrade);
+  const grade = normalizeUnitGrade(templet ? templet.m_NKM_UNIT_GRADE : unitIdOrGrade);
+  const rates = loadGameData().operatorEnhanceRatesByGrade.get(grade);
+  return rates ? { ...rates } : null;
+}
+
+function getOperatorPassiveToken(itemId) {
+  const token = loadGameData().operatorPassiveTokenByItemId.get(Number(itemId));
+  return token ? { ...token } : null;
+}
+
+function getOperatorExtractTokenItemId(unitIdOrTemplet, subSkillId) {
+  const templet =
+    unitIdOrTemplet && typeof unitIdOrTemplet === "object"
+      ? unitIdOrTemplet
+      : getUnitTemplet(unitIdOrTemplet);
+  if (!templet) return 0;
+  const groupId = Number(templet.m_OprPassiveGroupID || 0);
+  const passive = loadGameData().operatorRandomPassiveByKey.get(`${groupId}|${Number(subSkillId || 0)}`);
+  if (!passive) return 0;
+  const grade = normalizeUnitGrade(templet.m_NKM_UNIT_GRADE).replace(/^NUG_/, "");
+  return Number(passive[`m_ExtractItemID_${grade}`] || 0);
+}
+
+function getOperatorExtractPrice(unitIdOrGrade) {
+  const templet =
+    unitIdOrGrade && typeof unitIdOrGrade === "object"
+      ? unitIdOrGrade
+      : getUnitTemplet(unitIdOrGrade);
+  const grade = normalizeUnitGrade(templet ? templet.m_NKM_UNIT_GRADE : unitIdOrGrade);
+  const record = loadGameData().operatorExtractHostByGrade.get(grade);
+  if (!record) return null;
+  const itemId = Number(record.m_ExtractPriceItemID || 0);
+  const count = Math.max(0, Math.trunc(Number(record.m_ExtractPrice || 0)));
+  return itemId > 0 && count > 0 ? { itemId, count } : null;
 }
 
 function getUnitSkillIndex(unitId, skillId) {
@@ -431,11 +781,59 @@ function getShipMaxLevel(unitOrShipId, options = {}) {
   return Number(record && record.m_ShipMaxLevel) || Number(options.fallbackMaxLevel || 100) || 100;
 }
 
+function getShipBuildTemplet(shipId) {
+  return loadGameData().shipBuildById.get(Number(shipId)) || null;
+}
+
+function getShipBuildCosts(shipIdOrTemplet) {
+  const record = shipIdOrTemplet && typeof shipIdOrTemplet === "object" ? shipIdOrTemplet : getShipBuildTemplet(shipIdOrTemplet);
+  if (!record) return null;
+  const costs = [];
+  for (let index = 1; index <= 4; index += 1) {
+    const itemId = Number(record[`m_ShipBuildMaterialID_${index}`] || 0);
+    const count = Math.max(0, Math.trunc(Number(record[`m_ShipBuildMaterialValue_${index}`] || 0)));
+    if (itemId > 0 && count > 0) costs.push({ itemId, count });
+  }
+  return mergeItemCosts(costs);
+}
+
+function getShipUpgradeCosts(shipIdOrTemplet) {
+  const record = shipIdOrTemplet && typeof shipIdOrTemplet === "object" ? shipIdOrTemplet : getShipBuildTemplet(shipIdOrTemplet);
+  if (!record) return null;
+  const costs = [];
+  const credit = Math.max(0, Math.trunc(Number(record.m_ShipUpgradeCredit || 0)));
+  if (credit > 0) costs.push({ itemId: 1, count: credit });
+  for (let index = 1; index <= 4; index += 1) {
+    const itemId = Number(record[`m_ShipUpgradeMaterial${index}`] || 0);
+    const count = Math.max(0, Math.trunc(Number(record[`m_ShipUpgradeMaterialCount${index}`] || 0)));
+    if (itemId > 0 && count > 0) costs.push({ itemId, count });
+  }
+  return mergeItemCosts(costs);
+}
+
+function getShipLimitBreakTemplet(shipId, grade) {
+  return loadGameData().shipLimitBreakByKey.get(makeShipLimitBreakKey(shipId, grade)) || null;
+}
+
+function getShipLimitBreakCosts(shipIdOrTemplet, grade) {
+  const record =
+    shipIdOrTemplet && typeof shipIdOrTemplet === "object"
+      ? shipIdOrTemplet
+      : getShipLimitBreakTemplet(shipIdOrTemplet, grade);
+  if (!record) return null;
+  const costs = [];
+  for (let index = 1; index <= 4; index += 1) {
+    const itemId = Number(record[`ShipLimitBreakItemID${index}`] || 0);
+    const count = Math.max(0, Math.trunc(Number(record[`ShipLimitBreakItemValue${index}`] || 0)));
+    if (itemId > 0 && count > 0) costs.push({ itemId, count });
+  }
+  return mergeItemCosts(costs);
+}
+
 function getShipLevelUpCosts(unitOrShipId, startLevel, endLevel, options = {}) {
   const templet = getShipTemplet(unitOrShipId);
-  const starGrade = getShipStarGrade(unitOrShipId, templet);
   const grade = getShipGrade(unitOrShipId, templet);
-  if (!starGrade || !grade) return [];
+  if (!grade) return [];
 
   const limitBreakLevel = getShipLimitBreakLevel(unitOrShipId, options);
   const maxLevel = getShipMaxLevel(unitOrShipId, { ...options, limitBreakLevel });
@@ -445,12 +843,10 @@ function getShipLevelUpCosts(unitOrShipId, startLevel, endLevel, options = {}) {
 
   const costs = [];
   for (let level = from; level < to; level += 1) {
-    const record = getShipLevelUpRecordByLevel(starGrade, grade, limitBreakLevel, level);
+    const record = getShipLevelUpRecordByLevel(grade, limitBreakLevel, level);
     if (!record) continue;
     const credit = Math.max(0, Math.trunc(Number(record.m_Credit || 0) || 0));
-    const eternium = Math.max(0, Math.trunc(Number(record.m_Eternium || 0) || 0));
     if (credit > 0) costs.push({ itemId: 1, count: credit });
-    if (eternium > 0) costs.push({ itemId: 2, count: eternium });
     for (let index = 1; index <= 3; index += 1) {
       const itemId = Number(record[`m_LevelupMaterialItemID${index}`] || 0);
       const count = Math.max(0, Math.trunc(Number(record[`m_LevelupMaterialCount${index}`] || 0) || 0));
@@ -469,10 +865,18 @@ function getShipLevelUpRecordForUnit(unitOrShipId, options = {}) {
   );
 }
 
-function getShipLevelUpRecordByLevel(starGrade, grade, limitBreakLevel, currentLevel) {
-  const record = getShipLevelUpRecord(starGrade, grade, limitBreakLevel);
-  if (record && Number(record.m_ShipMaxLevel || 0) > Number(currentLevel || 0)) return record;
-  return record;
+function getShipLevelUpRecordByLevel(grade, limitBreakLevel, currentLevel) {
+  const records = getShipLevelUpRecordsForGrade(grade);
+  const requestedLimitBreak = Math.max(0, Math.trunc(Number(limitBreakLevel || 0) || 0));
+  return (
+    records.find(
+      (record) =>
+        Number(record.m_ShipLimitBreakGrade || 0) === requestedLimitBreak &&
+        Number(record.m_ShipMaxLevel || 0) > Number(currentLevel || 0)
+    ) ||
+    records[records.length - 1] ||
+    null
+  );
 }
 
 function getShipLevelUpRecord(starGrade, grade, limitBreakLevel = 0) {
@@ -493,6 +897,21 @@ function getShipLevelUpRecord(starGrade, grade, limitBreakLevel = 0) {
 function getShipLevelUpRecords(starGrade, grade) {
   const key = makeShipLevelUpKey(normalizeUnitGrade(grade), Number(starGrade));
   return (loadGameData().shipLevelUpByKey.get(key) || []).slice();
+}
+
+function getShipLevelUpRecordsForGrade(grade) {
+  const normalizedGrade = normalizeUnitGrade(grade);
+  const records = [];
+  for (const values of loadGameData().shipLevelUpByKey.values()) {
+    for (const record of values) {
+      if (normalizeUnitGrade(record.m_ShipRareGrade) === normalizedGrade) records.push(record);
+    }
+  }
+  return records.sort(
+    (left, right) =>
+      Number(left.m_ShipMaxLevel || 0) - Number(right.m_ShipMaxLevel || 0) ||
+      Number(left.m_ShipLimitBreakGrade || 0) - Number(right.m_ShipLimitBreakGrade || 0)
+  );
 }
 
 function getShipTemplet(unitOrShipId) {
@@ -529,6 +948,10 @@ function getShipLimitBreakLevel(unitOrShipId, options = {}) {
 
 function makeShipLevelUpKey(grade, starGrade) {
   return `${normalizeUnitGrade(grade)}|${Number(starGrade) || 0}`;
+}
+
+function makeShipLimitBreakKey(shipId, grade) {
+  return `${Number(shipId) || 0}|${Number(grade) || 0}`;
 }
 
 function resolveUnitId(unitIdOrStrId) {
@@ -737,6 +1160,10 @@ function getCustomPackageRewards(groupId) {
   return (loadGameData().customPackageBoxes.get(Number(groupId)) || []).slice();
 }
 
+function getCustomBoxTemplet(customBoxId) {
+  return loadGameData().customBoxes.get(Number(customBoxId)) || null;
+}
+
 function getAcqPackageRewards(packageId) {
   return (loadGameData().acqPackages.get(Number(packageId)) || []).slice();
 }
@@ -830,6 +1257,18 @@ function getEquipMoldTemplet(moldId) {
 
 function getAllEquipMoldTemplets() {
   return Array.from(loadGameData().equipMolds.values()).slice();
+}
+
+function getResetCounterGroupTemplet(groupId) {
+  return loadGameData().resetCounterGroups.get(Number(groupId)) || null;
+}
+
+function getAllResetCounterGroupTemplets() {
+  return Array.from(loadGameData().resetCounterGroups.values()).slice();
+}
+
+function getIntervalTemplet(strId) {
+  return loadGameData().recallIntervalsByStrId.get(String(strId || "")) || null;
 }
 
 function getMoldRewardRecords(groupId) {
@@ -940,13 +1379,12 @@ function getUnitLimitBreakCosts(unitId, targetRank) {
   const info = getLimitBreakInfo(rank);
   const substitute = getUnitLimitBreakSubstituteRecord(unitId, rank);
   if (!info || !substitute) return [];
-  const unitRequirement = Math.max(0, Number(info.m_iUnitRequirement) || 0);
   const costs = [];
   const credit = Math.max(0, Number(substitute.m_CreditReq) || 0);
   if (credit > 0) costs.push({ itemId: 1, count: credit });
   for (let index = 1; index <= 2; index += 1) {
     const itemId = Number(substitute[`m_ItemID_${index}`] || 0);
-    const count = Math.max(0, Number(substitute[`m_ItemCount_${index}`] || 0) || 0) * unitRequirement;
+    const count = Math.max(0, Number(substitute[`m_ItemCount_${index}`] || 0) || 0);
     if (itemId > 0 && count > 0) costs.push({ itemId, count });
   }
   return mergeItemCosts(costs);
@@ -1032,6 +1470,16 @@ function getOperatorMaxLevel(grade) {
   const byLevel = loadGameData().operatorExpTable.get(normalizeOperatorGrade(grade));
   if (!byLevel || byLevel.size <= 0) return 100;
   return Math.max(...Array.from(byLevel.keys()));
+}
+
+function getOperatorLevelUpConfig() {
+  const config = loadGameData().operatorLevelUpConfig;
+  if (!config) return null;
+  return {
+    maxLevel: config.maxLevel,
+    maxMaterialUsageLimit: config.maxMaterialUsageLimit,
+    materials: config.materials.map((material) => ({ ...material })),
+  };
 }
 
 function getOperatorLevelByTotalExp(grade, totalExp, maxLevel = getOperatorMaxLevel(grade)) {
@@ -1172,6 +1620,26 @@ function normalizeEquipEnchantMaterials(moduleConst) {
     .filter((entry) => entry.itemId > 0 && entry.exp > 0);
 }
 
+function normalizeOperatorLevelUpConfig(operatorConst) {
+  const negotiation = operatorConst && operatorConst.Negotiation;
+  const maxLevel = Math.trunc(Number(operatorConst && operatorConst.Const && operatorConst.Const.MaximumLevel));
+  const maxMaterialUsageLimit = Math.trunc(Number(negotiation && negotiation.MaxMaterialUsageLimit));
+  const materials = (Array.isArray(negotiation && negotiation.Materials) ? negotiation.Materials : [])
+    .map((entry) => ({
+      itemId: Number(entry && entry.ItemId),
+      exp: Math.trunc(Number(entry && entry.Exp)),
+      credit: Math.trunc(Number(entry && entry.Credit)),
+    }))
+    .filter(
+      (entry) =>
+        Number.isInteger(entry.itemId) && entry.itemId > 0 &&
+        Number.isInteger(entry.exp) && entry.exp > 0 &&
+        Number.isInteger(entry.credit) && entry.credit > 0
+    );
+  if (maxLevel <= 0 || maxMaterialUsageLimit <= 0 || materials.length <= 0) return null;
+  return { maxLevel, maxMaterialUsageLimit, materials };
+}
+
 function groupByNumber(records, key) {
   const map = new Map();
   for (const record of records) {
@@ -1195,21 +1663,63 @@ function readMissionRecords(directory, fileName) {
   return readGameplayTableRecords(directory, fileName, { rootDir: ROOT_DIR, logLabel: "game-data" });
 }
 
+function parseGameTableDate(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,7}))?$/);
+  if (!match) return null;
+  const date = new Date(Date.UTC(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    Number(match[4]),
+    Number(match[5]),
+    Number(match[6]),
+    Number((match[7] || "").slice(0, 3).padEnd(3, "0") || 0)
+  ));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 module.exports = {
   loadGameData,
   getMiscItemTemplet,
   getAllMiscItemIds,
   getUnitTemplet,
   getUnitRemoveRewards,
+  getUnitExtractRewards,
+  getUnitExtractConfig,
+  getUnitExtractBonusRewards,
   getCollectionUnitTemplet,
   isCollectionVisibleUnitId,
   getUnitSkillStrId,
   getUnitSkillTemplet,
   getUnitSkillMaxLevel,
+  getUnitSkillMaxLevelFromLimitBreakLevel,
+  getUnitSkillMaxLevelByStrId,
   getUnitSkillIndex,
   getUnitSkillUpgradeCosts,
+  getUnitReactorTemplet,
+  getReactorSkillTemplet,
+  getUnitRearmamentTemplet,
+  getUnitRearmamentCosts,
+  getRecallTemplets,
+  getActiveRecallTemplet,
+  getRecallExchangeUnitIds,
+  getFirstLevelShipId,
+  getRecallRewardUnitPieceToPoint,
+  getOperatorSkillTemplet,
+  getOperatorMainSkillId,
+  getOperatorEnhanceCost,
+  getOperatorEnhanceRates,
+  getOperatorPassiveToken,
+  getOperatorExtractTokenItemId,
+  getOperatorExtractPrice,
   getShipMaxLevel,
   getShipLevelUpCosts,
+  getShipBuildTemplet,
+  getShipBuildCosts,
+  getShipUpgradeCosts,
+  getShipLimitBreakTemplet,
+  getShipLimitBreakCosts,
   resolveUnitId,
   getPlayableUnitIds,
   getPlayableShipIds,
@@ -1229,6 +1739,7 @@ module.exports = {
   getPieceTemplet,
   getRandomBoxRewards,
   getCustomPackageRewards,
+  getCustomBoxTemplet,
   getAcqPackageRewards,
   getRewardGroupRecords,
   getEquipTemplet,
@@ -1247,6 +1758,10 @@ module.exports = {
   getEquipEnchantMaterials,
   getEquipMoldTemplet,
   getAllEquipMoldTemplets,
+  getResetCounterGroupTemplet,
+  getAllResetCounterGroupTemplets,
+  getIntervalTemplet,
+  parseGameTableDate,
   getMoldRewardRecords,
   getEquipUpgradeTemplet,
   getEquipPotentialOptionRecords,
@@ -1279,6 +1794,7 @@ module.exports = {
   getOperatorTotalExpForLevel,
   getOperatorRequiredExpForLevel,
   getOperatorMaxLevel,
+  getOperatorLevelUpConfig,
   getOperatorLevelByTotalExp,
   getContentUnlocksForDungeon,
   getCounterPassUnlockDungeonIds,

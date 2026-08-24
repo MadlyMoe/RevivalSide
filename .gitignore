@@ -16,8 +16,6 @@ npm-debug.log*
 # .NET build outputs
 **/bin/
 **/obj/
-!prebuilt/
-!prebuilt/**
 
 # Local CounterSide client dumps and proprietary binaries
 Assembly-CSharp/
@@ -70,13 +68,11 @@ exports/
 logs/
 launcher-settings.json
 frozen-client/
-prebuilt/revivalside-*/
-prebuilt/android-combat-host-*/
-prebuilt/local-launcher-test/
-prebuilt/local-client-patcher-test/
-prebuilt/logs/
-prebuilt/release-logs/
-prebuilt/syntax-probe/
+/dist/
+/prebuilt/
+/mods/.runtime/
+/server/modside-ui-dist/
+/NUL
 download-service/NUL
 
 # Nested/optional viewer project outputs

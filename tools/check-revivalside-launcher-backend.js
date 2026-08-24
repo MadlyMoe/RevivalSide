@@ -319,6 +319,10 @@ async function main() {
   assert.match(backendSource, /serve-modside\.js/);
   assert.match(backendSource, /emitService\('modside', 'running'/);
   assert.match(backendSource, /launcher\/api\/warmup/);
+  const postJson = backendSource.match(/async function postJson\([\s\S]+?\n}/)[0];
+  assert.match(postJson, /if \(!response\.ok\) throw new Error/);
+  assert.match(postJson, /!body \|\| body\.ok !== true/);
+  assert.doesNotMatch(postJson, /update skipped/);
   assert.match(backendSource, /A frozen client already exists at/);
   const launcherHome = fs.readFileSync(path.join(__dirname, '..', 'launcher', 'src', 'games', 'revivalside', 'pages', 'Home', 'index.tsx'), 'utf8');
   assert.match(launcherHome, /cancelLabel: "Core tools only"/);

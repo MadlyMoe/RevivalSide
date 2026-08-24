@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script_unit_data",
+    "fileName": "LUA_UNIT_STAT_TEMPLET.json",
+    "tableName": "LUA_UNIT_STAT_TEMPLET"
+  },
+  "key": {
+    "field": "m_UnitStrID",
+    "value": "NKM_UNIT_C_POLICE_LEE_YUMI_7"
+  },
+  "source": {
+    "field": "m_UnitStrID",
+    "value": "NKM_UNIT_C_POLICE_LEE_YUMI"
+  },
+  "value": {
+    "m_FirstOpenTag": "TAG_FIRST_UNIT_C_POLICE_LEE_YUMI",
+    "m_BasicOpenTag": "TAG_BASIC_UNIT_C_POLICE_LEE_YUMI",
+    "m_UnitStrID": "NKM_UNIT_C_POLICE_LEE_YUMI_7",
+    "m_RespawnCost": 3,
+    "m_RespawnCount": 1,
+    "m_EterniumCost": 0,
+    "m_StatData": {
+      "m_Stat": {
+        "NST_HP": 2835,
+        "NST_ATK": 272,
+        "NST_DEF": 228,
+        "NST_CRITICAL": 143,
+        "NST_HIT": 78,
+        "NST_EVADE": 333,
+        "NST_CRITICAL_DAMAGE_RATE": 0.5,
+        "NST_CRITICAL_DAMAGE_RESIST_RATE": 0,
+        "NST_CRITICAL_RESIST": 0,
+        "NST_HP_REGEN_RATE": 0,
+        "NST_DAMAGE_REDUCE_RATE": 0,
+        "NST_MOVE_SPEED_RATE": 0,
+        "NST_ATTACK_SPEED_RATE": 0,
+        "NST_SKILL_COOL_TIME_REDUCE_RATE": 0,
+        "NST_LONG_RANGE_DAMAGE_REDUCE_RATE": 0,
+        "NST_SHORT_RANGE_DAMAGE_REDUCE_RATE": 0,
+        "NST_DAMAGE_LIMIT_RATE_BY_HP": 0.1,
+        "NST_ATTACK_COUNT_REDUCE": 1,
+        "NST_DAMAGE_RESIST": 0,
+        "NST_ATTACK_VS_SOURCE_CONFLICT_G4": 770,
+        "NST_DEFEND_VS_SOURCE_CONFLICT_G4": 500,
+        "NST_ATTACK_VS_SOURCE_STABLE_G4": 0,
+        "NST_DEFEND_VS_SOURCE_STABLE_G4": 0,
+        "NST_ATTACK_VS_SOURCE_LIBERAL_G4": 0,
+        "NST_DEFEND_VS_SOURCE_LIBERAL_G4": 0
+      },
+      "m_StatPerLevel": {
+        "NST_HP": 357,
+        "NST_ATK": 27.76,
+        "NST_DEF": 3.27,
+        "NST_CRITICAL": 2.05,
+        "NST_HIT": 1.12,
+        "NST_EVADE": 4.77
+      }
+    }
+  }
+}

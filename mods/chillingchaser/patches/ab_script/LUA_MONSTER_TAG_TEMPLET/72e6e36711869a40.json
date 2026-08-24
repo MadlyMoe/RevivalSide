@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script",
+    "fileName": "LUA_MONSTER_TAG_TEMPLET.json",
+    "tableName": "LUA_MONSTER_TAG_TEMPLET",
+    "format": "json"
+  },
+  "key": {
+    "field": "m_UnitID",
+    "value": 26063
+  },
+  "source": {
+    "field": "m_UnitID",
+    "value": 230461
+  },
+  "value": {
+    "m_UnitID": 26063,
+    "m_MonsterTagID": [
+      124,
+      138,
+      139,
+      125,
+      126
+    ]
+  }
+}

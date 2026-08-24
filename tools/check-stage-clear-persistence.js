@@ -14,7 +14,7 @@ function functionSource(name, nextName) {
 }
 
 assert(functionSource("buildDynamicGameEndNotPayload", "buildBattleGameRecordState").includes("{ save: false }"));
-assert(functionSource("getOrGrantStageClearLoot", "maybeGrantBattleStageClearLoot").includes("{ ...options, replay }"));
+assert(functionSource("getOrGrantStageClearLoot", "maybeGrantBattleStageClearLoot").includes("{ ...options, replay, multiplier }"));
 assert(functionSource("maybeGrantBattleStageClearLoot", "grantStageClearLoot").includes("{ save: false }"));
 assert(functionSource("grantStageClearLoot", "grantStageFirstClearReward").includes("options.save !== false"));
 assert.equal((functionSource("recordMainStoryDungeonClear", "recordGenericDungeonClear").match(/saveUserDb\(\)/g) || []).length, 1);

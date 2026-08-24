@@ -15,6 +15,8 @@ const {
   buildMissionDataEntries,
   completeAllMissionsForTab,
   completeMission,
+  completeRepeatableMission,
+  changeRandomMission,
   donateMissionItem,
   updateMissionProgress,
 } = require("../account-progression");
@@ -46,8 +48,10 @@ function createMissionHandlers() {
           `[mission] complete uid=${user.userUid || "(ephemeral)"} missionID=${result.missionID} tabId=${result.tabId} groupId=${result.groupId} exp=${result.reward.userExp} achievePoint=${result.reward.achievePoint} eventPassExp=${result.reward.eventPassExpDelta || 0}`
         );
         send(ctx, socket, packet, MISSION_COMPLETE_ACK, buildMissionCompleteAckPayload(req, result));
-        sendPostClaimMissionUpdate(ctx, socket, user, result, clock);
-        persist(ctx);
+        if (result.changed) {
+          sendPostClaimMissionUpdate(ctx, socket, user, result, clock);
+          persist(ctx);
+        }
         return true;
       },
     },
@@ -58,13 +62,15 @@ function createMissionHandlers() {
         const user = getSocketUser(ctx, socket);
         const req = decodeMissionGetCompleteRewardReq(ctx, packet.payload);
         const clock = getMissionClockOptions(ctx);
-        const result = completeMission(user, req, { ...clock, ctx });
+        const result = completeRepeatableMission(user, req, { ...clock, ctx });
         console.log(
           `[mission] get-complete-reward uid=${user.userUid || "(ephemeral)"} missionID=${result.missionID} tabId=${result.tabId} groupId=${result.groupId} exp=${result.reward.userExp} achievePoint=${result.reward.achievePoint} eventPassExp=${result.reward.eventPassExpDelta || 0}`
         );
         send(ctx, socket, packet, MISSION_GET_COMPLETE_REWARD_ACK, buildMissionGetCompleteRewardAckPayload(req, result));
-        sendPostClaimMissionUpdate(ctx, socket, user, result, clock);
-        persist(ctx);
+        if (result.changed) {
+          sendPostClaimMissionUpdate(ctx, socket, user, result, clock);
+          persist(ctx);
+        }
         return true;
       },
     },
@@ -80,8 +86,10 @@ function createMissionHandlers() {
           `[mission] complete-all uid=${user.userUid || "(ephemeral)"} tabId=${tabId} missions=${result.missionIDs.length} exp=${result.reward.userExp} achievePoint=${result.reward.achievePoint} eventPassExp=${result.reward.eventPassExpDelta || 0}`
         );
         send(ctx, socket, packet, MISSION_COMPLETE_ALL_ACK, buildMissionCompleteAllAckPayload(result));
-        sendPostClaimMissionUpdate(ctx, socket, user, result, { ...clock, tabId });
-        persist(ctx);
+        if (result.missionIDs.length) {
+          sendPostClaimMissionUpdate(ctx, socket, user, result, { ...clock, tabId });
+          persist(ctx);
+        }
         return true;
       },
     },
@@ -91,12 +99,15 @@ function createMissionHandlers() {
       handle(ctx, socket, packet) {
         const user = getSocketUser(ctx, socket);
         const req = decodeRandomMissionChangeReq(ctx, packet.payload);
-        const mission = resolveMissionStateForReq(user, req, getMissionClockOptions(ctx));
+        const result = changeRandomMission(user, req, getMissionClockOptions(ctx));
         console.log(
-          `[mission] random-change uid=${user.userUid || "(ephemeral)"} tabId=${req.tabId} missionID=${req.missionId} groupId=${mission ? mission.groupId : 0}`
+          `[mission] random-change uid=${user.userUid || "(ephemeral)"} tabId=${req.tabId} missionID=${req.missionId} after=${result.mission ? result.mission.missionID : 0} errorCode=${result.errorCode}`
         );
-        send(ctx, socket, packet, RANDOM_MISSION_CHANGE_ACK, buildRandomMissionChangeAckPayload(req, mission));
-        persist(ctx);
+        send(ctx, socket, packet, RANDOM_MISSION_CHANGE_ACK, buildRandomMissionChangeAckPayload(result));
+        if (result.refreshed && result.missions) {
+          sendRandomMissionRefreshNot(ctx, socket, result.tabId, result.missions);
+        }
+        if (result.changed || result.refreshed) persist(ctx);
         return true;
       },
     },
@@ -111,8 +122,10 @@ function createMissionHandlers() {
           `[mission] give-item uid=${user.userUid || "(ephemeral)"} missionID=${result.missionID} itemId=${result.itemId} count=${result.count}`
         );
         send(ctx, socket, packet, MISSION_GIVE_ITEM_ACK, buildMissionGiveItemAckPayload(result));
-        if (result.mission) sendMissionUpdateNot(ctx, socket, [result.mission]);
-        persist(ctx);
+        if (result.count > 0) {
+          if (result.mission) sendMissionUpdateNot(ctx, socket, [result.mission]);
+          persist(ctx);
+        }
         return true;
       },
     },
@@ -121,15 +134,17 @@ function createMissionHandlers() {
 
 function buildMissionCompleteAckPayload(req, result = {}) {
   const missionID = Number((result && result.missionID) || (req && req.missionID) || 0);
+  const errorCode = Number(result.errorCode || 0);
   return Buffer.concat([
-    writeSignedVarInt(0),
+    writeSignedVarInt(errorCode),
     writeSignedVarInt(missionID),
-    writeNullableObject(buildRewardData(result.reward || {})),
-    writeNullableObject(buildAdditionalRewardData(result.reward || {})),
+    errorCode ? writeNullObject() : writeNullableObject(buildRewardData(result.reward || {})),
+    errorCode ? writeNullObject() : writeNullableObject(buildAdditionalRewardData(result.reward || {})),
   ]);
 }
 
 function buildMissionGetCompleteRewardAckPayload(req, result = {}) {
+  const errorCode = Number(result.errorCode || 0);
   const mission = result.mission || {
     missionID: Number((result && result.missionID) || (req && req.missionID) || 0),
     tabId: Number((result && result.tabId) || 1),
@@ -138,34 +153,44 @@ function buildMissionGetCompleteRewardAckPayload(req, result = {}) {
     isComplete: false,
   };
   return Buffer.concat([
-    writeSignedVarInt(0),
-    writeNullableObject(buildRewardData(result.reward || {})),
-    writeNullableObject(buildMissionData(mission)),
+    writeSignedVarInt(errorCode),
+    errorCode ? writeNullObject() : writeNullableObject(buildRewardData(result.reward || {})),
+    errorCode ? writeNullObject() : writeNullableObject(buildMissionData(mission)),
   ]);
 }
 
 function buildMissionCompleteAllAckPayload(result = {}) {
+  const errorCode = Number(result.errorCode || 0);
   return Buffer.concat([
-    writeSignedVarInt(0),
-    writeIntList(result.missionIDs || []),
-    writeNullableObject(buildRewardData(result.reward || {})),
-    writeNullableObject(buildAdditionalRewardData(result.reward || {})),
+    writeSignedVarInt(errorCode),
+    writeIntList(errorCode ? [] : result.missionIDs || []),
+    errorCode ? writeNullObject() : writeNullableObject(buildRewardData(result.reward || {})),
+    errorCode ? writeNullObject() : writeNullableObject(buildAdditionalRewardData(result.reward || {})),
   ]);
 }
 
-function buildRandomMissionChangeAckPayload(req, mission) {
+function buildRandomMissionChangeAckPayload(result = {}) {
+  const errorCode = Number(result.errorCode || 0);
   return Buffer.concat([
-    writeSignedVarInt(0),
-    writeSignedVarInt(Number((mission && mission.groupId) || (req && req.missionId) || 0)),
-    mission ? writeNullableObject(buildMissionData(mission)) : writeNullObject(),
-    writeSignedVarInt(0),
-    writeNullObject(),
+    writeSignedVarInt(errorCode),
+    writeSignedVarInt(errorCode ? 0 : Number(result.beforeGroupId || 0)),
+    errorCode || !result.mission ? writeNullObject() : writeNullableObject(buildMissionData(result.mission)),
+    writeSignedVarInt(errorCode ? 0 : Number(result.remainRefreshCount || 0)),
+    errorCode || !result.costItem ? writeNullObject() : writeNullableObject(buildItemMiscData(result.costItem)),
+  ]);
+}
+
+function buildRandomMissionRefreshNotPayload(tabId, missions = []) {
+  return Buffer.concat([
+    writeSignedVarInt(Number(tabId || 0)),
+    writeObjectList(missions.map((mission) => writeNullableObject(buildMissionData(mission)))),
   ]);
 }
 
 function buildMissionGiveItemAckPayload(result = {}) {
+  const errorCode = Number(result.errorCode || 0);
   const costItems = Array.isArray(result.costItems) ? result.costItems : [];
-  return Buffer.concat([writeSignedVarInt(0), writeNullableObjectList(costItems.map(buildItemMiscData))]);
+  return Buffer.concat([writeSignedVarInt(errorCode), writeNullableObjectList((errorCode ? [] : costItems).map(buildItemMiscData))]);
 }
 
 function buildMissionUpdateNotPayload(missions = []) {
@@ -259,19 +284,6 @@ function decodeMissionGiveItemReq(ctx, encryptedPayload) {
   }
 }
 
-function resolveMissionStateForReq(user, req, options = {}) {
-  const missionId = Number(req && (req.missionID || req.missionId) || 0);
-  const tabId = Number(req && req.tabId || 0);
-  const entries = buildMissionDataEntries(user, {
-    tabId,
-    now: options.now,
-    eventDateKey: options.eventDateKey,
-  }).map(([, mission]) => mission);
-  const matched = entries.find((mission) => Number(mission.missionID) === missionId);
-  if (matched) return matched;
-  return updateMissionProgress(user, { missionID: missionId, tabId }, { now: options.now, eventDateKey: options.eventDateKey, tabId });
-}
-
 function decrypt(ctx, payload) {
   try {
     return ctx && typeof ctx.decryptCopy === "function" ? ctx.decryptCopy(payload) : Buffer.alloc(0);
@@ -288,6 +300,12 @@ function sendMissionUpdateNot(ctx, socket, missions) {
   const payload = buildMissionUpdateNotPayload(missions);
   if (ctx && typeof ctx.sendServerGamePacket === "function" && socket && socket.session && socket.session.gameReplay) {
     ctx.sendServerGamePacket(socket, MISSION_UPDATE_NOT, payload, "mission-update");
+  }
+}
+
+function sendRandomMissionRefreshNot(ctx, socket, tabId, missions) {
+  if (ctx && typeof ctx.sendServerGamePacket === "function" && socket && socket.session && socket.session.gameReplay) {
+    ctx.sendServerGamePacket(socket, RANDOM_MISSION_REFRESH_NOT, buildRandomMissionRefreshNotPayload(tabId, missions), "random-mission-refresh");
   }
 }
 
@@ -356,11 +374,13 @@ module.exports = {
   buildMissionGetCompleteRewardAckPayload,
   buildMissionCompleteAllAckPayload,
   buildRandomMissionChangeAckPayload,
+  buildRandomMissionRefreshNotPayload,
   buildMissionGiveItemAckPayload,
   buildMissionUpdateNotPayload,
   buildMissionData,
   buildPostClaimMissionUpdates,
   completeMission,
+  completeRepeatableMission,
   completeAllMissionsForTab,
   donateMissionItem,
   updateMissionProgress,

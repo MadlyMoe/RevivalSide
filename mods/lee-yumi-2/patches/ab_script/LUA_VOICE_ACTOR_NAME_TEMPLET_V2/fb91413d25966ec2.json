@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script",
+    "fileName": "LUA_VOICE_ACTOR_NAME_TEMPLET_V2.json",
+    "tableName": "LUA_VOICE_ACTOR_NAME_TEMPLET_V2"
+  },
+  "key": {
+    "field": "VOICE_ACTOR_NAME_StrID",
+    "value": "NKM_UNIT_C_POLICE_LEE_YUMI_2"
+  },
+  "source": {
+    "field": "VOICE_ACTOR_NAME_StrID",
+    "value": "NKM_UNIT_C_POLICE_LEE_YUMI"
+  },
+  "value": {
+    "VOICE_ACTOR_NAME_StrID": "NKM_UNIT_C_POLICE_LEE_YUMI_2",
+    "Actor_Name_VKOR": "SI_VA_UNIT_C_POLICE_LEE_YUMI_KOR",
+    "Actor_Name_VJPN": "SI_VA_UNIT_C_POLICE_LEE_YUMI_JPN",
+    "Actor_Name_VCHN": "SI_VA_UNIT_C_POLICE_LEE_YUMI_CHN"
+  }
+}

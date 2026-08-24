@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 2,
+  "kind": "cutscene-episode",
+  "title": "My Episode Mod",
+  "category": "EC_MAINSTREAM",
+  "episodeId": 2,
+  "stages": []
+}

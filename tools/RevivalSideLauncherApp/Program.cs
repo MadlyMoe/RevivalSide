@@ -2600,6 +2600,7 @@ internal sealed class LauncherWindow : Window
             "mod-asset-bundle-loader=True",
             "mod-episode-ui=True",
             "friendly-pvp-ui-fix=True",
+            "inventory-expansion-int-max=True",
             "steam-local-login=True",
             "steam-standalone=True",
             "steam-runtime-isolated=True",

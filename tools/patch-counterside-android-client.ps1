@@ -111,6 +111,7 @@ try {
       $sourceStream.Dispose()
       $memory.Dispose()
     }
+    $metadataChanged = $false
     $before = [System.Text.Encoding]::UTF8.GetBytes([string]$contract.originalServerInfoBaseUrl)
     $after = [System.Text.Encoding]::UTF8.GetBytes([string]$contract.patchedServerInfoBaseUrl)
     $matches = @()
@@ -129,12 +130,45 @@ try {
     }
     if ($matches.Count -eq 1 -and $patchedMatches.Count -eq 0) {
       [System.Array]::Copy($after, 0, $metadata, $matches[0], $after.Length)
+      $metadataChanged = $true
+    } elseif ($matches.Count -ne 0 -or $patchedMatches.Count -ne 1) {
+      throw "Expected one official or already-patched ServerInfo endpoint in IL2CPP metadata; found official=$($matches.Count) patched=$($patchedMatches.Count)."
+    }
+
+    # Apktool normalizes newly added asset names to lowercase. Keep Unity's
+    # BetterStreamingAssets lookup byte-for-byte aligned with that valid asset
+    # name rather than mutating the rebuilt ZIP afterward.
+    $configNameBefore = [System.Text.Encoding]::UTF8.GetBytes("CSConfigServerAddress.txt")
+    $configNameAfter = [System.Text.Encoding]::UTF8.GetBytes("csconfigserveraddress.txt")
+    $configMatches = @()
+    $lowerConfigMatches = @()
+    for ($offset = 0; $offset -le $metadata.Length - $configNameBefore.Length; $offset++) {
+      $equal = $true
+      $lowerEqual = $true
+      for ($index = 0; $index -lt $configNameBefore.Length; $index++) {
+        if ($metadata[$offset + $index] -ne $configNameBefore[$index]) { $equal = $false; break }
+      }
+      for ($index = 0; $index -lt $configNameAfter.Length; $index++) {
+        if ($metadata[$offset + $index] -ne $configNameAfter[$index]) { $lowerEqual = $false; break }
+      }
+      if ($equal) { $configMatches += $offset; $offset += $configNameBefore.Length - 1 }
+      elseif ($lowerEqual) { $lowerConfigMatches += $offset; $offset += $configNameAfter.Length - 1 }
+    }
+    if (($configMatches.Count + $lowerConfigMatches.Count) -ne 3) {
+      throw "Expected three original/patched custom-server asset names in IL2CPP metadata; found original=$($configMatches.Count) patched=$($lowerConfigMatches.Count)."
+    }
+    if ($configMatches.Count -gt 0) {
+      foreach ($configOffset in $configMatches) {
+        [System.Array]::Copy($configNameAfter, 0, $metadata, $configOffset, $configNameAfter.Length)
+      }
+      $metadataChanged = $true
+    }
+
+    if ($metadataChanged) {
       $entry.Delete()
       $replacement = $zip.CreateEntry([string]$contract.metadataEntry, [System.IO.Compression.CompressionLevel]::Optimal)
       $stream = $replacement.Open()
       try { $stream.Write($metadata, 0, $metadata.Length) } finally { $stream.Dispose() }
-    } elseif ($matches.Count -ne 0 -or $patchedMatches.Count -ne 1) {
-      throw "Expected one official or already-patched ServerInfo endpoint in IL2CPP metadata; found official=$($matches.Count) patched=$($patchedMatches.Count)."
     }
   } finally { $zip.Dispose() }
 
@@ -170,6 +204,188 @@ try {
   if ($launchingSmali -notmatch '(?m)^\.method public toJsonString\(\)Ljava/lang/String;$') {
     [System.IO.File]::AppendAllText($launchingInfo, $launchingOverride, [System.Text.UTF8Encoding]::new($false))
   }
+
+  # Gamebase normally contacts NHN before CounterSide can read ServerInfo. That
+  # service is not part of an offline RevivalSide install, so return the smallest
+  # valid IN_SERVICE launching document immediately and expose it through the
+  # later synchronous lookup as well. CounterSide still performs its ordinary
+  # ServerInfo, content-tag, version, and asset checks against the local listener.
+  $offlineLaunchingJson = '{"launching":{"status":{"code":200,"message":"RevivalSide offline"},"user":{"testDevice":{"matchingFlag":false,"matchingTypes":[]}},"app":{"accessInfo":{"serverAddress":"' + [string]$contract.patchedServerInfoBaseUrl + '"},"relatedUrls":{},"install":{},"idP":{},"typeCode":"REAL","loginUrls":{"gamebaseUrl":""},"customerService":{},"gameNotice":{"url":"","latestNoticeTimeMillis":-1},"termsService":{"showTermsFlag":false,"termsUrl":""}},"maintenance":null,"notice":null},"tcProduct":{},"tcIap":[],"tcLaunching":""}'
+  $offlineLaunchingSmali = $offlineLaunchingJson.Replace('\', '\\').Replace('"', '\"')
+
+  $gamebasePluginFiles = @(Get-ChildItem -LiteralPath $decodedBase -Recurse -Filter "GamebasePlugin.smali" -File |
+    Where-Object { $_.FullName -match '[\\/]com[\\/]toast[\\/]android[\\/]gamebase[\\/]plugin[\\/]GamebasePlugin\.smali$' })
+  if ($gamebasePluginFiles.Count -ne 1) {
+    throw "Expected one GamebasePlugin.smali; found $($gamebasePluginFiles.Count)."
+  }
+  $gamebasePlugin = $gamebasePluginFiles[0].FullName
+  $gamebasePluginSmali = [System.IO.File]::ReadAllText($gamebasePlugin)
+
+  $initializePattern = '(?s)\.method private initialize\(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;\)V.*?\.end method'
+  if ([regex]::Matches($gamebasePluginSmali, $initializePattern).Count -ne 1) {
+    throw "Expected one Gamebase initialize method."
+  }
+  $initializeOverride = @"
+.method private initialize(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;)V
+    .locals 6
+
+    new-instance v0, Lcom/google/gson/Gson;
+    invoke-direct {v0}, Lcom/google/gson/Gson;-><init>()V
+    const-class v1, Lcom/toast/android/gamebase/plugin/communicator/message/EngineMessage;
+    invoke-virtual {v0, p1, v1}, Lcom/google/gson/Gson;->fromJson(Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/Object;
+    move-result-object v0
+    check-cast v0, Lcom/toast/android/gamebase/plugin/communicator/message/EngineMessage;
+
+    iget-object v1, v0, Lcom/toast/android/gamebase/plugin/communicator/message/EngineMessage;->scheme:Ljava/lang/String;
+    iget v2, v0, Lcom/toast/android/gamebase/plugin/communicator/message/EngineMessage;->handle:I
+    const/4 v3, 0x0
+    const-string v4, "$offlineLaunchingSmali"
+    const/4 v5, 0x0
+    new-instance v0, Lcom/toast/android/gamebase/plugin/communicator/message/NativeMessage;
+    invoke-direct/range {v0 .. v5}, Lcom/toast/android/gamebase/plugin/communicator/message/NativeMessage;-><init>(Ljava/lang/String;ILcom/toast/android/gamebase/base/GamebaseException;Ljava/lang/String;Ljava/lang/String;)V
+    invoke-interface {p2, p1, v0}, Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;->onSendMessage(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/message/NativeMessage;)V
+    return-void
+.end method
+"@
+  $gamebasePluginSmali = [regex]::Replace(
+    $gamebasePluginSmali,
+    $initializePattern,
+    [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $initializeOverride },
+    1
+  )
+
+  $offlineStringMethods = @{
+    'getUserID' = 'revivalside-local'
+    'getAccessToken' = 'revivalside-offline'
+    'getLastLoggedInProvider' = 'guest'
+  }
+  foreach ($methodName in $offlineStringMethods.Keys) {
+    $methodPattern = '(?s)\.method private ' + [regex]::Escape($methodName) + '\(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;\)Ljava/lang/String;.*?\.end method'
+    if ([regex]::Matches($gamebasePluginSmali, $methodPattern).Count -ne 1) {
+      throw "Expected one Gamebase $methodName method."
+    }
+    $methodValue = $offlineStringMethods[$methodName]
+    $methodOverride = ".method private $methodName(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;)Ljava/lang/String;`n    .locals 1`n    const-string v0, `"$methodValue`"`n    return-object v0`n.end method"
+    $gamebasePluginSmali = [regex]::Replace(
+      $gamebasePluginSmali,
+      $methodPattern,
+      [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $methodOverride },
+      1
+    )
+  }
+
+  $lastProviderPattern = '(?s)\.method private requestLastLoggedInProvider\(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;\)V.*?\.end method'
+  if ([regex]::Matches($gamebasePluginSmali, $lastProviderPattern).Count -ne 1) {
+    throw "Expected one Gamebase last-provider request method."
+  }
+  $lastProviderOverride = @'
+.method private requestLastLoggedInProvider(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;)V
+    .locals 6
+
+    new-instance v0, Lcom/google/gson/Gson;
+    invoke-direct {v0}, Lcom/google/gson/Gson;-><init>()V
+    const-class v1, Lcom/toast/android/gamebase/plugin/communicator/message/EngineMessage;
+    invoke-virtual {v0, p1, v1}, Lcom/google/gson/Gson;->fromJson(Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/Object;
+    move-result-object v0
+    check-cast v0, Lcom/toast/android/gamebase/plugin/communicator/message/EngineMessage;
+
+    iget-object v1, v0, Lcom/toast/android/gamebase/plugin/communicator/message/EngineMessage;->scheme:Ljava/lang/String;
+    iget v2, v0, Lcom/toast/android/gamebase/plugin/communicator/message/EngineMessage;->handle:I
+    const/4 v3, 0x0
+    const-string v4, "guest"
+    const/4 v5, 0x0
+    new-instance v0, Lcom/toast/android/gamebase/plugin/communicator/message/NativeMessage;
+    invoke-direct/range {v0 .. v5}, Lcom/toast/android/gamebase/plugin/communicator/message/NativeMessage;-><init>(Ljava/lang/String;ILcom/toast/android/gamebase/base/GamebaseException;Ljava/lang/String;Ljava/lang/String;)V
+    invoke-interface {p2, p1, v0}, Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;->onSendMessage(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/message/NativeMessage;)V
+    return-void
+.end method
+'@
+  $gamebasePluginSmali = [regex]::Replace(
+    $gamebasePluginSmali,
+    $lastProviderPattern,
+    [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $lastProviderOverride },
+    1
+  )
+  [System.IO.File]::WriteAllText($gamebasePlugin, $gamebasePluginSmali, [System.Text.UTF8Encoding]::new($false))
+
+  $launchingPluginFiles = @(Get-ChildItem -LiteralPath $decodedBase -Recurse -Filter "GamebaseLaunchingPlugin.smali" -File |
+    Where-Object { $_.FullName -match '[\\/]com[\\/]toast[\\/]android[\\/]gamebase[\\/]plugin[\\/]GamebaseLaunchingPlugin\.smali$' })
+  if ($launchingPluginFiles.Count -ne 1) {
+    throw "Expected one GamebaseLaunchingPlugin.smali; found $($launchingPluginFiles.Count)."
+  }
+  $launchingPlugin = $launchingPluginFiles[0].FullName
+  $launchingPluginSmali = [System.IO.File]::ReadAllText($launchingPlugin)
+  $launchingLookupPattern = '(?s)\.method private getLaunchingInformations\(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;\)Ljava/lang/String;.*?\.end method'
+  $launchingStatusPattern = '(?s)\.method private getLaunchingStatus\(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;\)Ljava/lang/String;.*?\.end method'
+  if ([regex]::Matches($launchingPluginSmali, $launchingLookupPattern).Count -ne 1 -or
+      [regex]::Matches($launchingPluginSmali, $launchingStatusPattern).Count -ne 1) {
+    throw "Expected one Gamebase launching info/status lookup."
+  }
+  $launchingLookupOverride = ".method private getLaunchingInformations(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;)Ljava/lang/String;`n    .locals 1`n    const-string v0, `"$offlineLaunchingSmali`"`n    return-object v0`n.end method"
+  $launchingStatusOverride = '.method private getLaunchingStatus(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;)Ljava/lang/String;' + "`n    .locals 1`n    const-string v0, `"200`"`n    return-object v0`n.end method"
+  $launchingPluginSmali = [regex]::Replace($launchingPluginSmali, $launchingLookupPattern, [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $launchingLookupOverride }, 1)
+  $launchingPluginSmali = [regex]::Replace($launchingPluginSmali, $launchingStatusPattern, [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $launchingStatusOverride }, 1)
+  [System.IO.File]::WriteAllText($launchingPlugin, $launchingPluginSmali, [System.Text.UTF8Encoding]::new($false))
+
+  $gamebaseAuthFiles = @(Get-ChildItem -LiteralPath $decodedBase -Recurse -Filter "GamebaseAuthPlugin.smali" -File |
+    Where-Object { $_.FullName -match '[\\/]com[\\/]toast[\\/]android[\\/]gamebase[\\/]plugin[\\/]GamebaseAuthPlugin\.smali$' })
+  if ($gamebaseAuthFiles.Count -ne 1) {
+    throw "Expected one GamebaseAuthPlugin.smali; found $($gamebaseAuthFiles.Count)."
+  }
+  $gamebaseAuth = $gamebaseAuthFiles[0].FullName
+  $gamebaseAuthSmali = [System.IO.File]::ReadAllText($gamebaseAuth)
+  $mappingPattern = '(?s)\.method private getAuthMappingList\(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;\)Ljava/lang/String;.*?\.end method'
+  $profilePattern = '(?s)\.method private getAuthProviderProfile\(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;\)Ljava/lang/String;.*?\.end method'
+  if ([regex]::Matches($gamebaseAuthSmali, $mappingPattern).Count -ne 1 -or
+      [regex]::Matches($gamebaseAuthSmali, $profilePattern).Count -ne 1) {
+    throw "Expected one Gamebase auth mapping/profile lookup."
+  }
+  $mappingOverride = '.method private getAuthMappingList(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;)Ljava/lang/String;' + "`n    .locals 1`n    const-string v0, `"[`\`"guest`\`"]`"`n    return-object v0`n.end method"
+  $profileOverride = '.method private getAuthProviderProfile(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;)Ljava/lang/String;' + "`n    .locals 1`n    const-string v0, `"{`\`"information`\`":{}}`"`n    return-object v0`n.end method"
+  $gamebaseAuthSmali = [regex]::Replace($gamebaseAuthSmali, $mappingPattern, [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $mappingOverride }, 1)
+  $gamebaseAuthSmali = [regex]::Replace($gamebaseAuthSmali, $profilePattern, [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $profileOverride }, 1)
+  [System.IO.File]::WriteAllText($gamebaseAuth, $gamebaseAuthSmali, [System.Text.UTF8Encoding]::new($false))
+
+  # Keep the patcher's legacy custom-server fallback local even if no Gamebase
+  # state exists yet (for example after a clean install or full data wipe).
+  $customServerConfigPath = Join-Path $decodedBase "assets\CSConfigServerAddress.txt"
+  [System.IO.File]::WriteAllText($customServerConfigPath, [string]$contract.patchedServerInfoBaseUrl, [System.Text.UTF8Encoding]::new($false))
+
+  # RevivalSide is offline-first, so the stock Gamebase agreement gate cannot
+  # depend on its retired launching/terms service. Make the shared show/force
+  # predicate false; every terms display overload then follows the SDK's own
+  # "already agreed" success path without opening a WebView.
+  $gamebaseTermsFiles = @(Get-ChildItem -LiteralPath $decodedBase -Recurse -Filter "GamebaseTerms.smali" -File |
+    Where-Object { $_.FullName -match '[\\/]com[\\/]toast[\\/]android[\\/]gamebase[\\/]terms[\\/]GamebaseTerms\.smali$' })
+  if ($gamebaseTermsFiles.Count -ne 1) {
+    throw "Expected one GamebaseTerms.smali; found $($gamebaseTermsFiles.Count)."
+  }
+  $gamebaseTerms = $gamebaseTermsFiles[0].FullName
+  $gamebaseTermsSmali = [System.IO.File]::ReadAllText($gamebaseTerms)
+  $termsGateMethodPattern = '(?s)\.method private static final a\(ZZ\)Z.*?\.end method'
+  if ([regex]::Matches($gamebaseTermsSmali, $termsGateMethodPattern).Count -ne 1) {
+    throw "Expected one Gamebase terms display gate."
+  }
+  $termsGateOverride = @'
+.method private static final a(ZZ)Z
+    .locals 0
+    const/4 p0, 0x0
+    return p0
+.end method
+'@
+  $gamebaseTermsSmali = [regex]::Replace(
+    $gamebaseTermsSmali,
+    $termsGateMethodPattern,
+    [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $termsGateOverride },
+    1
+  )
+  [System.IO.File]::WriteAllText($gamebaseTerms, $gamebaseTermsSmali, [System.Text.UTF8Encoding]::new($false))
+
+  # The frozen patcher otherwise blocks on the physical Android connection even
+  # though all required services are local. Patch both Gamebase's bridge and
+  # Unity's shared internetReachability wrapper for every ABI present.
+  $offlineConnectivityPatcher = Join-Path $PSScriptRoot "patch-counterside-android-offline-connectivity.ps1"
+  & $offlineConnectivityPatcher -DecodedDirectory $decodedBase
 
   # CounterSide does not promote LatestPatchInfo.json when every file is already
   # present. Promote that verified manifest before Unity starts so the complete
@@ -466,6 +682,42 @@ try {
     [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $purchaseOverride },
     1
   )
+
+  # A sideloaded client cannot restore receipts through the official Gamebase
+  # backend.  Let the frozen client complete its restore pass with an empty,
+  # successful receipt list instead of surfacing NPRC_INAPP_FAIL_RESTORE (P520)
+  # after the lobby has already loaded.  This does not alter the purchasable
+  # catalog or purchase request paths.
+  $restoreMethodPattern = '(?s)\.method static synthetic lambda\$requestActivatedPurchases\$7\(Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/message/EngineMessage;Ljava/util/List;Lcom/toast/android/gamebase/base/GamebaseException;\)V.*?\.end method'
+  $restoreMatches = [regex]::Matches($purchaseSmali, $restoreMethodPattern)
+  if ($restoreMatches.Count -ne 1) {
+    throw "Expected one Gamebase activated-purchases restore callback; found $($restoreMatches.Count)."
+  }
+  if (-not $restoreMatches[0].Value.Contains('const-string v4, "[]"')) {
+    $restoreOverride = @"
+.method static synthetic lambda`$requestActivatedPurchases`$7(Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/message/EngineMessage;Ljava/util/List;Lcom/toast/android/gamebase/base/GamebaseException;)V
+    .locals 6
+
+    const-string v4, "[]"
+    const/4 v3, 0x0
+
+    new-instance p3, Lcom/toast/android/gamebase/plugin/communicator/message/NativeMessage;
+    iget-object v1, p2, Lcom/toast/android/gamebase/plugin/communicator/message/EngineMessage;->scheme:Ljava/lang/String;
+    iget v2, p2, Lcom/toast/android/gamebase/plugin/communicator/message/EngineMessage;->handle:I
+    const/4 v5, 0x0
+    move-object v0, p3
+    invoke-direct/range {v0 .. v5}, Lcom/toast/android/gamebase/plugin/communicator/message/NativeMessage;-><init>(Ljava/lang/String;ILcom/toast/android/gamebase/base/GamebaseException;Ljava/lang/String;Ljava/lang/String;)V
+    invoke-interface {p0, p1, p3}, Lcom/toast/android/gamebase/plugin/communicator/GamebaseListener;->onSendMessage(Ljava/lang/String;Lcom/toast/android/gamebase/plugin/communicator/message/NativeMessage;)V
+    return-void
+.end method
+"@
+    $purchaseSmali = [regex]::Replace(
+      $purchaseSmali,
+      $restoreMethodPattern,
+      [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $restoreOverride },
+      1
+    )
+  }
   [System.IO.File]::WriteAllText($purchasePlugin, $purchaseSmali, [System.Text.UTF8Encoding]::new($false))
 
   # The stock downloader serializes every asset behind one AtomicBoolean, copies
@@ -662,6 +914,11 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "Apktool failed to rebuild $($baseApk.Name)." }
   Copy-Item -LiteralPath $rebuiltBase -Destination $baseApk.FullName -Force
 
+  # Native libraries normally live in ABI split APKs. Reapply the idempotent
+  # patch across the packaged set after rebuilding the base so split installs
+  # and universal APK inputs receive the same offline behavior.
+  & $offlineConnectivityPatcher -ApkDirectory $sourceRoot
+
   $outputs = @()
   $signedBasePath = ""
   foreach ($apk in $apks) {
@@ -697,6 +954,13 @@ try {
     patchVersion = [string]$contract.patchVersion
     patchedServerInfoBaseUrl = [string]$contract.patchedServerInfoBaseUrl
     gamebaseLaunchingResponsePatched = $true
+    gamebaseInitializationBypassed = $true
+    gamebaseOfflineIdentity = "guest"
+    gamebaseTermsDisabled = $true
+    gamebaseConnectivityForcedOnline = $true
+    unityInternetReachabilityForcedOnline = $true
+    gamebaseRestoreReceiptsForcedEmpty = $true
+    localServerConfigAsset = $true
     gamebasePurchasableAdminCoinsReplaced = $true
     assetManifestCachePatched = $true
     assetManifestCachePromotedAfterDownload = $true

@@ -45,7 +45,7 @@ class CounterSideVpnService : VpnService() {
             ACTION_START -> startCapture(intent)
             ACTION_STOP -> stopCapture()
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
@@ -314,6 +314,10 @@ class CounterSideVpnService : VpnService() {
         if (!joinLobbyCaptured.compareAndSet(false, true)) return
         val export = CaptureRepository.saveJoinLobbyAck(this, lobbyAck, session.key.remoteLabel)
         publishStatus("Captured JOIN_LOBBY_ACK", export)
+        getSystemService(NotificationManager::class.java).notify(
+            PROFILE_SAVED_NOTIFICATION_ID,
+            buildProfileSavedNotification(),
+        )
     }
 
     private fun inspectOfficialLoginPackets(session: TcpSession, frames: List<CapturedCounterSideFrame>) {
@@ -402,6 +406,22 @@ class CounterSideVpnService : VpnService() {
             .build()
     }
 
+    private fun buildProfileSavedNotification(): Notification {
+        val intent = PendingIntent.getActivity(
+            this,
+            1,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        return Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle("RevivalSide profile saved")
+            .setContentText("Return to RevivalSide to finish importing it into User Manager.")
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setContentIntent(intent)
+            .setAutoCancel(true)
+            .build()
+    }
+
     private fun publishStatus(message: String, export: java.io.File? = null) {
         Log.i(TAG, message)
         sendBroadcast(Intent(ACTION_STATUS).apply {
@@ -433,6 +453,7 @@ class CounterSideVpnService : VpnService() {
         const val GAMEBASE_LOGIN_ACK = 230
         const val CHANNEL_ID = "revivalside_capture"
         const val NOTIFICATION_ID = 6001
+        const val PROFILE_SAVED_NOTIFICATION_ID = 6003
         const val CONNECT_TIMEOUT_MS = 10_000
         const val UDP_TIMEOUT_MS = 5_000
         const val TCP_MSS = 1200

@@ -1,0 +1,824 @@
+{
+  "schemaVersion": 1,
+  "kind": "cutscene-stage",
+  "title": "Dating Event #1 — Off Duty",
+  "placement": {
+    "category": "EC_MAINSTREAM",
+    "episodeId": 2,
+    "actId": 4,
+    "stageIndex": 7,
+    "stageUiNumber": 3
+  },
+  "ids": {
+    "stageId": 11246,
+    "stageStrId": "STAGE_MAINSTREAM_MODSIDE_11246",
+    "dungeonId": 10106,
+    "dungeonStrId": "NKM_DUNGEON_EP1_ACT4_DATING_EVENT_1",
+    "cutsceneId": 900011246,
+    "cutsceneStrId": "EP1_ACT4_DATING_EVENT_1"
+  },
+  "unlockDungeonId": 0,
+  "background": "CAFE",
+  "music": "",
+  "scenes": [
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "You’re two minutes late.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "I thought you were off duty.",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "Punctuality doesn’t stop being important after work.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "You came straight from patrol?",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "Kang took over my route.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "Your partner volunteered?",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "She said I needed “one normal evening.”",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "I like her already.",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "Don’t encourage her.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "Is that why you’re still wearing your watch?",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "A Counter never knows when an anomaly will appear.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "We’re in the middle of the Normal:Side.",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "That has never stopped them before.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "You could relax for one hour.",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "I am relaxed.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "You’ve checked the exits three times.",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "There are only two. I checked the window.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "Very relaxed.",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "You invited me here to criticize my habits?",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "I invited you because I wanted to see you.",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "You could have said that sooner.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "Would it have changed anything?",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "No.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "That answer was suspiciously fast.",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "Stop smiling.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "I can’t help it.",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "Your drink is getting cold.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "So is yours.",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "I prefer it that way.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "Yumi?",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "What?",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "When you Dive into the Counter:Side, do you ever get scared?",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "Every time.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "You don’t act like it.",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "Fear doesn’t excuse abandoning people who need protection.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "And who protects you?",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "Kang watches my back.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "Anyone else?",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "That depends.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "On what?",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "Whether you arrive on time next time.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "There’s going to be a next time?",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "Three minutes early.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "Yes, Officer Lee.",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "I’m off duty.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Administrator",
+      "speakerActorId": "USER_ADMIN_NULL_NULL",
+      "dialogue": "Yes, Yumi.",
+      "voiceLine": "",
+      "dimActors": true,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    },
+    {
+      "speakerName": "Lee Yumi",
+      "speakerActorId": "YUMI_POLICE_NULL_NULL",
+      "dialogue": "Better.",
+      "voiceLine": "",
+      "dimActors": false,
+      "effects": [],
+      "actors": [
+        {
+          "actorId": "YUMI_POLICE_NULL_NULL",
+          "position": "C",
+          "animation": "UNIT_IDLE",
+          "visible": true,
+          "previewAsset": ""
+        }
+      ]
+    }
+  ]
+}

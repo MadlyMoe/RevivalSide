@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script",
+    "fileName": "LUA_REACTOR_SKILL_TEMPLET.json",
+    "tableName": "LUA_REACTOR_SKILL_TEMPLET"
+  },
+  "key": {
+    "field": "IDX",
+    "value": 2605001
+  },
+  "source": {
+    "field": "IDX",
+    "value": 109901
+  },
+  "value": {
+    "IDX": 2605001,
+    "ReactorID": 26050,
+    "ReactorLevelTitle": "REACTOR_SKILL_TITLE_SKILL",
+    "ReactorLevelDesc": "REACTOR_SKILL_DESC_109901",
+    "BaseSkillStrID": "NKM_UNIT_C_POLICE_LEE_YUMI_SKILL",
+    "UnitSkillIconStrID": "NKM_UNIT_C_POLICE_LEE_YUMI_SKILL",
+    "LevelUpReqItemID_1": 1,
+    "LevelUpReqItemValue_1": 1500000,
+    "LevelUpReqItemID_2": 1072,
+    "LevelUpReqItemValue_2": 80,
+    "LevelUpReqItemID_3": 1070,
+    "LevelUpReqItemValue_3": 1
+  }
+}

@@ -467,8 +467,10 @@ async function serveModCreatorApi(config, req, res, requestUrl, apiPath) {
   if (pathname === `${apiPath}/unit-maker/voice-bundle`) {
     if (req.method !== "POST") throw methodNotAllowed(res, "POST");
     const prepared = config.unitMaker.prepareVoiceBundle(await readJsonRequest(req, MAX_MOD_BODY_BYTES));
-    const bundle = await config.unityCompiler.build(config.modStore.readProject(prepared.projectId), { bundleName: prepared.bundleName, assets: prepared.assets, encryptHeader: true });
-    const result = { ...prepared, bundle, project: publicModProject(config, config.modStore.readProject(prepared.projectId)) };
+    const project = config.modStore.readProject(prepared.projectId);
+    const bundle = await config.unityCompiler.build(project, { bundleName: prepared.bundleName, assets: prepared.assets, encryptHeader: true, target: "windows" });
+    const androidBundle = await config.unityCompiler.build(project, { bundleName: prepared.bundleName, assets: prepared.assets, encryptHeader: true, target: "android" });
+    const result = { ...prepared, bundle, androidBundle, project: publicModProject(config, config.modStore.readProject(prepared.projectId)) };
     sendJson(res, 201, publishActiveProject(config, prepared.projectId, result));
     return;
   }
@@ -653,6 +655,7 @@ function publicModProject(config, project) {
     assetReplacements: (project.assetReplacements || []).map((replacement) => ({
       ...replacement,
       built: fs.existsSync(path.join(project.root, "assets", "bundles", replacement.bundleName)),
+      builtAndroid: fs.existsSync(path.join(project.root, "assets", "android-bundles", replacement.bundleName)),
     })),
     validation: validateModProject(config, project),
   };
@@ -748,7 +751,10 @@ function validateModProject(config, project) {
   }
   for (const replacement of project.assetReplacements || []) {
     if (!fs.existsSync(path.join(project.root, replacement.source))) errors.push({ path: replacement.targetPath, message: "Asset replacement source is missing." });
-    else if (!fs.existsSync(path.join(project.root, "assets", "bundles", replacement.bundleName))) warnings.push({ path: replacement.targetPath, message: `Build bundle ${replacement.bundleName} before loading this replacement in-game.` });
+    else if (!fs.existsSync(path.join(project.root, "assets", "bundles", replacement.bundleName)) ||
+      !fs.existsSync(path.join(project.root, "assets", "android-bundles", replacement.bundleName))) {
+      warnings.push({ path: replacement.targetPath, message: `Build Windows and Android variants of ${replacement.bundleName} before loading this replacement in-game.` });
+    }
   }
   return { ok: errors.length === 0, errors, warnings, patchCount: project.patches.length };
 }
@@ -2250,7 +2256,7 @@ function buildLegacyAssetViewerHtml(basePath, product = "mod") {
           <section class="wide">
             <div class="section-label">External Unity AssetBundle compiler</div>
             <p id="unityStatus" class="subtle">Checking Unity Editor...</p>
-            <div class="button-row"><input id="bundleName" placeholder="custom-unit-assets" aria-label="AssetBundle name"><label class="secondary" style="text-align:center;cursor:pointer">Choose source assets<input id="bundleAssets" type="file" multiple hidden></label><button id="buildBundle" class="secondary" type="button">Build Windows bundle</button></div>
+            <div class="button-row"><input id="bundleName" placeholder="custom-unit-assets" aria-label="AssetBundle name"><label class="secondary" style="text-align:center;cursor:pointer">Choose source assets<input id="bundleAssets" type="file" multiple hidden></label><button id="buildBundle" class="secondary" type="button">Build Windows + Android bundles</button></div>
           </section>
           <pre id="unitOutput" class="unit-output wide">Select a base unit.</pre>
         </form>
@@ -2445,11 +2451,11 @@ function buildLegacyAssetViewerHtml(basePath, product = "mod") {
       }
 
       function saveAssetReplacement(metadata,file,status) {
-        if(!state.objectProject)throw new Error("Choose or create a mod project first.");var id=state.objectProject.manifest.id,route="mods/"+encodeURIComponent(id)+"/asset-replacement?path="+encodeURIComponent(metadata.targetPath)+"&fileName="+encodeURIComponent(file.name);return writeRaw(route,file).then(function(result){state.objectProject=result.project;renderObjectProjectStatus();if(!state.objectUnity||!state.objectUnity.available){status.textContent="Source saved in the mod ZIP. "+(state.objectUnity?state.objectUnity.message:"Install Unity to build the in-game bundle.");return result}status.textContent="Building replacement AssetBundle...";return writeApi("mods/"+encodeURIComponent(id)+"/unity-build","POST",{bundleName:result.replacement.bundleName,assets:result.bundleAssets,spriteAssets:result.spriteAssets}).then(function(build){status.textContent="Built "+build.bundleName+" ("+formatBytes(build.bytes)+"). Export the mod ZIP when ready.";return api("mods/"+encodeURIComponent(id)).then(function(project){state.objectProject=project;renderObjectProjectStatus();return build})})});
+        if(!state.objectProject)throw new Error("Choose or create a mod project first.");var id=state.objectProject.manifest.id,route="mods/"+encodeURIComponent(id)+"/asset-replacement?path="+encodeURIComponent(metadata.targetPath)+"&fileName="+encodeURIComponent(file.name);return writeRaw(route,file).then(function(result){state.objectProject=result.project;renderObjectProjectStatus();if(!state.objectUnity||!state.objectUnity.available){status.textContent="Source saved in the mod ZIP. "+(state.objectUnity?state.objectUnity.message:"Install Unity to build the in-game bundle.");return result}status.textContent="Building Windows and Android replacement AssetBundles...";var spec={bundleName:result.replacement.bundleName,assets:result.bundleAssets,spriteAssets:result.spriteAssets};return writeApi("mods/"+encodeURIComponent(id)+"/unity-build","POST",Object.assign({target:"windows"},spec)).then(function(){return writeApi("mods/"+encodeURIComponent(id)+"/unity-build","POST",Object.assign({target:"android"},spec))}).then(function(build){status.textContent="Built Windows and Android "+build.bundleName+" variants. Export the mod ZIP when ready.";return api("mods/"+encodeURIComponent(id)).then(function(project){state.objectProject=project;renderObjectProjectStatus();return build})})});
       }
 
       function buildObjectProjectAssets() {
-        if(!state.objectProject||!state.objectUnity||!state.objectUnity.available)return Promise.resolve();var id=state.objectProject.manifest.id,groups={};(state.objectProject.assetReplacements||[]).forEach(function(item){var group=groups[item.bundleName]||(groups[item.bundleName]={assets:[],spriteAssets:[]}),source=item.source.replace(/^assets\/source\//,"");group.assets.push(source);if(item.unityType==="Sprite")group.spriteAssets.push(source)});els.objectBuildAssets.disabled=true;els.objectModStatus.textContent="Building "+Object.keys(groups).length+" replacement bundles...";return Object.keys(groups).reduce(function(promise,bundleName){return promise.then(function(){return writeApi("mods/"+encodeURIComponent(id)+"/unity-build","POST",{bundleName:bundleName,assets:groups[bundleName].assets,spriteAssets:groups[bundleName].spriteAssets})})},Promise.resolve()).then(function(){return loadObjectTools(id)}).finally(function(){renderObjectProjectStatus()});
+        if(!state.objectProject||!state.objectUnity||!state.objectUnity.available)return Promise.resolve();var id=state.objectProject.manifest.id,groups={};(state.objectProject.assetReplacements||[]).forEach(function(item){var group=groups[item.bundleName]||(groups[item.bundleName]={assets:[],spriteAssets:[]}),source=item.source.replace(/^assets\/source\//,"");group.assets.push(source);if(item.unityType==="Sprite")group.spriteAssets.push(source)});els.objectBuildAssets.disabled=true;els.objectModStatus.textContent="Building "+Object.keys(groups).length+" dual-platform replacement bundles...";return Object.keys(groups).reduce(function(promise,bundleName){return promise.then(function(){var spec={bundleName:bundleName,assets:groups[bundleName].assets,spriteAssets:groups[bundleName].spriteAssets};return writeApi("mods/"+encodeURIComponent(id)+"/unity-build","POST",Object.assign({target:"windows"},spec)).then(function(){return writeApi("mods/"+encodeURIComponent(id)+"/unity-build","POST",Object.assign({target:"android"},spec))})})},Promise.resolve()).then(function(){return loadObjectTools(id)}).finally(function(){renderObjectProjectStatus()});
       }
 
       function addObjectSection(root,title,items,render) {
@@ -2863,7 +2869,7 @@ function buildLegacyAssetViewerHtml(basePath, product = "mod") {
         if(!projectId)throw new Error("Enter an existing project ID."); if(!bundleName)throw new Error("Enter a bundle name."); if(!files.length)throw new Error("Choose at least one source asset.");
         els.buildBundle.disabled=true; els.unitOutput.textContent="Uploading "+files.length+" source assets...";
         return Promise.all(files.map(function(file){var name=(file.webkitRelativePath||file.name).replace(/\\/g,"/");return writeRaw("mods/"+encodeURIComponent(projectId)+"/asset-source?path="+encodeURIComponent(name),file).then(function(){return name})})).then(function(names){
-          els.unitOutput.textContent="Building "+bundleName+" with Unity..."; return writeApi("mods/"+encodeURIComponent(projectId)+"/unity-build","POST",{bundleName:bundleName,assets:names});
+          els.unitOutput.textContent="Building "+bundleName+" for Windows and Android..."; var spec={bundleName:bundleName,assets:names}; return writeApi("mods/"+encodeURIComponent(projectId)+"/unity-build","POST",Object.assign({target:"windows"},spec)).then(function(){return writeApi("mods/"+encodeURIComponent(projectId)+"/unity-build","POST",Object.assign({target:"android"},spec))});
         }).then(function(result){els.unitOutput.textContent=JSON.stringify(result,null,2)}).finally(function(){loadUnityStatus().catch(showError)});
       }
 

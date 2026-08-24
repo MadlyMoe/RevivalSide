@@ -14,11 +14,13 @@ function createDeployHandler(options = {}) {
     if (!replay || !req) return { handled: false };
     if (replay.battleState || replay.dynamicGame) {
       const deployed = deployRuntimeBattleUnit(replay, req);
+      const errorCode = deployed ? 0 : 78;
       return {
         handled: true,
         mode: "battleState",
         deployed,
-        ackPayload: syncBuilder.buildRespawnAck({ unitUID: req.unitUID, assistUnit: false }),
+        errorCode,
+        ackPayload: syncBuilder.buildRespawnAck({ unitUID: req.unitUID, assistUnit: req.assistUnit, errorCode }),
         syncPayload:
           deployed && replay.battleState
             ? syncBuilder.buildGameSync(

@@ -511,6 +511,16 @@ function applyOfficialSnapshotToLocalProfile(profile, options = {}) {
     importedSystems.shop = true;
     importedSystems.packages = true;
   }
+  const importedConsumerPackages = normalizeImportedConsumerPackages(systems.consumerPackages);
+  if (Object.keys(importedConsumerPackages).length) {
+    profile.consumerPackages = {
+      ...importedConsumerPackages,
+      ...(profile.consumerPackages && typeof profile.consumerPackages === "object" && !Array.isArray(profile.consumerPackages)
+        ? profile.consumerPackages
+        : {}),
+    };
+    importedSystems.packages = true;
+  }
   const importedTotalPaidAmount = finiteNumber(systems.totalPaidAmount, 0);
   if (importedTotalPaidAmount > 0) profile.shopTotalPaidAmount = importedTotalPaidAmount;
 
@@ -777,6 +787,23 @@ function normalizeImportedShopData(source) {
   }
   const subscriptions = firstObject(readAny(data, ["subscriptions", "Subscriptions"])) || {};
   return { histories, randomShop, subscriptions };
+}
+
+function normalizeImportedConsumerPackages(source) {
+  const output = {};
+  for (const value of Array.isArray(source) ? source : []) {
+    const data = firstObject(value);
+    if (!data) continue;
+    const productId = firstPositiveInt(readAny(data, ["productId", "productID", "ProductId", "ProductID"]));
+    if (!productId) continue;
+    output[String(productId)] = {
+      productId,
+      rewardedLevel: Math.max(0, finiteInt(firstPresent(readAny(data, ["rewardedLevel", "RewardedLevel"]), 0), 0)),
+      spendCount: String(Math.max(0, finiteNumber(firstPresent(readAny(data, ["spendCount", "SpendCount"]), 0), 0))),
+      pendingUpdate: false,
+    };
+  }
+  return output;
 }
 
 function mergeShopPurchaseHistories(imported, local) {

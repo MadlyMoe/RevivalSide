@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "table": {
+    "directory": "ab_script",
+    "fileName": "LUA_EPISODE_TEMPLET.json",
+    "tableName": "LUA_EPISODE_TEMPLET"
+  },
+  "key": {
+    "field": "m_StageID",
+    "value": 11246
+  },
+  "value": {
+    "m_StageID": 11246,
+    "m_StageStrID": "STAGE_MAINSTREAM_MODSIDE_11246",
+    "m_EpisodeID": 2,
+    "m_EpisodeStrID": "ESI_MAINSTREAM_EP_1",
+    "m_EPCategory": "EC_MAINSTREAM",
+    "m_EpisodeTitle": "SI_EPISODE_EPISODE_TITLE_MAINSTREAM_EP_1",
+    "m_EpisodeName": "SI_EPISODE_EPISODE_NAME_MAINSTREAM_EP_1",
+    "m_EPThumbnail": "MAINSTREAM_EPISODE_01",
+    "m_Difficulty": "NORMAL",
+    "m_ActID": 4,
+    "m_StageIndex": 7,
+    "m_StageUINum": 3,
+    "m_StageType": "ST_DUNGEON",
+    "m_StageBattleStrID": "NKM_DUNGEON_EP1_ACT4_DATING_EVENT_1",
+    "m_StageDesc": "MODSIDE_STAGE_NAME_11246",
+    "m_StageCharStr": "NKM_UNIT_C_POLICE_LEE_YUMI",
+    "m_StageBasicUnlockType": "SBUT_OPEN",
+    "m_UnlockReqType": "SURT_PLAYER_LEVEL",
+    "m_UnlockReqValue": 1,
+    "m_OpenTag": "TAG_COMMON_EPISODE_MAIN_EP1"
+  },
+  "source": "revivalside-episode-maker"
+}

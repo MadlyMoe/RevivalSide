@@ -13,7 +13,7 @@ const {
   getPlayerRequiredExpForLevel,
   getPlayerTotalExpForLevel,
 } = require("../game-data");
-const { getMiscItem, getMiscItems, getSkinIds, spendMiscItem } = require("../inventory");
+const { getMiscItem, getMiscItems, getSkinIds, setMiscItemBalance, spendMiscItem } = require("../inventory");
 const { getArmyUnits, getArmyShips, getArmyOperators } = require("../unit");
 const { getEquipItems } = require("../equipment");
 const {
@@ -34,6 +34,16 @@ const DAILY_MISSION_TAB_ID = 2;
 const WEEKLY_MISSION_TAB_ID = 3;
 const TICKS_AT_UNIX_EPOCH = 621355968000000000n;
 const DATE_TIME_TICKS_MASK = 0x3fffffffffffffffn;
+const MISSION_ERRORS = Object.freeze({
+  INVALID_TAB: 269,
+  INVALID_ID: 270,
+  NOT_ENOUGH_CONDITION: 271,
+  ALREADY_COMPLETED: 272,
+  EMPTY_COMPLETE_REWARD: 20711,
+  ITEM_INSUFFICIENT_COUNT: 20331,
+  INVALID_ITEM_COUNT: 20362,
+  OUT_OF_DATE: 22200,
+});
 const ROOT_DIR = path.resolve(__dirname, "..", "..");
 let missionIdsWithMultipleGroups = null;
 let missionStageCatalog = null;
@@ -47,11 +57,20 @@ function ensureAccountProgress(user) {
   user.missionCounters = user.missionCounters && typeof user.missionCounters === "object" ? user.missionCounters : {};
   user.missionPointResetKeys =
     user.missionPointResetKeys && typeof user.missionPointResetKeys === "object" ? user.missionPointResetKeys : {};
+  user.missionPointRefreshNotifications =
+    user.missionPointRefreshNotifications && typeof user.missionPointRefreshNotifications === "object" &&
+    !Array.isArray(user.missionPointRefreshNotifications)
+      ? user.missionPointRefreshNotifications
+      : {};
   user.missionLoginDaysByEvent =
     user.missionLoginDaysByEvent && typeof user.missionLoginDaysByEvent === "object" && !Array.isArray(user.missionLoginDaysByEvent)
       ? user.missionLoginDaysByEvent
       : {};
   user.missionLoginDays = Array.isArray(user.missionLoginDays) ? user.missionLoginDays : [];
+  user.randomMissions =
+    user.randomMissions && typeof user.randomMissions === "object" && !Array.isArray(user.randomMissions)
+      ? user.randomMissions
+      : {};
   user.dailyMissionPoint = nonNegativeInt(user.dailyMissionPoint);
   user.weeklyMissionPoint = nonNegativeInt(user.weeklyMissionPoint);
   user.eventPassExp = nonNegativeInt(user.eventPassExp);
@@ -258,14 +277,64 @@ function completeMission(user, request = {}, options = {}) {
   ensureAccountProgress(user);
   const missionID = Number(request.missionID || request.missionId || request.id || 0);
   const row = getMissionRowForRequest(request, user);
-  if (!user || !Number.isInteger(missionID) || missionID <= 0 || !row) return emptyMissionResult(request);
+  if (!user || !Number.isInteger(missionID) || missionID <= 0 || !row) {
+    return emptyMissionResult(request, MISSION_ERRORS.INVALID_ID);
+  }
+  if (Number(request.tabId || 0) > 0 && Number(row.m_MissionTabId || 0) !== Number(request.tabId)) {
+    return emptyMissionResult(request, MISSION_ERRORS.INVALID_TAB);
+  }
   return completeMissionRow(user, row, request, options);
+}
+
+function completeRepeatableMission(user, request = {}, options = {}) {
+  ensureAccountProgress(user);
+  const missionID = Number(request.missionID || request.missionId || request.id || 0);
+  const row = getMissionRowForRequest(request, user);
+  if (!user || !Number.isInteger(missionID) || missionID <= 0 || !row || !isOnCompleteMission(row)) {
+    return emptyMissionResult(request, MISSION_ERRORS.INVALID_ID);
+  }
+  const state = buildEvaluatedMissionState(user, row, { now: options.now, eventDateKey: options.eventDateKey });
+  const targetTimes = missionTargetTimes(row);
+  if (!missionRequirementSatisfied(user, row) || Number(state.times || 0) < targetTimes) {
+    return {
+      missionID,
+      tabId: state.tabId,
+      groupId: state.groupId,
+      errorCode: MISSION_ERRORS.NOT_ENOUGH_CONDITION,
+      changed: false,
+      exp: { userExp: 0 },
+      reward: emptyReward(),
+      mission: state,
+    };
+  }
+  const reward = grantMissionRewards(user, row, options);
+  state.repeatClaimedTimes = Math.max(0, Number(state.repeatClaimedTimes || 0)) + targetTimes;
+  state.times = Math.max(0, Number(state.times || 0) - targetTimes);
+  state.rewardReady = state.times >= targetTimes;
+  state.rewardClaimed = false;
+  state.isComplete = false;
+  state.claimedAt = "";
+  state.completedAt = state.rewardReady ? state.completedAt : "";
+  state.lastUpdateDate = missionDateTicks(options.now);
+  setStoredMissionState(user, row, state);
+  return {
+    missionID,
+    tabId: state.tabId,
+    groupId: state.groupId,
+    errorCode: 0,
+    changed: true,
+    exp: { userExp: Number(reward.userExp || 0) },
+    reward,
+    mission: state,
+  };
 }
 
 function completeMissionRow(user, row, request = {}, options = {}) {
   ensureAccountProgress(user);
   const missionID = Number(row && row.m_MissionID || request.missionID || request.missionId || request.id || 0);
-  if (!user || !Number.isInteger(missionID) || missionID <= 0 || !row) return emptyMissionResult(request);
+  if (!user || !Number.isInteger(missionID) || missionID <= 0 || !row) {
+    return emptyMissionResult(request, MISSION_ERRORS.INVALID_ID);
+  }
   const state = buildEvaluatedMissionState(user, row, { now: options.now, eventDateKey: options.eventDateKey });
   const forceTutorialComplete = isTutorialMissionRow(row);
   if (forceTutorialComplete && state.rewardClaimed !== true) {
@@ -273,15 +342,24 @@ function completeMissionRow(user, row, request = {}, options = {}) {
     state.rewardReady = true;
     state.completedAt = state.completedAt || new Date().toISOString();
   }
-  if (
-    state.rewardClaimed === true ||
-    (!forceTutorialComplete &&
-      (!missionRequirementSatisfied(user, row) || Number(state.times || 0) < missionTargetTimes(row)))
-  ) {
+  if (state.rewardClaimed === true) {
     return {
       missionID,
       tabId: state.tabId,
       groupId: state.groupId,
+      errorCode: MISSION_ERRORS.ALREADY_COMPLETED,
+      changed: false,
+      exp: { userExp: 0 },
+      reward: emptyReward(),
+      mission: state,
+    };
+  }
+  if (!forceTutorialComplete && (!missionRequirementSatisfied(user, row) || Number(state.times || 0) < missionTargetTimes(row))) {
+    return {
+      missionID,
+      tabId: state.tabId,
+      groupId: state.groupId,
+      errorCode: MISSION_ERRORS.NOT_ENOUGH_CONDITION,
       changed: false,
       exp: { userExp: 0 },
       reward: emptyReward(),
@@ -301,6 +379,7 @@ function completeMissionRow(user, row, request = {}, options = {}) {
     missionID,
     tabId: state.tabId,
     groupId: state.groupId,
+    errorCode: 0,
     changed: true,
     exp: { userExp: Number(reward.userExp || 0) },
     reward,
@@ -319,8 +398,8 @@ function isTutorialMissionRow(row) {
 function completeAllMissionsForTab(user, tabId, options = {}) {
   ensureAccountProgress(user);
   const numericTabId = Number(tabId || 0);
-  if (!user || !Number.isInteger(numericTabId) || numericTabId <= 0) {
-    return { missionIDs: [], reward: emptyReward(), tabId: numericTabId };
+  if (!user || !Number.isInteger(numericTabId) || numericTabId <= 0 || !getMissionTabTemplet(numericTabId)) {
+    return { missionIDs: [], reward: emptyReward(), tabId: numericTabId, errorCode: MISSION_ERRORS.INVALID_TAB };
   }
 
   refreshMissionProgress(user, { now: options.now, tabId: numericTabId, eventDateKey: options.eventDateKey });
@@ -355,7 +434,12 @@ function completeAllMissionsForTab(user, tabId, options = {}) {
     mergeMissionReward(reward, result.reward);
   }
 
-  return { missionIDs, reward, tabId: numericTabId };
+  return {
+    missionIDs,
+    reward,
+    tabId: numericTabId,
+    errorCode: missionIDs.length ? 0 : MISSION_ERRORS.EMPTY_COMPLETE_REWARD,
+  };
 }
 
 function buildMissionRowsByGroupForTab(tabId, user = null) {
@@ -424,25 +508,29 @@ function donateMissionItem(user, request = {}, options = {}) {
   const missionID = Number(request.missionID || request.missionId || request.id || 0);
   const row = getMissionRowForRequest(request, user);
   if (!user || !Number.isInteger(missionID) || missionID <= 0 || !row) {
-    return { missionID, itemId: 0, count: 0, costItems: [], mission: null };
+    return { missionID, itemId: 0, count: 0, costItems: [], mission: null, errorCode: MISSION_ERRORS.INVALID_ID };
   }
 
   const condition = normalizeMissionCondition(row.m_MissionCond);
   if (condition !== "DONATE_MISSION_ITEM") {
     const mission = buildEvaluatedMissionState(user, row, { now: options.now, eventDateKey: options.eventDateKey });
-    return { missionID, itemId: 0, count: 0, costItems: [], mission };
+    return { missionID, itemId: 0, count: 0, costItems: [], mission, errorCode: MISSION_ERRORS.INVALID_ID };
   }
 
   const itemId = primaryMissionValue(row, 0);
   const requested = nonNegativeInt(request.count);
   if (!itemId || requested <= 0) {
     const mission = buildEvaluatedMissionState(user, row, { now: options.now, eventDateKey: options.eventDateKey });
-    return { missionID, itemId, count: 0, costItems: [], mission };
+    return { missionID, itemId, count: 0, costItems: [], mission, errorCode: MISSION_ERRORS.INVALID_ITEM_COUNT };
   }
 
   const current = getMiscItem(user, itemId);
   const owned = Number(nonNegativeBigInt(current && current.countFree) + nonNegativeBigInt(current && current.countPaid));
-  const donated = Math.max(0, Math.min(requested, Number.isFinite(owned) ? owned : requested));
+  if (!Number.isFinite(owned) || owned < requested) {
+    const mission = buildEvaluatedMissionState(user, row, { now: options.now, eventDateKey: options.eventDateKey });
+    return { missionID, itemId, count: 0, costItems: [], mission, errorCode: MISSION_ERRORS.ITEM_INSUFFICIENT_COUNT };
+  }
+  const donated = requested;
   const regDate = options.now || dateTimeBinaryNow();
   const updatedItem = donated > 0 ? spendMiscItem(user, itemId, donated, { regDate }) : current;
   if (donated > 0) {
@@ -457,7 +545,114 @@ function donateMissionItem(user, request = {}, options = {}) {
     count: donated,
     costItems: updatedItem ? [updatedItem] : [],
     mission,
+    errorCode: 0,
   };
+}
+
+function ensureRandomMissionState(user, tabId, options = {}) {
+  ensureAccountProgress(user);
+  const numericTabId = Number(tabId || 0);
+  const tab = getMissionTabTemplet(numericTabId);
+  const rows = getMissionTempletsByTabId(numericTabId)
+    .filter((row) => row && Number(row.m_MissionPoolID || 0) > 0 && missionRowEnabledForUser(user, row))
+    .sort((left, right) => Number(left.m_MissionID) - Number(right.m_MissionID));
+  if (!tab || !rows.length || Number(tab.m_MissionPoolID || 0) <= 0) return { state: null, refreshed: false, rows: [] };
+  const resetKey = currentWeeklyCounterKey(options.now);
+  const previous = user.randomMissions[String(numericTabId)];
+  const validPrevious = previous && Array.isArray(previous.activeMissionIds) && previous.activeMissionIds.length > 0;
+  const refreshed = Boolean(validPrevious && previous.resetKey && previous.resetKey !== resetKey);
+  if (!validPrevious || refreshed) {
+    const count = Math.max(1, Math.min(rows.length, Number(tab.m_MissionDisplayCount || 1)));
+    const offset = stableMissionOffset(`${user.userUid || 0}:${numericTabId}:${resetKey}`, rows.length);
+    const activeMissionIds = Array.from({ length: count }, (_, index) => Number(rows[(offset + index) % rows.length].m_MissionID));
+    user.randomMissions[String(numericTabId)] = {
+      resetKey,
+      activeMissionIds,
+      remainRefreshCount: Math.max(0, Number(tab.m_MissionRefreshFreeCount || 0)),
+      rotationCursor: offset + count,
+    };
+  }
+  return { state: user.randomMissions[String(numericTabId)], refreshed, rows, tab };
+}
+
+function changeRandomMission(user, request = {}, options = {}) {
+  const tabId = Number(request.tabId || 0);
+  const missionId = Number(request.missionID || request.missionId || 0);
+  const ensured = ensureRandomMissionState(user, tabId, options);
+  if (!ensured.state) return { errorCode: MISSION_ERRORS.INVALID_TAB, changed: false, refreshed: false };
+  const missions = randomMissionDataForState(user, ensured, options);
+  if (ensured.refreshed) {
+    return { errorCode: MISSION_ERRORS.OUT_OF_DATE, changed: false, refreshed: true, tabId, missions };
+  }
+  const beforeRow = ensured.rows.find((row) => Number(row.m_MissionID) === missionId);
+  if (!beforeRow || !ensured.state.activeMissionIds.includes(missionId)) {
+    return { errorCode: MISSION_ERRORS.INVALID_ID, changed: false, refreshed: false, tabId };
+  }
+  const candidates = ensured.rows.filter((row) => !ensured.state.activeMissionIds.includes(Number(row.m_MissionID)));
+  if (!candidates.length) return { errorCode: MISSION_ERRORS.EMPTY_COMPLETE_REWARD, changed: false, refreshed: false, tabId };
+  let costItem = null;
+  if (Number(ensured.state.remainRefreshCount || 0) > 0) {
+    ensured.state.remainRefreshCount -= 1;
+  } else {
+    const itemId = Number(ensured.tab.m_MissionRefreshReqItemID || 0);
+    const count = Math.max(0, Number(ensured.tab.m_MissionRefreshReqItemValue || 0));
+    const current = getMiscItem(user, itemId);
+    const owned = Number(nonNegativeBigInt(current && current.countFree) + nonNegativeBigInt(current && current.countPaid));
+    if (!itemId || count <= 0 || !Number.isFinite(owned) || owned < count) {
+      return { errorCode: MISSION_ERRORS.ITEM_INSUFFICIENT_COUNT, changed: false, refreshed: false, tabId };
+    }
+    costItem = spendMiscItem(user, itemId, count, { regDate: options.now || dateTimeBinaryNow() });
+  }
+  const candidateIndex = Math.max(0, Number(ensured.state.rotationCursor || 0)) % candidates.length;
+  const afterRow = candidates[candidateIndex];
+  ensured.state.rotationCursor = Math.max(0, Number(ensured.state.rotationCursor || 0)) + 1;
+  const slot = ensured.state.activeMissionIds.indexOf(missionId);
+  ensured.state.activeMissionIds[slot] = Number(afterRow.m_MissionID);
+  delete user.completedMissions[missionStorageKeyForRow(beforeRow)];
+  delete user.completedMissions[missionStorageKeyForRow(afterRow)];
+  const mission = buildEvaluatedMissionState(user, afterRow, { now: options.now, eventDateKey: options.eventDateKey });
+  return {
+    errorCode: 0,
+    changed: true,
+    refreshed: false,
+    tabId,
+    beforeGroupId: missionGroupId(beforeRow),
+    mission,
+    remainRefreshCount: ensured.state.remainRefreshCount,
+    costItem,
+  };
+}
+
+function getRandomMissionTabIds() {
+  return Array.from(new Set(getMissionTemplets().filter((row) => Number(row && row.m_MissionPoolID || 0) > 0).map((row) => Number(row.m_MissionTabId))))
+    .filter((tabId) => Number.isInteger(tabId) && tabId > 0)
+    .sort((left, right) => left - right);
+}
+
+function getRandomMissionRefreshEntries(user, options = {}) {
+  return getRandomMissionTabIds().map((tabId) => {
+    const ensured = ensureRandomMissionState(user, tabId, options);
+    return [tabId, Number(ensured.state && ensured.state.remainRefreshCount || 0)];
+  });
+}
+
+function getRandomMissionDataForTab(user, tabId, options = {}) {
+  const ensured = ensureRandomMissionState(user, tabId, options);
+  return randomMissionDataForState(user, ensured, options);
+}
+
+function randomMissionDataForState(user, ensured, options = {}) {
+  if (!ensured || !ensured.state) return [];
+  const active = new Set(ensured.state.activeMissionIds.map(Number));
+  return ensured.rows
+    .filter((row) => active.has(Number(row.m_MissionID)))
+    .map((row) => buildEvaluatedMissionState(user, row, { now: options.now, eventDateKey: options.eventDateKey }));
+}
+
+function stableMissionOffset(text, length) {
+  let hash = 0;
+  for (const char of String(text || "")) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return length > 0 ? hash % length : 0;
 }
 
 function refreshMissionProgress(user, options = {}) {
@@ -500,10 +695,13 @@ function buildEvaluatedMissionState(user, row, options = {}) {
   ensureMissionPointPeriods(user, options.now);
   const state = ensureMissionState(user, row, options);
   const evaluatedProgress = evaluateMissionProgress(user, row, options);
-  const progress =
+  const rawProgress =
     isPeriodicMission(row) && state.rewardClaimed !== true
       ? evaluatedProgress
       : Math.max(Number(state.times || 0), evaluatedProgress);
+  const progress = isOnCompleteMission(row)
+    ? Math.max(0, rawProgress - Math.max(0, Number(state.repeatClaimedTimes || 0)))
+    : rawProgress;
   state.times = progress;
   state.targetTimes = missionTargetTimes(row);
   state.rewardReady = progress >= state.targetTimes;
@@ -519,6 +717,7 @@ function shouldPersistMissionState(state, existing = {}, row = null) {
   if (state.rewardClaimed === true || (state.isComplete === true && state.claimedAt)) return true;
   if (existing.rewardClaimed === true || (existing.isComplete === true && existing.claimedAt)) return true;
   if (existing.isComplete === true && !isPeriodicMission(row)) return true;
+  if (isOnCompleteMission(row) && Number(state.repeatClaimedTimes || existing.repeatClaimedTimes || 0) > 0) return true;
   if (state.source === "official-join-lobby" && Number(state.times || 0) > 0 && !isPeriodicMission(row)) return true;
   return false;
 }
@@ -871,10 +1070,12 @@ function grantMissionPoint(user, pointId, value, reward, options = {}) {
   ensureMissionPointPeriods(user, options.now);
   if (pointId === DAILY_MISSION_POINT_ID) {
     user.dailyMissionPoint = nonNegativeInt(user.dailyMissionPoint) + value;
+    setMiscItemBalance(user, DAILY_MISSION_POINT_ID, user.dailyMissionPoint);
     reward.dailyMissionPoint = Number(reward.dailyMissionPoint || 0) + value;
     trackMissionEvent(user, "HAVE_DAILY_POINT", value, { now: options.now });
   } else if (pointId === WEEKLY_MISSION_POINT_ID) {
     user.weeklyMissionPoint = nonNegativeInt(user.weeklyMissionPoint) + value;
+    setMiscItemBalance(user, WEEKLY_MISSION_POINT_ID, user.weeklyMissionPoint);
     reward.weeklyMissionPoint = Number(reward.weeklyMissionPoint || 0) + value;
     trackMissionEvent(user, "HAVE_WEEKLY_POINT", value, { now: options.now });
   } else {
@@ -956,8 +1157,17 @@ function buildMissionDataEntries(user, options = {}) {
     });
   }
   const sourceRows = filterTabId > 0 ? getMissionTempletsByTabId(filterTabId) : getMissionTemplets();
+  const randomMissionIdsByTab = new Map();
   for (const row of sourceRows) {
     if (!missionRowEnabledForUser(user, row)) continue;
+    if (Number(row.m_MissionPoolID || 0) > 0) {
+      const tabId = Number(row.m_MissionTabId || 0);
+      if (!randomMissionIdsByTab.has(tabId)) {
+        const ensured = ensureRandomMissionState(user, tabId, options);
+        randomMissionIdsByTab.set(tabId, new Set((ensured.state && ensured.state.activeMissionIds || []).map(Number)));
+      }
+      if (!randomMissionIdsByTab.get(tabId).has(Number(row.m_MissionID))) continue;
+    }
     if (filterTabId > 0 && Number(row.m_MissionTabId || 0) !== filterTabId) continue;
     if (filterTabId <= 0 && !shouldSerializeMissionTab(row)) continue;
     if (conditionFilter.size && !conditionFilter.has(normalizeMissionCondition(row.m_MissionCond))) continue;
@@ -1068,6 +1278,10 @@ function currentResetKey(row, now = Date.now()) {
 function isPeriodicMission(row) {
   const interval = String(row && row.m_ResetInterval || "NONE").trim().toUpperCase();
   return interval !== "" && interval !== "NONE" && interval !== "ON_COMPLETE";
+}
+
+function isOnCompleteMission(row) {
+  return String(row && row.m_ResetInterval || "").trim().toUpperCase() === "ON_COMPLETE";
 }
 
 function missionDateTicks(now = Date.now()) {
@@ -1187,8 +1401,35 @@ function syncMissionPointPeriod(user, config) {
       clearUnclaimedMissionStatesForResetKey(user, config.tabId, config.resetKey);
     }
     user[config.fieldName] = rebuildMissionPointTotalForResetKey(user, config.pointId, config.resetKey);
+    if (resetChanged) {
+      setMiscItemBalance(user, config.pointId, user[config.fieldName]);
+      user.missionPointRefreshNotifications[config.keyName] = config.resetKey;
+    }
   }
   keys[config.keyName] = config.resetKey;
+}
+
+function getMissionPointRefreshNotifications(user, now = Date.now()) {
+  if (!user || typeof user !== "object") return { daily: null, weekly: null };
+  ensureMissionPointPeriods(user, now);
+  const pending = user.missionPointRefreshNotifications;
+  return {
+    daily: pending.daily ? getMiscItem(user, DAILY_MISSION_POINT_ID) : null,
+    weekly: pending.weekly ? getMiscItem(user, WEEKLY_MISSION_POINT_ID) : null,
+  };
+}
+
+function clearMissionPointRefreshNotifications(user, scopes = []) {
+  if (!user || typeof user !== "object") return false;
+  ensureAccountProgress(user);
+  let changed = false;
+  for (const scope of Array.isArray(scopes) ? scopes : [scopes]) {
+    if (scope !== "daily" && scope !== "weekly") continue;
+    if (!user.missionPointRefreshNotifications[scope]) continue;
+    delete user.missionPointRefreshNotifications[scope];
+    changed = true;
+  }
+  return changed;
 }
 
 function clearMissionCounterScope(user, resetKey) {
@@ -1499,6 +1740,7 @@ function findClaimedMissionState(user, missionID) {
 
 function shouldSerializeMissionState(state, row) {
   if (!state) return false;
+  if (Number(row && row.m_MissionPoolID || 0) > 0) return true;
   if (state.rewardClaimed === true || state.rewardReady === true) return true;
   if (Number(state.times || 0) >= missionTargetTimes(row)) return true;
   if (Number(state.times || 0) > 0) return true;
@@ -1590,11 +1832,12 @@ function normalizeEmblems(values) {
   return result;
 }
 
-function emptyMissionResult(request = {}) {
+function emptyMissionResult(request = {}, errorCode = MISSION_ERRORS.INVALID_ID) {
   return {
     missionID: Number(request.missionID || 0) || 0,
     tabId: Number(request.tabId || 1) || 1,
     groupId: Number(request.groupId || request.missionID || 0) || 0,
+    errorCode,
     changed: false,
     exp: { userExp: 0 },
     reward: emptyReward(),
@@ -1630,15 +1873,24 @@ module.exports = {
   DEFAULT_MISSION_EXP,
   DEFAULT_STAGE_EXP,
   DEFAULT_ACHIEVEMENT_POINT,
+  MISSION_ERRORS,
   ensureAccountProgress,
   grantUserExp,
   grantStageClearExp,
   completeMission,
+  completeRepeatableMission,
   completeAllMissionsForTab,
   updateMissionProgress,
   donateMissionItem,
+  changeRandomMission,
+  ensureRandomMissionState,
+  getRandomMissionTabIds,
+  getRandomMissionRefreshEntries,
+  getRandomMissionDataForTab,
   refreshMissionProgress,
   recordMissionLogin,
+  getMissionPointRefreshNotifications,
+  clearMissionPointRefreshNotifications,
   trackMissionEvent,
   buildMissionDataEntries,
   getAchievePoint,
