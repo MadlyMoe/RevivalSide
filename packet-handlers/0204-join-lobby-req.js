@@ -29,7 +29,7 @@ module.exports = {
       }
       const serverNow = ctx.getServerNowDate ? ctx.getServerNowDate() : new Date();
       user.lastJoinAt = serverNow.toISOString();
-      const rewardPosts = ensureLoginRewardPosts(user);
+      const rewardPosts = ensureLoginRewardPosts(user, { now: serverNow });
       const attendancePosts = ensureAttendanceRewardPosts(user, { now: serverNow, clockNow: serverNow });
       if (rewardPosts > 0 || attendancePosts > 0) {
         console.log(

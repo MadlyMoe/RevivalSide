@@ -1,0 +1,17 @@
+{
+    "schemaVersion":  1,
+    "packageName":  "com.studiobside.CounterSide",
+    "versionName":  "9.21.3352381",
+    "versionCode":  3352381,
+    "patchVersion":  "ANDROID_335570",
+    "localHttpPort":  8088,
+    "metadataEntry":  "assets/bin/Data/Managed/Metadata/global-metadata.dat",
+    "originalServerInfoBaseUrl":  "https://ctsglobal-cdndown.sbside.com/server_config/live/",
+    "patchedServerInfoBaseUrl":  "http://127.0.0.1:8088/revivalsideapk/server_config/live/",
+    "assetCdnBaseUrl":  "http://127.0.0.1:8088/patchfiles/",
+    "payloadManifestUrl":  "http://127.0.0.1:8088/android-client/payload-manifest.json",
+    "payloadManifestSha256":  "273dad2b5b3de0391f7aac0d1a931e943d5c5637df0d71388d64e217b42006d4",
+    "payloadId":  "counterside-android-android_335570",
+    "payloadFileCount":  23272,
+    "payloadTotalBytes":  12055772291
+}

@@ -40,3 +40,12 @@ target_link_libraries(
     dl
     ${log-lib}
 )
+
+foreach(target revivalside_node_bridge revivalside_dotnet_host)
+    target_link_options(
+        ${target}
+        PRIVATE
+        "-Wl,-z,max-page-size=16384"
+        "-Wl,-z,common-page-size=16384"
+    )
+endforeach()
