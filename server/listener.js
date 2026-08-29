@@ -640,7 +640,7 @@ const userManager = USER_MANAGER_ENABLED
       basePath: USER_MANAGER_BASE_PATH,
       allowRemote: USER_MANAGER_ALLOW_REMOTE,
       userDb,
-      userDbPath: USER_DB_PATH,
+      userDbPath: USER_DB_SQLITE_PATH,
       activeUserPath: ACTIVE_USER_PATH,
       saveUserDb,
       ensureUserDefaults,
