@@ -1385,7 +1385,7 @@ async function importCrossSaveSource(settings, captureDir, source, copyTo) {
   const managed = normalizeManagedDir(settings.CounterSideSourceManagedDir || settings.CounterSideManagedDir);
   if (!isManagedDir(managed)) throw new Error('Select or detect the official CounterSide client before importing the captured profile.');
   const args = [
-    script, '--capture-dir', captureDir, '--user-db', path.join(root, 'server-data', 'users.json'),
+    script, '--capture-dir', captureDir, '--user-db', fs.existsSync(path.join(root, 'server-data', 'users.sqlite')) ? path.join(root, 'server-data', 'users.sqlite') : path.join(root, 'server-data', 'users.json'),
     '--managed-dir', managed,
     '--source-id', source.id,
   ];

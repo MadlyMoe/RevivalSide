@@ -17,6 +17,11 @@ const {
   writeActiveUserSelection,
 } = require("../modules/user-db-selection");
 const {
+  loadUserDb: loadSqliteUserDb,
+  saveUserDb: saveSqliteUserDb,
+  DEFAULT_SQLITE_PATH
+} = require("../modules/user-storage");
+const {
   loadAndroidClientUpdateState,
   loadFrozenClientPatchState,
   resolveAndroidClientUpdateResponse,
@@ -437,6 +442,7 @@ const MIRROR_PUBLIC_HOST = process.env.CS_HTTP_MIRROR_HOST || "127.0.0.1";
 const MIRROR_PUBLIC_BASE_URL =
   process.env.CS_HTTP_MIRROR_BASE_URL || `http://${MIRROR_PUBLIC_HOST}:${HTTP_MIRROR_PORT}`;
 const USER_DB_PATH = process.env.CS_USER_DB_PATH || path.join(ROOT_DIR, "server-data", "users.json");
+const USER_DB_SQLITE_PATH = process.env.CS_USER_DB_SQLITE_PATH || DEFAULT_SQLITE_PATH;
 const ACTIVE_USER_PATH = resolveActiveUserPath(USER_DB_PATH, process.env.CS_ACTIVE_USER_PATH || "");
 const SERVER_TIME_STATE_PATH = process.env.CS_SERVER_TIME_STATE_PATH || path.join(ROOT_DIR, "server-data", "server-time.json");
 const USER_MANAGER_ENABLED = process.env.CS_USER_MANAGER !== "0";
@@ -555,7 +561,7 @@ const capturedRespawnUnitPools = buildCombatCapturedRespawnUnitPools(capturedGam
 const capturedCombatReplayEntries = buildCapturedCombatReplayEntries(capturedGameFlow);
 const capturedFlowMirror = loadCapturedFlowMirror(CAPTURED_FLOW_DIR);
 const gameplayUnitStats = loadGameplayUnitStats(UNIT_TABLE_PATH);
-const userDb = loadUserDb(USER_DB_PATH);
+const userDb = normalizeUserDb(loadSqliteUserDb({ jsonPath: USER_DB_PATH, sqlitePath: USER_DB_SQLITE_PATH }));
 applyActiveUserSelection(userDb, ACTIVE_USER_PATH);
 const repairedDeckReferenceProfiles = repairUserDbDeckReferences(userDb);
 if (repairedDeckReferenceProfiles > 0 && USE_LOCAL_USER_DB) {
@@ -710,7 +716,7 @@ function logRuntimeConfig() {
   if (runtimeConfigPrinted && !LOG_CONFIG_EACH_CONNECTION) return;
   runtimeConfigPrinted = true;
 
-  console.log(`[cfg] localUserDb=${USE_LOCAL_USER_DB ? "on" : "off"} db=${USER_DB_PATH}`);
+  console.log(`[cfg] localUserDb=${USE_LOCAL_USER_DB ? "on" : "off"} db=${USER_DB_SQLITE_PATH}`);
   console.log(
     `[cfg] userManager=${userManager ? "on" : "off"} path=${
       userManager ? userManager.basePath : "(disabled)"
@@ -9220,6 +9226,7 @@ function shouldUseLocalJoinLobbyAck(user) {
 
 function hasLocalAccountState(user) {
   if (!user || typeof user !== "object") return false;
+  if (user.userUid || user.tutorial) return true;
   const inventory = user.inventory && typeof user.inventory === "object" ? user.inventory : {};
   const army = user.army && typeof user.army === "object" ? user.army : {};
   const completedMissions =
@@ -10069,19 +10076,7 @@ function dateTimeBinaryForDate(date) {
   return dateTimeTicksForDate(date) | 0x4000000000000000n;
 }
 
-function loadUserDb(filePath) {
-  try {
-    if (!fs.existsSync(filePath)) {
-      const starterPath = path.join(path.dirname(filePath), "starter-users.json");
-      if (!fs.existsSync(starterPath)) return normalizeUserDb({});
-      fs.copyFileSync(starterPath, filePath);
-    }
-    return normalizeUserDb(JSON.parse(fs.readFileSync(filePath, "utf8")));
-  } catch (err) {
-    console.log(`[user-db] failed to load ${filePath}: ${err.message}; starting empty`);
-    return normalizeUserDb({});
-  }
-}
+
 
 function repairUserDbDeckReferences(db) {
   const users = db && db.users && typeof db.users === "object" ? db.users : {};
@@ -10230,11 +10225,9 @@ function normalizeUserDb(db) {
   return db;
 }
 
-function saveUserDb() {
-  fs.mkdirSync(path.dirname(USER_DB_PATH), { recursive: true });
-  const tmpPath = `${USER_DB_PATH}.tmp`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify(userDb, jsonUserDbReplacer, 2)}\n`, "utf8");
-  fs.renameSync(tmpPath, USER_DB_PATH);
+function saveUserDb(targetUserUid = null) {
+  if (!USE_LOCAL_USER_DB) return;
+  saveSqliteUserDb(userDb, targetUserUid, { sqlitePath: USER_DB_SQLITE_PATH });
   writeActiveUserSelection(ACTIVE_USER_PATH, userDb.activeUserUid);
 }
 

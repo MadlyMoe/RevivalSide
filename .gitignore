@@ -76,6 +76,7 @@ exports/
 logs/
 mods/
 launcher-settings.json
+RevivalSideLauncher.exe
 frozen-client/
 prebuilt/revivalside-*/
 prebuilt/android-combat-host-*/

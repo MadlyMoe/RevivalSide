@@ -12,7 +12,7 @@ const {
 } = require("../modules/user-db-selection");
 const { rebuildUserDbIndexes } = require("../server/userManager");
 
-const { loadUserDb } = require("../modules/user-storage");
+const { loadUserDb, saveUserDb } = require("../modules/user-storage");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 
@@ -113,7 +113,11 @@ const importOptions = {
 };
 const result = importOptions.sourceId ? importer.importSource(importOptions) : importer.importLatest(importOptions);
 rebuildUserDbIndexes(userDb);
-fs.writeFileSync(userDbPath, `${JSON.stringify(userDb, null, 2)}\n`);
+if (userDbPath.endsWith(".sqlite")) {
+  saveUserDb(userDb, null, { sqlitePath: userDbPath });
+} else {
+  fs.writeFileSync(userDbPath, `${JSON.stringify(userDb, null, 2)}\n`);
+}
 writeActiveUserSelection(activeUserPath, userDb.activeUserUid);
 
 let copiedUsersJsonPath = "";

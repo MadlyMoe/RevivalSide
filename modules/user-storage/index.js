@@ -23,6 +23,9 @@ function getSqliteDb(customPath = null) {
 
 function initTables(db) {
   db.exec(`
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = NORMAL;
+
     CREATE TABLE IF NOT EXISTS users (
       user_uid TEXT PRIMARY KEY,
       friend_code TEXT,
