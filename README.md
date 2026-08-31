@@ -1,10 +1,10 @@
-# RevivalSide
+# Revival:Side
 
-RevivalSide is a local CounterSide revival research server. It includes the Node.js TCP listener, packet handlers, capture tooling, a C# combat-host bridge, and project-built combat-host binaries.
+Revival:Side is a local _Counter:Side_ revival research server. It includes the Node.js TCP listener, packet handlers, capture tooling, a C# combat-host bridge, and project-built combat-host binaries.
 
-This repository intentionally does not track client assets, raw packet captures, decompiled `Assembly-CSharp` source dumps, decrypted Lua bytecode, account databases, or raw game DLLs. Runtime gameplay tables can be loaded from the encrypted CounterSide install by deriving the script assets from the selected `Data\Managed` directory.
+This repository intentionally does not track client assets, raw packet captures, decompiled `Assembly-CSharp` source dumps, decrypted Lua bytecode, account databases, or raw game DLLs. Runtime gameplay tables can be loaded from the encrypted Counter:Side install by deriving the script assets from the selected `Data\Managed` directory.
 
-## What Is Tracked
+## What Is Tracked?
 
 - `cs-listener.js`: TCP listener, packet framing, HTTP mirror, login/session glue.
 - `packet-handlers/`: request handlers for login, lobby, battle, cutscene, and utility packets.
@@ -20,7 +20,7 @@ This repository intentionally does not track client assets, raw packet captures,
 
 ## Quick Start
 
-Start with [docs/setup.md](docs/setup.md). It is written for first-time users and walks through the wiki, freezing a local CounterSide client, local routing, and the listener without assuming software development experience.
+Start with [docs/setup.md](docs/setup.md). It is written for first-time users and walks through the wiki, freezing a local Counter:Side client, local routing, and the listener without assuming software development experience.
 
 The very short setup is:
 
@@ -31,6 +31,8 @@ if (!(Test-Path .env)) { Copy-Item .env.example .env }
 npm install
 npm run build:combat-host
 ```
+[!WARNING]
+> You need [Git](https://git-scm.com/) installed on your device to clone the Repository.
 
 Fresh local accounts and runtime features can use `.luac` tables cached from the encrypted assets next to `Data\Managed`, without requiring raw/decompiled table dumps or `gameplay-jsons`.
 
