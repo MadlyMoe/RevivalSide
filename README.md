@@ -43,7 +43,7 @@ npm run wiki:build
 npm run wiki:serve
 ```
 
-Mod:Side is a separate React service, like the wiki. Build it once after frontend changes, then start it without the game listener:
+**Mod:Side** is a separate React service, like the wiki. Build it once after front-end changes, then start it without the game listener:
 
 ```powershell
 npm run build:modside
@@ -52,7 +52,7 @@ npm run modside
 
 Open `http://127.0.0.1:5175/mod-side`.
 
-The standalone Combat Simulator is separate from the wiki. It discovers the installed CounterSide `Data\Managed` directory, runs stages through the real `NKCGameServerLocal`, records every managed frame, and renders extracted stage and unit Spine assets in WebGL:
+The standalone Combat Simulator is separate from the wiki. It discovers the installed Counter:Side `Data\Managed` directory, runs stages through the real `NKCGameServerLocal`, records every managed frame, and renders extracted stage and unit Spine assets in WebGL:
 
 ```powershell
 npm run combat-simulator
@@ -68,10 +68,18 @@ npm run listen
 
 The desktop launcher freezes a separately installed official client selected in Game Settings. It patches and audits the isolated copy so its official HTTP endpoints route directly to the local listener. It removes the copy's Steam app-ID trigger, quarantines native Steam API DLLs, strips Steam launch variables, and refuses to launch until the managed client has zero remaining Steamworks callsites. The local mirror advertises that copy's installed patch and content versions, preferring downloaded `Assetbundles` over base `StreamingAssets`, and serves its installed `PatchInfo.json`. This prevents large patch downloads without overriding the client's normal content-version validation. RevivalSide does not modify the Windows hosts file. Running `npm run listen` by itself starts only the server; use the launcher to freeze, prepare, and launch the client.
 
-The default listener uses TCP `127.0.0.1:22000` and HTTP mirror `http://127.0.0.1:8088`.
-The local user profile manager is served from the same process at `http://127.0.0.1:8088/user-manager`. Profile selection and switching use lightweight summaries plus `server-data/active-user.json`; full profile or database JSON is loaded only when you click the corresponding **Load JSON** button.
-Mod:Side is available at `http://127.0.0.1:5175/mod-side` and runs independently of the listener. Its React dashboard links to Asset:Side, Story:Side, Unit:Side, and Combat:Side while reusing the existing protected game-data and mod APIs. Asset:Side groups Game systems, Game objects, Gameplay tables, and Extracted assets for human-readable inspection while keeping base files protected. Game objects lists every unit, ship, operator, and gear with its related IDs, exact source fields, plain-English uses, unit art assignments, and gear `gear_stat_ids` min/max ranges. Its asset editor writes PNG, audio, Spine, and other supported replacements into a mod project, preserves the original asset name and AssetBundle, validates PNG dimensions, builds Windows bundles through Unity 2022.3.62f2 when available, and imports or exports editable `.revivalmod.zip` projects. The Mod creator writes portable projects under `mods/` with `mod.json`, `mod.lock.json`, per-record patches, assets, validation reports, and ZIP import/export. The Mod loader installs ZIP/`.revivalmod` projects directly and atomically activates or deactivates them; failed builds keep the previous profile and runtime. Restart the listener and frozen client after changing the runtime; the launcher patches the client Lua loader and passes the active runtime directory automatically.
-Unit Maker accepts separate Management/gacha, SD/chibi, and live-battle Spine sets. Export each as one binary Spine 3.7.x `.skel`, one `.atlas`, and every PNG page named by the atlas; the selected base unit supplies the compatible CounterSide prefab and therefore the animation, bone, slot, and event contract. Create the unit with the files selected, or use **Attach / retry selected Spine sets** afterward. The generated mod ZIP contains both the editable source set and the ready-to-load client bundles; no Unity installation is required for this Spine path.
+- The default listener uses TCP `127.0.0.1:22000` and HTTP mirror `http://127.0.0.1:8088`.
+- The local user profile manager is served from the same process at `http://127.0.0.1:8088/user-manager`. Profile selection and switching use lightweight summaries plus `server-data/active-user.json`; full profile or database JSON is loaded only when you click the corresponding **Load JSON** button.
+
+**Mod:Side** is available at `http://127.0.0.1:5175/mod-side` and runs independently of the listener. Its React dashboard links to _**Asset:Side, Story:Side, Unit:Side, and Combat:Side**_ while reusing the existing protected game-data and mod APIs. Asset:Side groups Game systems, Game objects, Gameplay tables, and Extracted assets for human-readable inspection while keeping base files protected.
+
+Game objects list every unit, ship, operator, and gear with its related IDs, exact source fields, plain-English uses, unit art assignments, and gear `gear_stat_ids` min/max ranges. Its asset editor writes PNG, audio, Spine, and other supported replacements into a mod project, preserves the original asset name and AssetBundle, validates PNG dimensions, builds Windows bundles through Unity 2022.3.62f2 when available, and imports or exports editable `.revivalmod.zip` projects.
+
+The Mod creator writes portable projects under `mods/` with `mod.json`, `mod.lock.json`, per-record patches, assets, validation reports, and ZIP import/export. The Mod loader installs ZIP/`.revivalmod` projects directly and atomically activates or deactivates them; failed builds keep the previous profile and runtime. Restart the listener and frozen client after changing the runtime; the launcher patches the client Lua loader and passes the active runtime directory automatically.
+
+Unit Maker accepts separate Management/gacha, SD/chibi, and live-battle Spine sets. Export each as one binary Spine 3.7.x `.skel`, one `.atlas`, and every PNG page named by the atlas; the selected base unit supplies the compatible CounterSide prefab and therefore the animation, bone, slot, and event contract. Create the unit with the files selected, or use **Attach / retry selected Spine sets** afterward.
+
+The generated mod ZIP contains both the editable source set and the ready-to-load client bundles; no Unity installation is required for this Spine path.
 Spine previews use the production build in `SpineViewer/dist`; set `CS_SPINE_VIEWER_DIST` when the separate [MadlyMoe/SpineViewer](https://github.com/MadlyMoe/SpineViewer) checkout lives elsewhere.
 
 ### Launcher development
@@ -86,4 +94,15 @@ npm run check:launcher
 npm run build:launcher
 ```
 
-People using the packaged v0.3.5 installer do not need Node.js, pnpm, or Rust. Those tools are only required to build the launcher from source.
+People using the packaged v0.3.5 installer do not need Node.js, pnpm, or Rust. Those tools are only required to build the launcher from the source.
+
+> [!WARNING]
+> - This software/private server is open-source and free.
+> 
+> - **Purpose:** We wish to preserve Counter:Side for as long as we can by building this private server for that purpose.
+> - **Commercialization:** If you encounter vendors using this software/private-server for services and charging a fee, please visit our Discord server and report it to us; any resulting problems or consequences are not associated with this software.
+
+## 💬 Community
+
+- **Discord**: [https://discord.gg/revivalside](https://discord.gg/revivialside)
+
