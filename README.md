@@ -31,7 +31,7 @@ if (!(Test-Path .env)) { Copy-Item .env.example .env }
 npm install
 npm run build:combat-host
 ```
-[!WARNING]
+> [!WARNING]
 > You need [Git](https://git-scm.com/) installed on your device to clone the Repository.
 
 Fresh local accounts and runtime features can use `.luac` tables cached from the encrypted assets next to `Data\Managed`, without requiring raw/decompiled table dumps or `gameplay-jsons`.
