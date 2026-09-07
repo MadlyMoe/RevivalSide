@@ -3812,4 +3812,5 @@ module.exports = {
   unlockCity,
   startWorldMapMission,
   completeWorldMapMission,
+  loadWorldMapTables: getTables,
 };

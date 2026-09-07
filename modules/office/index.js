@@ -1203,4 +1203,5 @@ module.exports = {
   buildOfficeChatMessageData,
   isOfficeInteriorItem,
   grantOfficeInterior,
+  loadOfficeCatalog: getOfficeCatalog,
 };

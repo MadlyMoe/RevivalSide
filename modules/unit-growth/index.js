@@ -197,15 +197,19 @@ function handler(packetId, name, buildResponse) {
         ctx.buildEncryptedPacket(packet.sequence, response.packetId, response.payload)
       );
       sendUnitMissionCollectionUpdate(ctx, socket, user, packetId, request);
-      completeMissionTracking(ctx, socket, user, missionTracking, { label: "unit-growth-mission-update" });
-      persistUserDb(ctx);
+      if (missionTracking && missionTracking.conditions && missionTracking.conditions.size > 0) {
+        setImmediate(() => {
+          completeMissionTracking(ctx, socket, user, missionTracking, { label: "unit-growth-mission-update" });
+        });
+      }
+      persistUserDb(ctx, user);
       return true;
     },
   };
 }
 
 function sendUnitMissionCollectionUpdate(ctx, socket, user, packetId, request = {}) {
-  if (packetId !== PACKETS.NEGOTIATE_REQ && packetId !== PACKETS.LIMIT_BREAK_UNIT_REQ) return;
+  if (packetId !== PACKETS.NEGOTIATE_REQ && packetId !== PACKETS.ENHANCE_UNIT_REQ) return;
   const unit = getArmyUnitByUid(user, request.unitUid);
   if (!unit || !collection || typeof collection.sendUnitMissionUpdatedNot !== "function") return;
   collection.sendUnitMissionUpdatedNot(ctx, socket, user, { unitIds: [unit.unitId] });
@@ -1025,8 +1029,14 @@ function getSessionUser(ctx, socket) {
   return ctx && typeof ctx.createEphemeralUser === "function" ? ctx.createEphemeralUser() : {};
 }
 
-function persistUserDb(ctx) {
-  if (ctx && (!ctx.config || ctx.config.USE_LOCAL_USER_DB) && typeof ctx.saveUserDb === "function") ctx.saveUserDb();
+function persistUserDb(ctx, user) {
+  if (!ctx || (ctx.config && ctx.config.USE_LOCAL_USER_DB === false)) return;
+  const userUid = user && (user.userUid || user.m_UserUID);
+  if (typeof ctx.scheduleDebouncedUserSave === "function") {
+    ctx.scheduleDebouncedUserSave(userUid);
+  } else if (typeof ctx.saveUserDb === "function") {
+    ctx.saveUserDb(userUid);
+  }
 }
 
 function formatRequest(request) {

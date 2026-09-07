@@ -473,4 +473,8 @@ module.exports = {
   buildPvpChargePointRefreshAckPayload,
   getChargeItemLastUpdateDate,
   getTimedStaminaRoutes,
+  loadStaminaTables: () => {
+    getPlayerExpRows();
+    getPvpConst();
+  },
 };

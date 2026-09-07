@@ -43,7 +43,14 @@ function createDeckPipelineHandlers() {
       ctx.sendResponse(socket, packet.sequence, response.packetId, () =>
         ctx.buildEncryptedPacket(packet.sequence, response.packetId, response.payload)
       );
-      if (ctx.config.USE_LOCAL_USER_DB) ctx.saveUserDb();
+      if (ctx.config.USE_LOCAL_USER_DB) {
+        const userUid = user && (user.userUid || user.m_UserUID);
+        if (typeof ctx.scheduleDebouncedUserSave === "function") {
+          ctx.scheduleDebouncedUserSave(userUid);
+        } else if (typeof ctx.saveUserDb === "function") {
+          ctx.saveUserDb(userUid);
+        }
+      }
       return true;
     },
   }));

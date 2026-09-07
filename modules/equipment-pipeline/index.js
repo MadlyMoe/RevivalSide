@@ -98,7 +98,14 @@ function createEquipmentPipelineHandlers() {
         ctx.skipCapturedGameThroughPacketId(socket, response.packetId);
       }
       completeMissionTracking(ctx, socket, user, missionTracking, { label: "equipment-mission-update" });
-      if (ctx.config.USE_LOCAL_USER_DB) ctx.saveUserDb();
+      if (ctx.config.USE_LOCAL_USER_DB) {
+        const userUid = user && (user.userUid || user.m_UserUID);
+        if (typeof ctx.scheduleDebouncedUserSave === "function") {
+          ctx.scheduleDebouncedUserSave(userUid);
+        } else if (typeof ctx.saveUserDb === "function") {
+          ctx.saveUserDb(userUid);
+        }
+      }
       return true;
     },
   }));
