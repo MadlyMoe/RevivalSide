@@ -65,11 +65,13 @@ gameplay-tables/**
 gameplay-tables*.zip
 gameplay-tables-decompiled/
 gameplay-tables-json/
+gameplay-jsons/*.sqlite*
 
 # Temporary probes and local scratch projects
 tmp*/
 tmp_app_probe.cs
 .codex-*
+scratch/
 
 # Local runtime and release outputs
 exports/
