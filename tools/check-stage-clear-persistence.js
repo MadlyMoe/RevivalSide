@@ -17,8 +17,8 @@ assert(functionSource("buildDynamicGameEndNotPayload", "buildBattleGameRecordSta
 assert(functionSource("getOrGrantStageClearLoot", "maybeGrantBattleStageClearLoot").includes("{ ...options, replay }"));
 assert(functionSource("maybeGrantBattleStageClearLoot", "grantStageClearLoot").includes("{ save: false }"));
 assert(functionSource("grantStageClearLoot", "grantStageFirstClearReward").includes("options.save !== false"));
-assert.equal((functionSource("recordMainStoryDungeonClear", "recordGenericDungeonClear").match(/saveUserDb\(\)/g) || []).length, 1);
-assert.equal((functionSource("recordGenericDungeonClear", "recordGenericDungeonClearForUser").match(/saveUserDb\(\)/g) || []).length, 1);
-assert.equal((functionSource("buildDungeonSkipAckPayload", "buildDungeonRewardSet").match(/saveUserDb\(\)/g) || []).length, 1);
+assert.equal((functionSource("recordMainStoryDungeonClear", "recordGenericDungeonClear").match(/saveUserDb\(/g) || []).length, 1);
+assert.equal((functionSource("recordGenericDungeonClear", "recordGenericDungeonClearForUser").match(/saveUserDb\(/g) || []).length, 1);
+assert.equal((functionSource("buildDungeonSkipAckPayload", "buildDungeonRewardSet").match(/saveUserDb\(/g) || []).length, 1);
 
 console.log("stage clear persistence verified: one database save per clear flow");

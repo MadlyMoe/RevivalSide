@@ -323,6 +323,13 @@ const EPISODE1_STAGE_CHAIN = Object.freeze(
 );
 const MAIN_STORY_STAGE_BY_STAGE_ID = new Map(MAIN_STORY_STAGE_CHAIN.map((stage) => [stage.stageId, stage]));
 const MAIN_STORY_STAGE_BY_DUNGEON_ID = new Map(MAIN_STORY_STAGE_CHAIN.map((stage) => [stage.dungeonID, stage]));
+const MAIN_STORY_STAGE_BY_PHASE_ID = new Map();
+for (const stage of MAIN_STORY_STAGE_CHAIN) {
+  const phaseId = Number(stage && stage.phaseId || 0);
+  if (phaseId > 0 && !MAIN_STORY_STAGE_BY_PHASE_ID.has(phaseId)) {
+    MAIN_STORY_STAGE_BY_PHASE_ID.set(phaseId, stage);
+  }
+}
 const EPISODE1_STAGE_BY_STAGE_ID = new Map(EPISODE1_STAGE_CHAIN.map((stage) => [stage.stageId, stage]));
 const EPISODE1_STAGE_BY_DUNGEON_ID = new Map(EPISODE1_STAGE_CHAIN.map((stage) => [stage.dungeonID, stage]));
 
@@ -509,7 +516,7 @@ function isStageClearedForStory(user, stageId) {
 function isPhaseClearedForStory(user, phaseId) {
   const numericPhaseId = Number(phaseId || 0);
   if (!numericPhaseId) return false;
-  const phaseStage = MAIN_STORY_STAGE_CHAIN.find((stage) => Number(stage && stage.phaseId || 0) === numericPhaseId);
+  const phaseStage = MAIN_STORY_STAGE_BY_PHASE_ID.get(numericPhaseId);
   if (!phaseStage) return isStageClearedForStory(user, numericPhaseId);
   return isStageClearedForStory(user, phaseStage.stageId) || isDungeonClearedForStory(user, phaseStage.dungeonID);
 }

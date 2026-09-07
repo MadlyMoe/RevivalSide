@@ -8,6 +8,7 @@ const vm = require("vm");
 
 const { createUserManager } = require("../server/userManager");
 const { readActiveUserUid } = require("../modules/user-db-selection");
+const { loadUserDb, closeSqliteDb } = require("../modules/user-storage");
 
 async function main() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "revivalside-user-manager-"));
@@ -111,6 +112,7 @@ async function main() {
     console.log("user manager lightweight checks passed");
   } finally {
     await close(server);
+    closeSqliteDb();
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 }
@@ -119,9 +121,10 @@ function checkStarterUserSeed(tempDir) {
   const seedDir = path.join(tempDir, "starter-seed");
   const starterPath = path.join(seedDir, "starter-users.json");
   const userDbPath = path.join(seedDir, "users.json");
+  const sqliteDbPath = path.join(seedDir, "users.sqlite");
   const dumpPath = path.join(seedDir, "join.bin");
   fs.mkdirSync(seedDir);
-  fs.writeFileSync(starterPath, JSON.stringify({
+  fs.writeFileSync(userDbPath, JSON.stringify({
     schemaVersion: 1,
     nextUserUid: "1000000002",
     nextFriendCode: "10000002",
@@ -139,6 +142,7 @@ function checkStarterUserSeed(tempDir) {
     env: {
       ...process.env,
       CS_USER_DB_PATH: userDbPath,
+      CS_USER_DB_SQLITE_PATH: sqliteDbPath,
       CS_ACTIVE_USER_PATH: path.join(seedDir, "active-user.json"),
       CS_DUMP_JOIN_LOBBY_ACK_PAYLOAD: dumpPath,
     },
@@ -147,7 +151,7 @@ function checkStarterUserSeed(tempDir) {
     windowsHide: true,
   });
   assert.strictEqual(result.status, 0, result.stderr || result.stdout || result.error);
-  const seededDb = JSON.parse(fs.readFileSync(userDbPath, "utf8"));
+  const seededDb = loadUserDb({ jsonPath: userDbPath, sqlitePath: sqliteDbPath });
   assert.strictEqual(seededDb.users[seededDb.activeUserUid].nickname, "Admin_3114263075");
 }
 

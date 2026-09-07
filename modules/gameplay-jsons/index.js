@@ -25,6 +25,158 @@ const gameplayTableCache = new Map();
 let gameplayTableHost = null;
 let gameplayTableHostKey = "";
 
+const { DatabaseSync } = require("node:sqlite");
+const DEFAULT_GAMEPLAY_SQLITE_PATH = path.join(DEFAULT_GAMEPLAY_TABLE_ROOT, "gameplay_tables.sqlite");
+let gameplaySqliteDb = null;
+let gameplaySqliteStmt = null;
+let gameplaySqliteRecordStmt = null;
+let gameplaySqliteSecondaryStmt = null;
+let gameplaySqliteStringKeyStmt = null;
+
+const gameplaySourceStats = {
+  sqliteHits: 0,
+  sqliteRecords: 0,
+  modHits: 0,
+  diskFallbacks: 0,
+  fallbackTables: new Set(),
+};
+
+function getGameplaySqliteDb(sqlitePath = DEFAULT_GAMEPLAY_SQLITE_PATH) {
+  if (gameplaySqliteDb) return gameplaySqliteDb;
+  if (!fs.existsSync(sqlitePath)) return null;
+  try {
+    const db = new DatabaseSync(sqlitePath, { readOnly: true });
+    db.exec("PRAGMA mmap_size = 536870912;");
+    db.exec("PRAGMA query_only = 1;");
+    gameplaySqliteDb = db;
+    gameplaySqliteStmt = db.prepare(`
+      SELECT data FROM gameplay_files
+      WHERE directory = ? AND file_name = ?
+      LIMIT 1
+    `);
+    try {
+      gameplaySqliteRecordStmt = db.prepare(`
+        SELECT data FROM gameplay_records
+        WHERE table_name = ? AND record_id = ?
+        LIMIT 1
+      `);
+      gameplaySqliteSecondaryStmt = db.prepare(`
+        SELECT data FROM gameplay_records
+        WHERE table_name = ? AND secondary_id = ?
+      `);
+      gameplaySqliteStringKeyStmt = db.prepare(`
+        SELECT data FROM gameplay_records
+        WHERE table_name = ? AND string_key = ?
+      `);
+    } catch (_) {}
+    console.log(`[gameplay-sqlite] Connected to database: ${sqlitePath} (mmap_size=512MB, indexed=OK)`);
+    return gameplaySqliteDb;
+  } catch (err) {
+    console.error("[gameplay-sqlite] Unable to open gameplay sqlite database:", err.message);
+    return null;
+  }
+}
+
+function queryGameplayRecord(tableName, recordId, options = {}) {
+  const normalizedTable = String(tableName || "").replace(/\.json$/i, "").toUpperCase();
+  const env = options.env || process.env;
+
+  // 1. Mod Layer check (Preserves 100% modding support)
+  const modRoots = parsePathList(env.CS_MOD_TABLES_DIR);
+  if (modRoots.length > 0) {
+    for (const root of expandTableRoots(modRoots, path.resolve(options.rootDir || ROOT_DIR))) {
+      const filePath = path.join(root, options.directory || "ab_script", "luac", `${normalizedTable}.json`);
+      if (fs.existsSync(filePath)) {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+          const records = Array.isArray(parsed) ? parsed : (parsed && parsed.records);
+          if (Array.isArray(records)) {
+            const found = records.find((r) => {
+              const strId = String(r.m_MissionID ?? r.MissionID ?? r.m_StageID ?? r.m_UnitID ?? r.m_ItemMiscID ?? r.m_ID ?? "");
+              return strId === String(recordId);
+            });
+            if (found) return found;
+          }
+        } catch (_) {}
+      }
+    }
+  }
+
+  // 2. Fast lookup via SQLite B-Tree index (< 0.1ms)
+  if (!options.disableSqlite && env.CS_DISABLE_GAMEPLAY_SQLITE !== "1") {
+    const db = getGameplaySqliteDb(options.gameplaySqlitePath);
+    if (db && gameplaySqliteRecordStmt) {
+      try {
+        const row = gameplaySqliteRecordStmt.get(normalizedTable, String(recordId));
+        if (row && row.data) return JSON.parse(row.data);
+      } catch (_) {}
+    }
+  }
+
+  // 3. Fallback: Retrieve via readGameplayTableRecords
+  const allRecords = readGameplayTableRecords(options.directory || "ab_script", `${normalizedTable}.json`, options);
+  return allRecords.find((r) => {
+    const strId = String(r.m_MissionID ?? r.MissionID ?? r.m_StageID ?? r.m_UnitID ?? r.m_ItemMiscID ?? r.m_ID ?? "");
+    return strId === String(recordId);
+  }) || null;
+}
+
+function queryGameplayRecords(tableName, query = {}, options = {}) {
+  const normalizedTable = String(tableName || "").replace(/\.json$/i, "").toUpperCase();
+  const env = options.env || process.env;
+
+  // 1. Mod Layer check
+  const modRoots = parsePathList(env.CS_MOD_TABLES_DIR);
+  if (modRoots.length > 0) {
+    for (const root of expandTableRoots(modRoots, path.resolve(options.rootDir || ROOT_DIR))) {
+      const filePath = path.join(root, options.directory || "ab_script", "luac", `${normalizedTable}.json`);
+      if (fs.existsSync(filePath)) {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+          const records = Array.isArray(parsed) ? parsed : (parsed && parsed.records);
+          if (Array.isArray(records)) {
+            return records.filter((r) => {
+              if (query.secondaryId != null && Number(r.m_MissionTabId ?? r.StepID ?? r.m_StageType ?? 0) !== Number(query.secondaryId)) return false;
+              if (query.stringKey != null && String(r.Unit_Grade ?? r.m_MissionCond ?? "").trim() !== String(query.stringKey).trim()) return false;
+              return true;
+            });
+          }
+        } catch (_) {}
+      }
+    }
+  }
+
+  // 2. Fast lookup via SQLite B-Tree index
+  if (!options.disableSqlite && env.CS_DISABLE_GAMEPLAY_SQLITE !== "1") {
+    const db = getGameplaySqliteDb(options.gameplaySqlitePath);
+    if (db) {
+      try {
+        if (query.secondaryId != null && gameplaySqliteSecondaryStmt) {
+          const rows = gameplaySqliteSecondaryStmt.all(normalizedTable, Number(query.secondaryId));
+          if (rows && rows.length > 0) {
+            let res = rows.map((r) => JSON.parse(r.data));
+            if (query.stringKey != null) {
+              res = res.filter((r) => String(r.Unit_Grade ?? r.m_MissionCond ?? "").trim() === String(query.stringKey).trim());
+            }
+            return res;
+          }
+        } else if (query.stringKey != null && gameplaySqliteStringKeyStmt) {
+          const rows = gameplaySqliteStringKeyStmt.all(normalizedTable, String(query.stringKey).trim());
+          if (rows && rows.length > 0) return rows.map((r) => JSON.parse(r.data));
+        }
+      } catch (_) {}
+    }
+  }
+
+  // 3. Fallback: Retrieve via readGameplayTableRecords
+  const allRecords = readGameplayTableRecords(options.directory || "ab_script", `${normalizedTable}.json`, options);
+  return allRecords.filter((r) => {
+    if (query.secondaryId != null && Number(r.m_MissionTabId ?? r.StepID ?? r.m_StageType ?? 0) !== Number(query.secondaryId)) return false;
+    if (query.stringKey != null && String(r.Unit_Grade ?? r.m_MissionCond ?? "").trim() !== String(query.stringKey).trim()) return false;
+    return true;
+  });
+}
+
 function getGameplayTableRoots(options = {}) {
   const rootDir = path.resolve(options.rootDir || ROOT_DIR);
   const env = options.env || process.env;
@@ -97,12 +249,63 @@ function readGameplayTableRecords(directory, fileName, options = {}) {
 function readGameplayJsonTable(directory, fileName, options = {}) {
   const label = options.logLabel || "gameplay-jsons";
   const jsonFileName = normalizeJsonTableFileName(fileName);
+  const normalizedLowerName = jsonFileName.toLowerCase();
+  const env = options.env || process.env;
+
+  // 1. Mod Overrides Layer: Check CS_MOD_TABLES_DIR first to preserve 100% modding support
+  const modRoots = parsePathList(env.CS_MOD_TABLES_DIR);
+  if (modRoots.length > 0) {
+    for (const root of expandTableRoots(modRoots, path.resolve(options.rootDir || ROOT_DIR))) {
+      const filePath = path.join(root, directory, "luac", jsonFileName);
+      if (!fs.existsSync(filePath)) continue;
+      try {
+        const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        if (parsed && typeof parsed === "object") {
+          gameplaySourceStats.modHits += 1;
+          console.log(`[gameplay-source:mod] ${directory}/${jsonFileName}`);
+          return parsed;
+        }
+      } catch (err) {
+        console.log(`[${label}:mod] failed to load ${filePath}: ${err.message}`);
+      }
+    }
+  }
+
+  // 2. Base SQLite Data Layer: Read directly from gameplay_tables.sqlite (< 0.05ms)
+  if (!options.disableSqlite && env.CS_DISABLE_GAMEPLAY_SQLITE !== "1") {
+    const sqlitePath = options.gameplaySqlitePath || env.CS_GAMEPLAY_SQLITE_PATH || DEFAULT_GAMEPLAY_SQLITE_PATH;
+    const db = getGameplaySqliteDb(sqlitePath);
+    if (db && gameplaySqliteStmt) {
+      try {
+        const row = gameplaySqliteStmt.get(directory, normalizedLowerName);
+        if (row && row.data) {
+          const parsed = JSON.parse(row.data);
+          if (parsed && typeof parsed === "object") {
+            gameplaySourceStats.sqliteHits += 1;
+            if (options.verbose || env.CS_LOG_GAMEPLAY_SOURCE === "1") {
+              console.log(`[gameplay-source:sqlite] ${directory}/${jsonFileName} (hit)`);
+            }
+            return parsed;
+          }
+        }
+      } catch (err) {
+        console.log(`[${label}:sqlite] query failed for ${directory}/${jsonFileName}: ${err.message}`);
+      }
+    }
+  }
+
+  // 3. Fallback: Read raw JSON file on disk if not compiled or missing from SQLite
   for (const root of getGameplayTableRoots(options)) {
     const filePath = path.join(root, directory, "luac", jsonFileName);
     if (!fs.existsSync(filePath)) continue;
     try {
       const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-      if (parsed && typeof parsed === "object") return parsed;
+      if (parsed && typeof parsed === "object") {
+        gameplaySourceStats.diskFallbacks += 1;
+        gameplaySourceStats.fallbackTables.add(`${directory}/${jsonFileName}`);
+        console.warn(`[gameplay-source:DISK-FALLBACK] ${directory}/${jsonFileName} (WARNING: missing from SQLite, reading disk JSON fallback!)`);
+        return parsed;
+      }
     } catch (err) {
       console.log(`[${label}] failed to load ${filePath}: ${err.message}`);
     }
@@ -762,6 +965,28 @@ function safeCacheName(value) {
     .replace(/^-+|-+$/g, "") || "cache";
 }
 
+function getGameplaySourceStats() {
+  return {
+    sqliteHits: gameplaySourceStats.sqliteHits,
+    modHits: gameplaySourceStats.modHits,
+    diskFallbacks: gameplaySourceStats.diskFallbacks,
+    fallbackTables: Array.from(gameplaySourceStats.fallbackTables),
+  };
+}
+
+function logGameplaySourceReport() {
+  const stats = getGameplaySourceStats();
+  console.log(
+    `[gameplay-source:report] Gameplay data source summary: ` +
+    `${stats.sqliteHits} from SQLite, ` +
+    `${stats.modHits} from Mod, ` +
+    `${stats.diskFallbacks} from Disk JSON Fallback.`
+  );
+  if (stats.fallbackTables.length > 0) {
+    console.warn(`[gameplay-source:report] WARNING FALLBACK JSON TABLES: ${stats.fallbackTables.join(", ")}`);
+  }
+}
+
 module.exports = {
   DEFAULT_GAMEPLAY_LUA_CACHE_ROOT,
   DEFAULT_GAMEPLAY_TABLE_ROOT,
@@ -780,4 +1005,9 @@ module.exports = {
   parsePathList,
   readGameplayTable,
   readGameplayTableRecords,
+  queryGameplayRecord,
+  queryGameplayRecords,
+  getGameplaySourceStats,
+  logGameplaySourceReport,
+  getGameplaySqliteDb,
 };

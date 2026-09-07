@@ -6,6 +6,7 @@ const {
   resolveActiveUserPath,
   writeActiveUserSelection,
 } = require("../modules/user-db-selection");
+const { loadUserDb } = require("../modules/user-storage");
 
 const DEFAULT_MAX_BODY_BYTES = 50 * 1024 * 1024;
 const DEFAULT_MAX_BACKUPS = 25;
@@ -463,8 +464,12 @@ function replaceUserDb(target, incoming) {
 
 function reloadUserDb(config) {
   let parsed = {};
-  if (config.userDbPath && fs.existsSync(config.userDbPath)) {
-    parsed = JSON.parse(fs.readFileSync(config.userDbPath, "utf8"));
+  if (config.userDbPath) {
+    if (config.userDbPath.endsWith(".sqlite")) {
+      parsed = loadUserDb({ sqlitePath: config.userDbPath });
+    } else if (fs.existsSync(config.userDbPath)) {
+      parsed = JSON.parse(fs.readFileSync(config.userDbPath, "utf8"));
+    }
   }
   applyActiveUserSelection(parsed, config.activeUserPath);
   replaceUserDb(config.userDb, parsed);
@@ -598,7 +603,7 @@ function createBackup(config, reason) {
     fs.mkdirSync(backupDir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const name = `users-${stamp}-${sanitizeFilePart(reason || "edit")}.json`;
-    fs.copyFileSync(config.userDbPath, path.join(backupDir, name));
+    fs.writeFileSync(path.join(backupDir, name), JSON.stringify(config.userDb, null, 2), "utf8");
     pruneBackups(backupDir, config.maxBackups);
   } catch (err) {
     console.log(`[user-manager] backup failed: ${err.message}`);

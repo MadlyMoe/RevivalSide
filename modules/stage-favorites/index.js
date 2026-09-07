@@ -43,7 +43,7 @@ function createStageFavoritesHandlers() {
           `[stage-favorites:FAVORITES_STAGE_ADD_REQ] ACK packetId=${PACKETS.FAVORITES_STAGE_ADD_ACK} stageId=${stageId} count=${result.count} changed=${result.changed ? 1 : 0}`
         );
         ctx.sendGameResponse(socket, packet, PACKETS.FAVORITES_STAGE_ADD_ACK, payload, "favorites-stage-add");
-        if (result.changed) saveIfLocal(ctx);
+        if (result.changed) saveIfLocal(ctx, user);
         return true;
       },
     },
@@ -59,7 +59,7 @@ function createStageFavoritesHandlers() {
           `[stage-favorites:FAVORITES_STAGE_DELETE_REQ] ACK packetId=${PACKETS.FAVORITE_STAGE_DELETE_ACK} stageId=${stageId} count=${result.count} changed=${result.changed ? 1 : 0}`
         );
         ctx.sendGameResponse(socket, packet, PACKETS.FAVORITE_STAGE_DELETE_ACK, payload, "favorites-stage-delete");
-        if (result.changed) saveIfLocal(ctx);
+        if (result.changed) saveIfLocal(ctx, user);
         return true;
       },
     },
@@ -77,7 +77,7 @@ function createStageFavoritesHandlers() {
           `[stage-favorites:FAVORITES_STAGE_UPDATE_REQ] ACK packetId=${PACKETS.FAVORITES_STAGE_UPDATE_ACK} requested=${entries ? entries.length : 0} count=${result.count} changed=${result.changed ? 1 : 0}`
         );
         ctx.sendGameResponse(socket, packet, PACKETS.FAVORITES_STAGE_UPDATE_ACK, payload, "favorites-stage-update");
-        if (result.changed) saveIfLocal(ctx);
+        if (result.changed) saveIfLocal(ctx, user);
         return true;
       },
     },
@@ -194,9 +194,13 @@ function getSocketUser(ctx, socket) {
   return user;
 }
 
-function saveIfLocal(ctx) {
-  if (ctx && ctx.config && ctx.config.USE_LOCAL_USER_DB && typeof ctx.saveUserDb === "function") {
-    ctx.saveUserDb();
+function saveIfLocal(ctx, user) {
+  if (!ctx || (ctx.config && ctx.config.USE_LOCAL_USER_DB === false)) return;
+  const userUid = user && (user.userUid || user.m_UserUID);
+  if (typeof ctx.scheduleDebouncedUserSave === "function") {
+    ctx.scheduleDebouncedUserSave(userUid);
+  } else if (typeof ctx.saveUserDb === "function") {
+    ctx.saveUserDb(userUid);
   }
 }
 

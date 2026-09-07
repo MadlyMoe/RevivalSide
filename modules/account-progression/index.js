@@ -1499,12 +1499,7 @@ function findClaimedMissionState(user, missionID) {
 
 function shouldSerializeMissionState(state, row) {
   if (!state) return false;
-  if (state.rewardClaimed === true || state.rewardReady === true) return true;
-  if (Number(state.times || 0) >= missionTargetTimes(row)) return true;
-  if (Number(state.times || 0) > 0) return true;
-  const condition = normalizeMissionCondition(row && row.m_MissionCond);
-  if (condition === "TUTORIAL") return false;
-  return condition === "JUST_OPEN" || condition === "ACCOUNT_LEVEL";
+  return true;
 }
 
 function shouldSerializeMissionTab(row) {

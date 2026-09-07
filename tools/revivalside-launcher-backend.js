@@ -483,11 +483,12 @@ function ensureRuntimeLayout(settings) {
     'exports', 'logs',
   ]) fs.mkdirSync(path.join(root, directory), { recursive: true });
   fs.mkdirSync(crossSaveCaptureDir(settings), { recursive: true });
-  const users = path.join(root, 'server-data', 'users.json');
-  if (!fs.existsSync(users)) {
+  const usersSqlite = path.join(root, 'server-data', 'users.sqlite');
+  const usersJson = path.join(root, 'server-data', 'users.json');
+  if (!fs.existsSync(usersSqlite) && !fs.existsSync(usersJson)) {
     const starter = path.join(root, 'server-data', 'starter-users.json');
-    if (fs.existsSync(starter)) fs.copyFileSync(starter, users);
-    else fs.writeFileSync(users, '{\n  "schemaVersion": 1,\n  "nextUserUid": "1000000001",\n  "nextFriendCode": "10000001",\n  "activeUserUid": "",\n  "users": {}\n}\n');
+    if (fs.existsSync(starter)) fs.copyFileSync(starter, usersJson);
+    else fs.writeFileSync(usersJson, '{\n  "schemaVersion": 1,\n  "nextUserUid": "1000000001",\n  "nextFriendCode": "10000001",\n  "activeUserUid": "",\n  "users": {}\n}\n');
   }
 }
 
@@ -1384,7 +1385,7 @@ async function importCrossSaveSource(settings, captureDir, source, copyTo) {
   const managed = normalizeManagedDir(settings.CounterSideSourceManagedDir || settings.CounterSideManagedDir);
   if (!isManagedDir(managed)) throw new Error('Select or detect the official CounterSide client before importing the captured profile.');
   const args = [
-    script, '--capture-dir', captureDir, '--user-db', path.join(root, 'server-data', 'users.json'),
+    script, '--capture-dir', captureDir, '--user-db', fs.existsSync(path.join(root, 'server-data', 'users.sqlite')) ? path.join(root, 'server-data', 'users.sqlite') : path.join(root, 'server-data', 'users.json'),
     '--managed-dir', managed,
     '--source-id', source.id,
   ];

@@ -64,7 +64,7 @@ function createMissionHandlers() {
         );
         send(ctx, socket, packet, MISSION_GET_COMPLETE_REWARD_ACK, buildMissionGetCompleteRewardAckPayload(req, result));
         sendPostClaimMissionUpdate(ctx, socket, user, result, clock);
-        persist(ctx);
+        persist(ctx, user);
         return true;
       },
     },
@@ -81,7 +81,7 @@ function createMissionHandlers() {
         );
         send(ctx, socket, packet, MISSION_COMPLETE_ALL_ACK, buildMissionCompleteAllAckPayload(result));
         sendPostClaimMissionUpdate(ctx, socket, user, result, { ...clock, tabId });
-        persist(ctx);
+        persist(ctx, user);
         return true;
       },
     },
@@ -96,7 +96,7 @@ function createMissionHandlers() {
           `[mission] random-change uid=${user.userUid || "(ephemeral)"} tabId=${req.tabId} missionID=${req.missionId} groupId=${mission ? mission.groupId : 0}`
         );
         send(ctx, socket, packet, RANDOM_MISSION_CHANGE_ACK, buildRandomMissionChangeAckPayload(req, mission));
-        persist(ctx);
+        persist(ctx, user);
         return true;
       },
     },
@@ -112,7 +112,7 @@ function createMissionHandlers() {
         );
         send(ctx, socket, packet, MISSION_GIVE_ITEM_ACK, buildMissionGiveItemAckPayload(result));
         if (result.mission) sendMissionUpdateNot(ctx, socket, [result.mission]);
-        persist(ctx);
+        persist(ctx, user);
         return true;
       },
     },
@@ -327,8 +327,14 @@ function getMissionClockOptions(ctx) {
   return { now: ctx && ctx.dateTimeBinaryNow ? ctx.dateTimeBinaryNow() : undefined, eventDateKey: "" };
 }
 
-function persist(ctx) {
-  if (ctx && ctx.config && ctx.config.USE_LOCAL_USER_DB && typeof ctx.saveUserDb === "function") ctx.saveUserDb();
+function persist(ctx, user) {
+  if (!ctx || (ctx.config && ctx.config.USE_LOCAL_USER_DB === false)) return;
+  const userUid = user && (user.userUid || user.m_UserUID);
+  if (typeof ctx.scheduleDebouncedUserSave === "function") {
+    ctx.scheduleDebouncedUserSave(userUid);
+  } else if (typeof ctx.saveUserDb === "function") {
+    ctx.saveUserDb(userUid);
+  }
 }
 
 function getSocketUser(ctx, socket) {

@@ -16,6 +16,8 @@ npm-debug.log*
 # .NET build outputs
 **/bin/
 **/obj/
+combat-host/bin/
+combat-host/obj/
 !prebuilt/
 !prebuilt/**
 
@@ -48,6 +50,10 @@ server-data/**
 !server-data/captured-tcp/**
 !server-data/captured-game-flow/
 !server-data/captured-game-flow/**
+server-data/users.sqlite*
+server-data/users.json*
+server-data/active-user.json
+server-data/users.backups/
 
 # Extracted/decrypted game assets and Lua table outputs
 decrypted-assets/
@@ -59,16 +65,20 @@ gameplay-tables/**
 gameplay-tables*.zip
 gameplay-tables-decompiled/
 gameplay-tables-json/
+gameplay-jsons/*.sqlite*
 
 # Temporary probes and local scratch projects
 tmp*/
 tmp_app_probe.cs
 .codex-*
+scratch/
 
 # Local runtime and release outputs
 exports/
 logs/
+mods/
 launcher-settings.json
+RevivalSideLauncher.exe
 frozen-client/
 prebuilt/revivalside-*/
 prebuilt/android-combat-host-*/

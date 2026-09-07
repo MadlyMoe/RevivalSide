@@ -17,6 +17,20 @@ const {
   writeActiveUserSelection,
 } = require("../modules/user-db-selection");
 const {
+  loadUserDb: loadSqliteUserDb,
+  saveUserDb: saveSqliteUserDb,
+  checkpointSqliteDb,
+  startPeriodicCheckpoint,
+  getUserBySteamKey,
+  getUserByAccessToken,
+  getUserByReconnectKey,
+  getUserByDeviceUid,
+  getUserByGuestKey,
+  getUserByMobileUserId,
+  getUserBySteamStableId,
+  DEFAULT_SQLITE_PATH,
+} = require("../modules/user-storage");
+const {
   loadAndroidClientUpdateState,
   loadFrozenClientPatchState,
   resolveAndroidClientUpdateResponse,
@@ -25,6 +39,8 @@ const {
 const {
   getDefaultGameplayTablesDir,
   readGameplayTableRecords,
+  queryGameplayRecord,
+  logGameplaySourceReport,
 } = require("../modules/gameplay-jsons");
 const {
   createCombatHandler,
@@ -39,6 +55,8 @@ const {
   hasTutorialCompletionMission,
   TUTORIAL_COMPLETION_MISSION_IDS,
   TUTORIAL_STAGE_CHAIN,
+  getTutorialStageByStageId,
+  getTutorialStageByDungeonId,
 } = require("../stages/tutorialStage");
 const {
   MAIN_STORY_STAGE_CHAIN,
@@ -61,6 +79,7 @@ const {
   DEFAULT_LOCAL_SHOP_BALANCE,
   RESOURCE_ITEM_IDS,
   ensureInventory,
+  getMiscItem,
   getMiscItems,
   getSkinIds,
   removeDebugSeededCommonResources,
@@ -82,7 +101,7 @@ const {
   addOperatorExp,
   grantUnit,
 } = require("../modules/unit");
-const { INVENTORY_TYPES, getInventoryCapacity } = require("../modules/inventory-capacity");
+const { ERROR_CODES, INVENTORY_TYPES, getInventoryCapacity, getInventoryUsage } = require("../modules/inventory-capacity");
 const {
   buildUnitData: buildSerializedUnitData,
   buildOperatorData: buildSerializedOperatorData,
@@ -437,6 +456,7 @@ const MIRROR_PUBLIC_HOST = process.env.CS_HTTP_MIRROR_HOST || "127.0.0.1";
 const MIRROR_PUBLIC_BASE_URL =
   process.env.CS_HTTP_MIRROR_BASE_URL || `http://${MIRROR_PUBLIC_HOST}:${HTTP_MIRROR_PORT}`;
 const USER_DB_PATH = process.env.CS_USER_DB_PATH || path.join(ROOT_DIR, "server-data", "users.json");
+const USER_DB_SQLITE_PATH = process.env.CS_USER_DB_SQLITE_PATH || DEFAULT_SQLITE_PATH;
 const ACTIVE_USER_PATH = resolveActiveUserPath(USER_DB_PATH, process.env.CS_ACTIVE_USER_PATH || "");
 const SERVER_TIME_STATE_PATH = process.env.CS_SERVER_TIME_STATE_PATH || path.join(ROOT_DIR, "server-data", "server-time.json");
 const USER_MANAGER_ENABLED = process.env.CS_USER_MANAGER !== "0";
@@ -555,8 +575,11 @@ const capturedRespawnUnitPools = buildCombatCapturedRespawnUnitPools(capturedGam
 const capturedCombatReplayEntries = buildCapturedCombatReplayEntries(capturedGameFlow);
 const capturedFlowMirror = loadCapturedFlowMirror(CAPTURED_FLOW_DIR);
 const gameplayUnitStats = loadGameplayUnitStats(UNIT_TABLE_PATH);
-const userDb = loadUserDb(USER_DB_PATH);
+const userDb = normalizeUserDb(loadSqliteUserDb({ jsonPath: USER_DB_PATH, sqlitePath: USER_DB_SQLITE_PATH }));
 applyActiveUserSelection(userDb, ACTIVE_USER_PATH);
+let lastWrittenActiveUserUid = (userDb && userDb.activeUserUid) || null;
+const pendingUserSaves = new Set();
+let debouncedSaveTimer = null;
 const repairedDeckReferenceProfiles = repairUserDbDeckReferences(userDb);
 if (repairedDeckReferenceProfiles > 0 && USE_LOCAL_USER_DB) {
   console.log(`[user-db] repaired stale deck references profiles=${repairedDeckReferenceProfiles}`);
@@ -634,7 +657,7 @@ const userManager = USER_MANAGER_ENABLED
       basePath: USER_MANAGER_BASE_PATH,
       allowRemote: USER_MANAGER_ALLOW_REMOTE,
       userDb,
-      userDbPath: USER_DB_PATH,
+      userDbPath: USER_DB_SQLITE_PATH,
       activeUserPath: ACTIVE_USER_PATH,
       saveUserDb,
       ensureUserDefaults,
@@ -671,8 +694,31 @@ let lastAckContentsVersion = "";
 let lastAckContentsTags = [];
 let runtimeConfigPrinted = false;
 
+warmUpServerCaches();
+startPeriodicCheckpoint({ sqlitePath: USER_DB_SQLITE_PATH });
 startTcpServer();
 startHttpMirror();
+
+function warmUpServerCaches() {
+  const start = performance.now();
+  console.log("[init] warming up server catalogs and game data cache...");
+  try {
+    loadDungeonCatalog();
+    loadStageCatalog();
+    loadMiscStageCatalog();
+    require("../modules/game-data").loadGameData();
+    require("../modules/collection").loadCollectionTables();
+    require("../modules/shop").loadShopCatalog();
+    require("../modules/office").loadOfficeCatalog();
+    require("../modules/world-map").loadWorldMapTables();
+    require("../modules/stamina").loadStaminaTables();
+    const elapsed = (performance.now() - start).toFixed(1);
+    console.log(`[init] server caches pre-warmed successfully in ${elapsed}ms!`);
+  } catch (err) {
+    console.log(`[init] cache pre-warm warning: ${err.message}`);
+  }
+  logGameplaySourceReport();
+}
 
 function startTcpServer() {
   const server = net.createServer((socket) => {
@@ -698,6 +744,10 @@ function startTcpServer() {
     socket.on("end", () => console.log("[*] Client ended socket"));
     socket.on("close", (hadError) => {
       stopGameSyncTimers(socket);
+      flushPendingUserSaves();
+      try {
+        checkpointSqliteDb({ sqlitePath: USER_DB_SQLITE_PATH, mode: "TRUNCATE" });
+      } catch (_) {}
       console.log(`[-] Client disconnected hadError=${hadError}`);
     });
     socket.on("error", (err) => console.log(`[!] Socket error: ${err.message}`));
@@ -710,7 +760,7 @@ function logRuntimeConfig() {
   if (runtimeConfigPrinted && !LOG_CONFIG_EACH_CONNECTION) return;
   runtimeConfigPrinted = true;
 
-  console.log(`[cfg] localUserDb=${USE_LOCAL_USER_DB ? "on" : "off"} db=${USER_DB_PATH}`);
+  console.log(`[cfg] localUserDb=${USE_LOCAL_USER_DB ? "on" : "off"} db=${USER_DB_SQLITE_PATH}`);
   console.log(
     `[cfg] userManager=${userManager ? "on" : "off"} path=${
       userManager ? userManager.basePath : "(disabled)"
@@ -1648,7 +1698,15 @@ function createPacketContext() {
     getOrCreateUserForSteam,
     getOrCreateUserForGuest,
     issueUserTokens,
-    saveUserDb,
+    saveUserDb: (targetUserUid, options) => {
+      if (options && options.forceSync) {
+        return saveUserDb(targetUserUid);
+      }
+      return scheduleDebouncedUserSave(targetUserUid, 1500);
+    },
+    scheduleDebouncedUserSave,
+    flushPendingUserSaves,
+    checkpointSqliteDb,
     findUserByAccessToken,
     findUserByReconnectKey,
     createEphemeralUser,
@@ -3489,7 +3547,7 @@ function nextTutorialDungeonIdForUser(user) {
 }
 
 function isTutorialDungeonCleared(user, dungeonId) {
-  const stage = TUTORIAL_STAGE_CHAIN.find((candidate) => candidate.dungeonID === Number(dungeonId));
+  const stage = getTutorialStageByDungeonId(dungeonId);
   if (!stage) return false;
   const tutorial = ensureTutorialState(user);
   const phases = tutorial && tutorial.phases && typeof tutorial.phases === "object" ? tutorial.phases : {};
@@ -3969,6 +4027,48 @@ function recordMiscStageClearForUser(user, dungeonId, stageId, battleState = {})
   return false;
 }
 
+function validateDungeonSkipPreconditions(user, dungeonId, stageId, skipCount) {
+  if (!user || typeof user !== "object") {
+    return { ok: false, errorCode: 1 };
+  }
+  if (!dungeonId || !stageId) {
+    return { ok: false, errorCode: 1 };
+  }
+  const cost = getStageReqItemCost(stageId, { dungeonID: dungeonId });
+  if (cost && cost.itemId && cost.count > 0) {
+    const totalCost = BigInt(cost.count) * BigInt(skipCount);
+    const balance = getMiscItem(user, cost.itemId);
+    const currentTotal = toBigInt(balance && balance.countFree) + toBigInt(balance && balance.countPaid);
+    if (currentTotal < totalCost) {
+      return { ok: false, errorCode: ERROR_CODES.INSUFFICIENT_ITEM || 111 };
+    }
+  }
+
+  const unitUsage = getInventoryUsage(user, INVENTORY_TYPES.UNIT);
+  const unitCapacity = getInventoryCapacity(user, INVENTORY_TYPES.UNIT);
+  if (unitCapacity > 0 && unitUsage >= unitCapacity) {
+    return { ok: false, errorCode: ERROR_CODES.ARMY_FULL || 112 };
+  }
+
+  const equipUsage = getInventoryUsage(user, INVENTORY_TYPES.EQUIP);
+  const equipCapacity = getInventoryCapacity(user, INVENTORY_TYPES.EQUIP);
+  if (equipCapacity > 0 && equipUsage >= equipCapacity) {
+    return { ok: false, errorCode: ERROR_CODES.EQUIP_ITEM_FULL || 114 };
+  }
+
+  return { ok: true, errorCode: 0 };
+}
+
+function buildDungeonSkipErrorAckPayload(errorCode, stageId = 0) {
+  return Buffer.concat([
+    writeSignedVarInt(Number(errorCode || 0) || 1),
+    stageId ? writeNullableObject(buildStagePlayData(stageId)) : writeNullObject(),
+    writeObjectList([]),
+    writeObjectList([]),
+    writeObjectList([]),
+  ]);
+}
+
 function buildDungeonSkipAckPayload(socket, req = {}) {
   const user = socket && socket.session && socket.session.user;
   const dungeonId = Number(req.dungeonId || 0);
@@ -3976,7 +4076,13 @@ function buildDungeonSkipAckPayload(socket, req = {}) {
   const stageId = Number((stage && stage.stageId) || stageIdForDungeonId(dungeonId) || 0);
   const skipCount = clamp(Number(req.skip || 1) || 1, 1, 99);
   const unitUids = Array.isArray(req.unitUids) ? req.unitUids : [];
-  const rewardSets = [];
+
+  const validation = validateDungeonSkipPreconditions(user, dungeonId, stageId, skipCount);
+  if (!validation.ok) {
+    return buildDungeonSkipErrorAckPayload(validation.errorCode, stageId);
+  }
+
+  const startTime = Date.now();
   const costItems = spendStageReqItemCost(user, stageId, { multiplier: skipCount });
   const battleState = {
     gameTime: 0,
@@ -3986,36 +4092,53 @@ function buildDungeonSkipAckPayload(socket, req = {}) {
     forceMissionSuccess: true,
   };
 
+  const rewardSets = [];
   for (let index = 0; index < skipCount; index += 1) {
-    const fakeReplay = {
-      dynamicGame: {
-        dungeonID: dungeonId,
-        stageID: stageId,
-        playerDeck: {
-          units: unitUids.map((unitUid, slotIndex) => ({ unitUid, slotIndex })),
-        },
-      },
-      battleState,
-    };
-    const loot = grantStageClearLoot(user, dungeonId, stageId, { replay: fakeReplay, save: false });
-    grantStageClearExp(user, stageId, dungeonId, loot.userExp > 0 ? { exp: loot.userExp } : undefined);
-    if (isMainStoryDungeonId(dungeonId) && !isTutorialDungeonId(dungeonId)) {
-      recordMainStoryDungeonClearForUser(user, dungeonId, stageId, battleState, {
-        save: null,
-        forceMissionSuccess: true,
-      });
-    } else {
-      recordGenericDungeonClearForUser(user, dungeonId, stageId, battleState, {
-        save: false,
-        forceMissionSuccess: true,
-      });
-    }
-    recordGameplayUnlockClearForUser(user, dungeonId, stageId, { save: false });
-    trackStageClearMissionProgress(user, dungeonId, stageId, battleState);
+    const loot = grantStageClearLoot(user, dungeonId, stageId, {
+      applyExp: false,
+      unitUids,
+      save: false,
+      silentLog: true,
+    });
     rewardSets.push(buildDungeonRewardSet(user, dungeonId, stageId, battleState, loot));
   }
 
+  const unitExpPerRun = getDungeonUnitExpReward(dungeonId);
+  const userExpPerRun = getDungeonUserExpReward(dungeonId);
+  const totalUnitExp = unitExpPerRun * skipCount;
+  const totalUserExp = userExpPerRun * skipCount;
+  if (totalUserExp > 0) {
+    grantStageClearExp(user, stageId, dungeonId, { exp: totalUserExp });
+  }
+  if (totalUnitExp > 0 && unitUids.length > 0) {
+    for (const unitUid of unitUids) {
+      if (getArmyUnitByUid(user, unitUid)) {
+        addUnitExp(user, unitUid, totalUnitExp);
+      }
+    }
+  }
+
+  if (isMainStoryDungeonId(dungeonId) && !isTutorialDungeonId(dungeonId)) {
+    recordMainStoryDungeonClearForUser(user, dungeonId, stageId, battleState, {
+      save: null,
+      forceMissionSuccess: true,
+    });
+  } else {
+    recordGenericDungeonClearForUser(user, dungeonId, stageId, battleState, {
+      save: false,
+      forceMissionSuccess: true,
+    });
+  }
+  recordGameplayUnlockClearForUser(user, dungeonId, stageId, { save: false });
+
+  trackStageClearMissionProgress(user, dungeonId, stageId, battleState, { multiplier: skipCount });
+
   if (USE_LOCAL_USER_DB) saveUserDb();
+
+  console.log(
+    `[stage-skip:batch] dungeonID=${dungeonId} stageID=${stageId} skip=${skipCount} elapsedMs=${Date.now() - startTime}ms`
+  );
+
   return Buffer.concat([
     writeSignedVarInt(0),
     stageId ? writeNullableObject(buildStagePlayData(stageId, battleState)) : writeNullObject(),
@@ -5033,9 +5156,20 @@ function ensureDungeonCatalogIndexes(catalog) {
 }
 
 function getDungeonTableEntry(dungeonId) {
+  const numericId = Number(dungeonId || 0);
+  if (!numericId) return null;
   const catalog = loadDungeonCatalog();
   const byId = catalog && catalog.byId && typeof catalog.byId === "object" ? catalog.byId : {};
-  return byId[String(Number(dungeonId || 0))] || null;
+  const inMemory = byId[String(numericId)];
+  if (inMemory) return inMemory;
+  try {
+    const record = queryGameplayRecord("LUA_DUNGEON_TEMPLET_BASE", numericId, { rootDir: ROOT_DIR });
+    if (record) {
+      byId[String(numericId)] = record;
+      return record;
+    }
+  } catch (_) {}
+  return null;
 }
 
 function readGameplayRecordsFromJsonPath(filePath, label) {
@@ -5074,9 +5208,20 @@ function loadStageCatalog() {
 }
 
 function getStageTableEntry(stageId) {
+  const numericId = Number(stageId || 0);
+  if (!numericId) return null;
   const catalog = loadStageCatalog();
   const byId = catalog && catalog.byId && typeof catalog.byId === "object" ? catalog.byId : {};
-  return byId[String(Number(stageId || 0))] || null;
+  const inMemory = byId[String(numericId)];
+  if (inMemory) return inMemory;
+  try {
+    const record = queryGameplayRecord("LUA_STAGE_TEMPLET", numericId, { rootDir: ROOT_DIR });
+    if (record) {
+      byId[String(numericId)] = record;
+      return record;
+    }
+  } catch (_) {}
+  return null;
 }
 
 function getStageTableEntriesForBattleStrId(battleStrId) {
@@ -5102,9 +5247,7 @@ function findStageRowForDungeonId(dungeonId) {
   if (directStage) return directStage;
   const phaseOrder = loadMiscStageCatalog().phaseOrderByDungeonId.get(positiveInt(dungeonId));
   if (!phaseOrder) return null;
-  const phase = Array.from(loadMiscStageCatalog().phaseById.values()).find(
-    (row) => positiveInt(row && row.m_PhaseGroupID) === positiveInt(phaseOrder.m_PhaseGroupID)
-  );
+  const phase = loadMiscStageCatalog().phaseByGroupId.get(positiveInt(phaseOrder.m_PhaseGroupID));
   return phase ? chooseStageRow(getStageTableEntriesForBattleStrId(String(phase.m_PhaseStrID || ""))) : null;
 }
 
@@ -5167,6 +5310,7 @@ function loadMiscStageCatalog() {
     exploreStageByDungeonId: new Map(),
     phaseById: new Map(),
     phaseByStrId: new Map(),
+    phaseByGroupId: new Map(),
     phaseOrdersByGroup: new Map(),
     phaseOrderByDungeonId: new Map(),
   };
@@ -5299,8 +5443,10 @@ function loadMiscStageCatalog() {
   for (const row of readMiscStageRecords("LUA_PHASE_TEMPLET.json")) {
     const phaseId = positiveInt(row && row.m_PhaseID);
     const phaseStrId = String(row && row.m_PhaseStrID || "");
+    const groupId = positiveInt(row && row.m_PhaseGroupID);
     if (phaseId) catalog.phaseById.set(phaseId, row);
     if (phaseStrId) catalog.phaseByStrId.set(phaseStrId, row);
+    if (groupId && !catalog.phaseByGroupId.has(groupId)) catalog.phaseByGroupId.set(groupId, row);
   }
   for (const row of readMiscStageRecords("LUA_PHASE_ORDER_TEMPLET.json")) {
     const groupId = positiveInt(row && row.m_PhaseGroupID);
@@ -5740,7 +5886,7 @@ function classifyMiscDungeon(dungeonID, stageRow = null, dungeon = null) {
   }
   if (resolvedDungeonId && catalog.phaseOrderByDungeonId.has(resolvedDungeonId)) {
     const order = catalog.phaseOrderByDungeonId.get(resolvedDungeonId);
-    const phase = Array.from(catalog.phaseById.values()).find((row) => positiveInt(row && row.m_PhaseGroupID) === positiveInt(order && order.m_PhaseGroupID));
+    const phase = catalog.phaseByGroupId.get(positiveInt(order && order.m_PhaseGroupID));
     return {
       mode: "phase",
       gameType: NGT_PHASE,
@@ -6008,19 +6154,31 @@ function grantStageClearLoot(user, dungeonId, stageId, options = {}) {
   }
 
   reward.userExp = userExp;
-  const combatExpResult = applyCombatExpToLocalRoster(user, options.replay, unitExp);
+  const combatExpResult = options.applyExp === false
+    ? {
+        unitExpDataList: (Array.isArray(options.unitUids) ? options.unitUids : []).map((unitUid) => ({
+          unitUid,
+          exp: unitExp,
+          bonusExp: 0,
+          bonusRatio: 0,
+        })),
+        operatorExpApplied: false,
+      }
+    : applyCombatExpToLocalRoster(user, options.replay, unitExp);
   const unitExpDataList = combatExpResult.unitExpDataList;
   if (unitExpDataList.length) reward.unitExpDataList = unitExpDataList;
   result.operatorExpApplied = combatExpResult.operatorExpApplied;
   result.changed = hasRewardPayload(reward) || combatExpResult.operatorExpApplied;
   if (result.changed && USE_LOCAL_USER_DB && options.save !== false) saveUserDb();
-  console.log(
-    `[stage-loot] dungeonID=${dungeonId} stageID=${stageId} credits=${creditAmount} main=${
-      mainReward.summary || "-"
-    } groups=${rewardGroupIds.join(",") || "-"} misc=${
-      reward.miscItems.length
-    } units=${reward.units.length} operators=${reward.operators.length} equips=${reward.equips.length} unitExpTargets=${unitExpDataList.length}`
-  );
+  if (!options.silentLog) {
+    console.log(
+      `[stage-loot] dungeonID=${dungeonId} stageID=${stageId} credits=${creditAmount} main=${
+        mainReward.summary || "-"
+      } groups=${rewardGroupIds.join(",") || "-"} misc=${
+        reward.miscItems.length
+      } units=${reward.units.length} operators=${reward.operators.length} equips=${reward.equips.length} unitExpTargets=${unitExpDataList.length}`
+    );
+  }
   return result;
 }
 
@@ -6421,12 +6579,13 @@ function buildDungeonClearData(dungeonId, options = {}) {
   ]);
 }
 
-function trackStageClearMissionProgress(user, dungeonId, stageId, battleState = {}) {
+function trackStageClearMissionProgress(user, dungeonId, stageId, battleState = {}, options = {}) {
   if (!user || typeof user !== "object") return false;
   const resolvedDungeonId = Number(dungeonId || 0);
   const resolvedStageId = Number(stageId || stageIdForDungeonId(resolvedDungeonId) || 0);
   if (!resolvedDungeonId && !resolvedStageId) return false;
-  const now = dateTimeBinaryNow();
+  const multiplier = Math.max(1, Math.trunc(Number(options.multiplier || options.count || 1) || 1));
+  const now = options.now || dateTimeBinaryNow();
   const details = {
     now,
     dungeonId: resolvedDungeonId,
@@ -6440,18 +6599,18 @@ function trackStageClearMissionProgress(user, dungeonId, stageId, battleState = 
     if (tracked) changedConditions.add(condition);
     changed = tracked || changed;
   };
-  track("DUNGEON_CLEAR", 1);
-  track("DUNGEON_CLEARED", 1);
-  track("PHASE_CLEAR", 1);
-  track("PHASE_CLEARED", 1);
-  track("WARFARE_CLEAR", 1);
-  track("WARFARE_CLEARED", 1);
+  track("DUNGEON_CLEAR", multiplier);
+  track("DUNGEON_CLEARED", multiplier);
+  track("PHASE_CLEAR", multiplier);
+  track("PHASE_CLEARED", multiplier);
+  track("WARFARE_CLEAR", multiplier);
+  track("WARFARE_CLEARED", multiplier);
   if (isDailySimulationStageClear(resolvedDungeonId, resolvedStageId)) {
-    track("DAILY_DUNGEON_PLAY", 1);
+    track("DAILY_DUNGEON_PLAY", multiplier);
   }
   if (isSupplyStageClear(resolvedDungeonId, resolvedStageId)) {
-    track("EC_SUPPLY_CLEAR", 1);
-    track("EC_SUPPLY_CLEARED", 1);
+    track("EC_SUPPLY_CLEAR", multiplier);
+    track("EC_SUPPLY_CLEARED", multiplier);
   }
   const missionResults = resolveDungeonMissionResults(resolvedDungeonId, {
     win: true,
@@ -6460,15 +6619,15 @@ function trackStageClearMissionProgress(user, dungeonId, stageId, battleState = 
     missionResult2: battleState && battleState.missionResult2,
   });
   if (missionResults.missionResult1 !== false && missionResults.missionResult2 !== false) {
-    track("DUNGEON_CLEAR_PERFECT", 1);
-    track("PHASE_CLEAR_PERFECT", 1);
-    track("PHASE_CLEARED_PERFECT", 1);
-    track("WARFARE_CLEAR_PERFECT", 1);
-    track("WARFARE_CLEARED_PERFECT", 1);
+    track("DUNGEON_CLEAR_PERFECT", multiplier);
+    track("PHASE_CLEAR_PERFECT", multiplier);
+    track("PHASE_CLEARED_PERFECT", multiplier);
+    track("WARFARE_CLEAR_PERFECT", multiplier);
+    track("WARFARE_CLEARED_PERFECT", multiplier);
   }
   const eterniumCost = getStageEterniumCost(resolvedStageId);
   if (eterniumCost > 0) {
-    track("USE_ETERNIUM", eterniumCost, {
+    track("USE_ETERNIUM", eterniumCost * multiplier, {
       ...details,
       itemId: RESOURCE_ITEM_IDS.ETERNIUM,
       resourceId: RESOURCE_ITEM_IDS.ETERNIUM,
@@ -6556,12 +6715,14 @@ function sendMissionUpdateForTabs(socket, user, tabIds, options = {}) {
   const eventDateKey = options.eventDateKey || clock.eventDateKey || getServerEventDateKey();
   const seen = new Set();
   const missions = [];
+  const skipRefresh = options.skipRefresh !== undefined ? options.skipRefresh : true;
   for (const tabId of uniqueMissionTabs(tabIds)) {
     for (const [, mission] of buildAccountMissionDataEntries(user, {
       tabId,
       now,
       eventDateKey,
       conditions: options.conditions || options.condition,
+      skipRefresh,
     })) {
       const key = `${Number(mission && mission.groupId || 0)}:${Number(mission && mission.missionID || 0)}`;
       if (seen.has(key)) continue;
@@ -7141,7 +7302,7 @@ function isTutorialRepairStageCleared(user, stageId) {
     const state = container && container.stages && typeof container.stages === "object" ? container.stages[String(numericStageId)] : null;
     if (state && state.completed === true) return true;
   }
-  const tutorialStage = TUTORIAL_STAGE_CHAIN.find((stage) => Number(stage.stageId || 0) === numericStageId);
+  const tutorialStage = getTutorialStageByStageId(numericStageId);
   if (tutorialStage) {
     const tutorial = user.tutorial && typeof user.tutorial === "object" ? user.tutorial : {};
     const phases = tutorial.phases && typeof tutorial.phases === "object" ? tutorial.phases : {};
@@ -7153,7 +7314,7 @@ function isTutorialRepairStageCleared(user, stageId) {
 
 function recordTutorialDungeonClearForUser(user, dungeonId, stageId, battleState = {}, options = {}) {
   if (!user) return false;
-  const stageMeta = TUTORIAL_STAGE_CHAIN.find((stage) => stage.dungeonID === Number(dungeonId) || stage.stageId === Number(stageId));
+  const stageMeta = getTutorialStageByDungeonId(dungeonId) || getTutorialStageByStageId(stageId);
   if (!stageMeta) return false;
   if (!options.force && shouldSuppressPostTutorialProgressArtifact(user, stageMeta.dungeonID, stageMeta.stageId)) {
     const changed = scrubTutorialEpisodeClearProgress(user);
@@ -7455,7 +7616,7 @@ function resolveDungeonIdForStageProgress(stageId, source = {}) {
   if (!Number.isInteger(numericStageId) || numericStageId <= 0) return 0;
   const mainStoryStage = getMainStoryStageByStageId(numericStageId);
   if (mainStoryStage && Number(mainStoryStage.dungeonID) > 0) return Number(mainStoryStage.dungeonID);
-  const tutorialStage = TUTORIAL_STAGE_CHAIN.find((stage) => Number(stage.stageId) === numericStageId);
+  const tutorialStage = getTutorialStageByStageId(numericStageId);
   if (tutorialStage && Number(tutorialStage.dungeonID) > 0) return Number(tutorialStage.dungeonID);
   const genericStage = getGenericStageForRequest({ stageID: numericStageId });
   return Number(genericStage && genericStage.dungeonID) || 0;
@@ -9220,6 +9381,7 @@ function shouldUseLocalJoinLobbyAck(user) {
 
 function hasLocalAccountState(user) {
   if (!user || typeof user !== "object") return false;
+  if (user.userUid || user.tutorial) return true;
   const inventory = user.inventory && typeof user.inventory === "object" ? user.inventory : {};
   const army = user.army && typeof user.army === "object" ? user.army : {};
   const completedMissions =
@@ -10069,19 +10231,7 @@ function dateTimeBinaryForDate(date) {
   return dateTimeTicksForDate(date) | 0x4000000000000000n;
 }
 
-function loadUserDb(filePath) {
-  try {
-    if (!fs.existsSync(filePath)) {
-      const starterPath = path.join(path.dirname(filePath), "starter-users.json");
-      if (!fs.existsSync(starterPath)) return normalizeUserDb({});
-      fs.copyFileSync(starterPath, filePath);
-    }
-    return normalizeUserDb(JSON.parse(fs.readFileSync(filePath, "utf8")));
-  } catch (err) {
-    console.log(`[user-db] failed to load ${filePath}: ${err.message}; starting empty`);
-    return normalizeUserDb({});
-  }
-}
+
 
 function repairUserDbDeckReferences(db) {
   const users = db && db.users && typeof db.users === "object" ? db.users : {};
@@ -10230,13 +10380,85 @@ function normalizeUserDb(db) {
   return db;
 }
 
-function saveUserDb() {
-  fs.mkdirSync(path.dirname(USER_DB_PATH), { recursive: true });
-  const tmpPath = `${USER_DB_PATH}.tmp`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify(userDb, jsonUserDbReplacer, 2)}\n`, "utf8");
-  fs.renameSync(tmpPath, USER_DB_PATH);
-  writeActiveUserSelection(ACTIVE_USER_PATH, userDb.activeUserUid);
+function flushPendingUserSaves() {
+  if (debouncedSaveTimer) {
+    clearTimeout(debouncedSaveTimer);
+    debouncedSaveTimer = null;
+  }
+  if (pendingUserSaves.size === 0) return;
+  const uids = Array.from(pendingUserSaves);
+  pendingUserSaves.clear();
+  try {
+    saveUserDb(uids);
+  } catch (err) {
+    console.error(`[user-db] flushPendingUserSaves failed for batch:`, err);
+  }
 }
+
+function scheduleDebouncedUserSave(userUid, delayMs = 1500) {
+  if (!USE_LOCAL_USER_DB) return;
+  const uid = userUid || (userDb && userDb.activeUserUid) || null;
+  if (!uid) {
+    saveUserDb();
+    return;
+  }
+  pendingUserSaves.add(String(uid));
+  if (debouncedSaveTimer) {
+    clearTimeout(debouncedSaveTimer);
+  }
+  debouncedSaveTimer = setTimeout(() => {
+    debouncedSaveTimer = null;
+    flushPendingUserSaves();
+  }, delayMs);
+  if (debouncedSaveTimer.unref) debouncedSaveTimer.unref();
+}
+
+function saveUserDb(targetUserUid = null) {
+  if (!USE_LOCAL_USER_DB) return;
+  const effectiveUid = targetUserUid || (userDb && userDb.activeUserUid) || null;
+  if (effectiveUid) {
+    if (Array.isArray(effectiveUid) || effectiveUid instanceof Set) {
+      for (const uid of effectiveUid) pendingUserSaves.delete(String(uid));
+    } else {
+      pendingUserSaves.delete(String(effectiveUid));
+    }
+  } else {
+    pendingUserSaves.clear();
+  }
+  saveSqliteUserDb(userDb, effectiveUid, { sqlitePath: USER_DB_SQLITE_PATH });
+  if (userDb.activeUserUid && userDb.activeUserUid !== lastWrittenActiveUserUid) {
+    writeActiveUserSelection(ACTIVE_USER_PATH, userDb.activeUserUid);
+    lastWrittenActiveUserUid = userDb.activeUserUid;
+  }
+}
+
+const bgCheckpointInterval = setInterval(() => {
+  try {
+    checkpointSqliteDb({ sqlitePath: USER_DB_SQLITE_PATH, mode: "PASSIVE" });
+  } catch (_) {}
+}, 5 * 60 * 1000);
+if (bgCheckpointInterval.unref) bgCheckpointInterval.unref();
+
+process.on("beforeExit", () => {
+  flushPendingUserSaves();
+  try {
+    checkpointSqliteDb({ sqlitePath: USER_DB_SQLITE_PATH, mode: "PASSIVE" });
+  } catch (_) {}
+});
+process.on("SIGINT", () => {
+  flushPendingUserSaves();
+  try {
+    checkpointSqliteDb({ sqlitePath: USER_DB_SQLITE_PATH, mode: "PASSIVE" });
+  } catch (_) {}
+  process.exit(0);
+});
+process.on("SIGTERM", () => {
+  flushPendingUserSaves();
+  try {
+    checkpointSqliteDb({ sqlitePath: USER_DB_SQLITE_PATH, mode: "PASSIVE" });
+  } catch (_) {}
+  process.exit(0);
+});
 
 function jsonUserDbReplacer(_key, value) {
   return typeof value === "bigint" ? value.toString() : value;
@@ -10351,22 +10573,39 @@ function findExistingUserUidForSteamLogin(loginReq, steamAccountId) {
   for (const key of keys) {
     const userUid = key ? userDb.usersBySteamAccountId[key] : "";
     if (userUid && userDb.users[userUid]) return userUid;
+    // Fallback lookup via SQLite B-Tree index
+    if (key) {
+      const user = getUserBySteamKey(key, { sqlitePath: USER_DB_SQLITE_PATH });
+      if (user && user.userUid) {
+        userDb.users[user.userUid] = user;
+        userDb.usersBySteamAccountId[key] = user.userUid;
+        return user.userUid;
+      }
+    }
   }
 
   const stableSteamId = extractStableSteamId(loginReq);
   if (stableSteamId) {
-    const user = chooseNewestUser(
-      Object.values(userDb.users).filter((entry) => entry && entry.steamStableId === stableSteamId)
-    );
-    if (user) return user.userUid;
+    const userUid = userDb.usersBySteamStableId ? userDb.usersBySteamStableId[stableSteamId] : "";
+    if (userUid && userDb.users[userUid]) return userUid;
+    const user = getUserBySteamStableId(stableSteamId, { sqlitePath: USER_DB_SQLITE_PATH });
+    if (user && user.userUid) {
+      userDb.users[user.userUid] = user;
+      if (userDb.usersBySteamStableId) userDb.usersBySteamStableId[stableSteamId] = user.userUid;
+      return user.userUid;
+    }
   }
 
   const deviceUid = nonEmpty(loginReq.deviceUid);
   if (deviceUid) {
-    const user = chooseNewestUser(
-      Object.values(userDb.users).filter((entry) => entry && entry.deviceUid === deviceUid)
-    );
-    if (user) return user.userUid;
+    const userUid = userDb.usersByDeviceUid ? userDb.usersByDeviceUid[deviceUid] : "";
+    if (userUid && userDb.users[userUid]) return userUid;
+    const user = getUserByDeviceUid(deviceUid, { sqlitePath: USER_DB_SQLITE_PATH });
+    if (user && user.userUid) {
+      userDb.users[user.userUid] = user;
+      if (userDb.usersByDeviceUid) userDb.usersByDeviceUid[deviceUid] = user.userUid;
+      return user.userUid;
+    }
   }
 
   return "";
@@ -10385,31 +10624,45 @@ function attachSteamLoginIdentity(user, loginReq, steamAccountId) {
   user.steamLoginTicketHash = hashLoginTicket(loginReq.accessToken) || user.steamLoginTicketHash || "";
   user.deviceUid = loginReq.deviceUid || user.deviceUid || "";
   indexSteamLoginUser(userDb, user);
+  if (user.steamStableId && userDb.usersBySteamStableId) userDb.usersBySteamStableId[user.steamStableId] = user.userUid;
+  if (user.deviceUid && userDb.usersByDeviceUid) userDb.usersByDeviceUid[user.deviceUid] = user.userUid;
 }
 
 function findExistingUserUidForGuestLogin(loginReq, guestLoginKey) {
   const key = nonEmpty(guestLoginKey);
   if (key) {
-    const user = chooseNewestUser(
-      Object.values(userDb.users).filter((entry) => entry && entry.guestLoginKey === key)
-    );
-    if (user) return user.userUid;
+    const userUid = userDb.usersByGuestLoginKey ? userDb.usersByGuestLoginKey[key] : "";
+    if (userUid && userDb.users[userUid]) return userUid;
+    const user = getUserByGuestKey(key, { sqlitePath: USER_DB_SQLITE_PATH });
+    if (user && user.userUid) {
+      userDb.users[user.userUid] = user;
+      if (userDb.usersByGuestLoginKey) userDb.usersByGuestLoginKey[key] = user.userUid;
+      return user.userUid;
+    }
   }
 
   const userId = nonEmpty(loginReq && loginReq.userId);
   if (userId) {
-    const user = chooseNewestUser(
-      Object.values(userDb.users).filter((entry) => entry && entry.mobileUserId === userId)
-    );
-    if (user) return user.userUid;
+    const userUid = userDb.usersByMobileUserId ? userDb.usersByMobileUserId[userId] : "";
+    if (userUid && userDb.users[userUid]) return userUid;
+    const user = getUserByMobileUserId(userId, { sqlitePath: USER_DB_SQLITE_PATH });
+    if (user && user.userUid) {
+      userDb.users[user.userUid] = user;
+      if (userDb.usersByMobileUserId) userDb.usersByMobileUserId[userId] = user.userUid;
+      return user.userUid;
+    }
   }
 
   const deviceUid = nonEmpty(loginReq && loginReq.deviceUid);
   if (deviceUid) {
-    const user = chooseNewestUser(
-      Object.values(userDb.users).filter((entry) => entry && entry.deviceUid === deviceUid)
-    );
-    if (user) return user.userUid;
+    const userUid = userDb.usersByDeviceUid ? userDb.usersByDeviceUid[deviceUid] : "";
+    if (userUid && userDb.users[userUid]) return userUid;
+    const user = getUserByDeviceUid(deviceUid, { sqlitePath: USER_DB_SQLITE_PATH });
+    if (user && user.userUid) {
+      userDb.users[user.userUid] = user;
+      if (userDb.usersByDeviceUid) userDb.usersByDeviceUid[deviceUid] = user.userUid;
+      return user.userUid;
+    }
   }
 
   return "";
@@ -10421,6 +10674,9 @@ function attachGuestLoginIdentity(user, loginReq, guestLoginKey) {
   user.deviceUid = loginReq && loginReq.deviceUid ? loginReq.deviceUid : user.deviceUid || "";
   user.mobileUserId = loginReq && loginReq.userId ? loginReq.userId : user.mobileUserId || "";
   user.mobileIdpCode = loginReq && loginReq.idpCode ? loginReq.idpCode : user.mobileIdpCode || "guest";
+  if (user.guestLoginKey && userDb.usersByGuestLoginKey) userDb.usersByGuestLoginKey[user.guestLoginKey] = user.userUid;
+  if (user.deviceUid && userDb.usersByDeviceUid) userDb.usersByDeviceUid[user.deviceUid] = user.userUid;
+  if (user.mobileUserId && userDb.usersByMobileUserId) userDb.usersByMobileUserId[user.mobileUserId] = user.userUid;
 }
 
 function indexSteamLoginUser(db, user) {
@@ -10620,12 +10876,32 @@ function removeUserTokenIndexes(user) {
 
 function findUserByAccessToken(token) {
   const userUid = token ? userDb.accessTokens[token] : "";
-  return userUid && userDb.users[userUid] ? ensureUserDefaults(userDb.users[userUid]) : null;
+  if (userUid && userDb.users[userUid]) return ensureUserDefaults(userDb.users[userUid]);
+  // Fallback lookup via SQLite B-Tree index
+  if (token) {
+    const user = getUserByAccessToken(token, { sqlitePath: USER_DB_SQLITE_PATH });
+    if (user && user.userUid) {
+      userDb.users[user.userUid] = user;
+      userDb.accessTokens[token] = user.userUid;
+      return ensureUserDefaults(user);
+    }
+  }
+  return null;
 }
 
 function findUserByReconnectKey(reconnectKey) {
   const userUid = reconnectKey ? userDb.reconnectKeys[reconnectKey] : "";
-  return userUid && userDb.users[userUid] ? ensureUserDefaults(userDb.users[userUid]) : null;
+  if (userUid && userDb.users[userUid]) return ensureUserDefaults(userDb.users[userUid]);
+  // Fallback lookup via SQLite B-Tree index
+  if (reconnectKey) {
+    const user = getUserByReconnectKey(reconnectKey, { sqlitePath: USER_DB_SQLITE_PATH });
+    if (user && user.userUid) {
+      userDb.users[user.userUid] = user;
+      userDb.reconnectKeys[reconnectKey] = user.userUid;
+      return ensureUserDefaults(user);
+    }
+  }
+  return null;
 }
 
 function createEphemeralUser() {

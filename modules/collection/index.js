@@ -78,7 +78,7 @@ function createCollectionHandlers() {
           `[collection:unit-mission] claim unitId=${result.missionData.unitId} missionId=${result.missionData.missionId} stepId=${result.missionData.stepId}`
         );
         send(ctx, socket, packet, PACKETS.UNIT_MISSION_REWARD_ACK, buildUnitMissionRewardAckPayload(result));
-        persist(ctx);
+        persist(ctx, user);
         return true;
       },
     },
@@ -91,7 +91,7 @@ function createCollectionHandlers() {
         const result = claimAllUnitMissions(ctx, user, req.unitId);
         console.log(`[collection:unit-mission] claim-all unitId=${req.unitId} count=${result.missionData.length}`);
         send(ctx, socket, packet, PACKETS.UNIT_MISSION_REWARD_ALL_ACK, buildUnitMissionRewardAllAckPayload(result));
-        persist(ctx);
+        persist(ctx, user);
         return true;
       },
     },
@@ -106,7 +106,7 @@ function createCollectionHandlers() {
           `[collection:episode] claim episodeID=${req.episodeID} difficulty=${req.episodeDifficulty} rewardIndex=${req.rewardIndex}`
         );
         send(ctx, socket, packet, PACKETS.EPISODE_COMPLETE_REWARD_ACK, buildEpisodeRewardAckPayload(result));
-        persist(ctx);
+        persist(ctx, user);
         return true;
       },
     },
@@ -119,7 +119,7 @@ function createCollectionHandlers() {
         const result = claimAllEpisodeRewards(ctx, user, req.episodeID);
         console.log(`[collection:episode] claim-all episodeID=${req.episodeID} count=${result.episodeCompleteData.length}`);
         send(ctx, socket, packet, PACKETS.EPISODE_COMPLETE_REWARD_ALL_ACK, buildEpisodeRewardAllAckPayload(result));
-        persist(ctx);
+        persist(ctx, user);
         return true;
       },
     },
@@ -132,7 +132,7 @@ function createCollectionHandlers() {
         const result = claimTeamCollectionReward(ctx, user, req.teamID);
         console.log(`[collection:team] claim teamID=${req.teamID}`);
         send(ctx, socket, packet, PACKETS.TEAM_COLLECTION_REWARD_ACK, buildTeamCollectionRewardAckPayload(result));
-        persist(ctx);
+        persist(ctx, user);
         return true;
       },
     },
@@ -145,7 +145,7 @@ function createCollectionHandlers() {
         const result = claimMiscCollectionReward(ctx, user, req.miscId);
         console.log(`[collection:misc] claim miscId=${req.miscId}`);
         send(ctx, socket, packet, PACKETS.MISC_COLLECTION_REWARD_ACK, buildMiscCollectionRewardAckPayload(result));
-        persist(ctx);
+        persist(ctx, user);
         return true;
       },
     },
@@ -158,7 +158,7 @@ function createCollectionHandlers() {
         const result = claimAllMiscCollectionRewards(ctx, user, req.miscType);
         console.log(`[collection:misc] claim-all miscType=${req.miscType} count=${result.miscCollectionDatas.length}`);
         send(ctx, socket, packet, PACKETS.MISC_COLLECTION_REWARD_ALL_ACK, buildMiscCollectionRewardAllAckPayload(result));
-        persist(ctx);
+        persist(ctx, user);
         return true;
       },
     },
@@ -254,13 +254,28 @@ function getCompletedUnitMissionStates(user) {
 function getRewardEnableUnitMissionStates(user, options = {}) {
   const state = ensureCollectionState(user);
   const tables = loadCollectionTables();
-  const owned = buildOwnedCollectionIds(user);
   const wantedUnitIds = options.unitIds
     ? new Set((Array.isArray(options.unitIds) ? options.unitIds : [options.unitIds]).map(Number).filter((id) => id > 0))
     : null;
   const result = [];
 
-  for (const [unitId, level] of owned.normalUnitLevels.entries()) {
+  let unitEntries;
+  if (wantedUnitIds && wantedUnitIds.size > 0) {
+    const levelsByUnitId = new Map();
+    const units = user && user.army && user.army.units ? Object.values(user.army.units) : [];
+    for (const unit of units) {
+      const uid = Number(unit && unit.unitId);
+      if (wantedUnitIds.has(uid)) {
+        levelsByUnitId.set(uid, Math.max(levelsByUnitId.get(uid) || 1, Number(unit.level || 1) || 1));
+      }
+    }
+    unitEntries = Array.from(levelsByUnitId.entries());
+  } else {
+    const owned = buildOwnedCollectionIds(user);
+    unitEntries = Array.from(owned.normalUnitLevels.entries());
+  }
+
+  for (const [unitId, level] of unitEntries) {
     if (wantedUnitIds && !wantedUnitIds.has(unitId)) continue;
     const templet = getUnitTemplet(unitId) || {};
     const grade = String(templet.m_NKM_UNIT_GRADE || "");
@@ -290,7 +305,9 @@ function buildUnitMissionUpdatedNotPayload(user, options = {}) {
 
 function sendUnitMissionUpdatedNot(ctx, socket, user, options = {}) {
   if (!ctx || typeof ctx.sendServerGamePacket !== "function" || !socket || !socket.session || !socket.session.gameReplay) return;
-  const payload = buildUnitMissionUpdatedNotPayload(user, options);
+  const missionStates = getRewardEnableUnitMissionStates(user, options);
+  if (missionStates.length === 0) return;
+  const payload = writeNullableObjectList(missionStates.map(buildUnitMissionData));
   ctx.sendServerGamePacket(socket, PACKETS.UNIT_MISSION_UPDATED_NOT, payload, "unit-mission-updated");
 }
 
@@ -816,8 +833,14 @@ function send(ctx, socket, packet, packetId, payload) {
   ctx.sendResponse(socket, packet.sequence, packetId, () => ctx.buildEncryptedPacket(packet.sequence, packetId, payload));
 }
 
-function persist(ctx) {
-  if (ctx && ctx.config && ctx.config.USE_LOCAL_USER_DB && typeof ctx.saveUserDb === "function") ctx.saveUserDb();
+function persist(ctx, user) {
+  if (!ctx || (ctx.config && ctx.config.USE_LOCAL_USER_DB === false)) return;
+  const userUid = user && (user.userUid || user.m_UserUID);
+  if (typeof ctx.scheduleDebouncedUserSave === "function") {
+    ctx.scheduleDebouncedUserSave(userUid);
+  } else if (typeof ctx.saveUserDb === "function") {
+    ctx.saveUserDb(userUid);
+  }
 }
 
 function getSocketUser(ctx, socket) {
@@ -988,4 +1011,5 @@ module.exports = {
   getEpisodeRewardFlags,
   getMainStoryEpisodeCompleteMedalCount,
   getMainStoryEpisodeTotalMedalCount,
+  loadCollectionTables,
 };
